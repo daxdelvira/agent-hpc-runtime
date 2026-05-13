@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Environments
+.env
+.venv
+env/
+venv/
+.conda/
+
+# Runtime outputs
+logs/
+results/
+*.jsonl
+*.csv
+!runtime/tests/fixtures/**
+
+# LAMMPS build artefacts
+setup/_lammps_src/
+
+# Model weights (too large for git)
+/models/
+workloads/*/models/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,20 @@
+name: atomagents
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - matplotlib
+  - psutil
+  - pip:
+      - pyautogen==0.2.40
+      - openai>=1.0
+      - requests
+      - chromadb
+      - atomman
+      - ase==3.25.0
+      - psutil
+      - tiktoken

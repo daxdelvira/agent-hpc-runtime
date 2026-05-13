@@ -1,0 +1,11 @@
+name: vllm
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      # vllm pins its own torch; let it resolve
+      - vllm>=0.6.6
+      - huggingface_hub[cli]
