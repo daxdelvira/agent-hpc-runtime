@@ -1,0 +1,3 @@
+[submodule "workloads/AtomAgents"]
+	path = workloads/AtomAgents
+	url = https://github.com/daxdelvira/atom-agents-profiling.git
