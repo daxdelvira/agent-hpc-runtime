@@ -10,7 +10,7 @@ dependencies:
   - matplotlib
   - psutil
   - pip:
-      - pyautogen==0.2.40
+      - pyautogen==0.2.35
       - openai>=1.0
       - requests
       - chromadb
