@@ -209,6 +209,7 @@ class AtomAgentsRuntimeAdapter:
         Checks the pending prediction targeting this step.
         """
         self._bus.set_step(step)
+        self._bus.emit("tool_call", {"tool": tool_name}, step=step)
         hit, action, ckpt_out = self._detector.on_tool_about_to_execute(
             tool_name, step=step,
         )
@@ -288,10 +289,16 @@ class AtomAgentsRuntimeAdapter:
                 return False, None
             last = messages[-1]
             tool_calls_raw = last.get("tool_calls") or []
-            if not tool_calls_raw:
-                return False, None
+            tool_name = None
 
-            tool_name = _tool_name_from_call(tool_calls_raw[0])
+            if tool_calls_raw:
+                tool_name = _tool_name_from_call(tool_calls_raw[0])
+            else:
+                # vLLM hermes parser often emits tool calls as plain text in content
+                content = last.get("content") or ""
+                if content:
+                    tool_name = _extract_text_tool_name(content)
+
             if not tool_name:
                 return False, None
 
@@ -347,6 +354,13 @@ def _extract_tool_calls_from_response(response) -> list[dict]:
         if tool_calls is None and isinstance(msg, dict):
             tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
+            # vLLM hermes parser sometimes emits tool calls as plain text content
+            content = getattr(msg, "content", None)
+            if content is None and isinstance(msg, dict):
+                content = msg.get("content") or ""
+            name = _extract_text_tool_name(content or "")
+            if name:
+                result.append({"name": name, "args": {}})
             return result
         for tc in tool_calls:
             name = _tool_name_from_call(tc)
@@ -378,6 +392,29 @@ def _tool_name_from_call(tool_call) -> str:
     if fn is not None:
         return getattr(fn, "name", "") or ""
     return getattr(tool_call, "name", "") or ""
+
+
+def _extract_text_tool_name(content: str) -> str:
+    """
+    Extract a function name from plain-text tool call content produced by the
+    vLLM hermes parser fallback (autogen_hook._text_tool_reply).
+
+    Delegates to autogen_hook's own parsers so the parsing logic stays in
+    one place.  Returns "" if no tool call is found.
+    """
+    if not content:
+        return ""
+    try:
+        from atomagents.instrumentation.autogen_hook import (  # type: ignore
+            _parse_json_call,
+            _parse_python_call,
+        )
+        fn, _ = _parse_json_call(content)
+        if fn is None:
+            fn, _ = _parse_python_call(content)
+        return fn or ""
+    except Exception:
+        return ""
 
 
 def _read_recent_events(log_path: str, n: int) -> list[dict]:
