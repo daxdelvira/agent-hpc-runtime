@@ -146,12 +146,20 @@ class AtomAgentsRuntimeAdapter:
 
         def _smart_terminate(msg: dict) -> bool:
             content = str(msg.get("content", ""))
+            # Never terminate a message that still has pending structured tool calls
+            if msg.get("tool_calls"):
+                return False
             # Bare TERMINATE (word boundary — does not match TERMINATE_ALL because
-            # '_' is a word character, so there is no \b between E and _)
+            # '_' is a word character so there is no \b between E and _)
             if _re.search(r"\bTERMINATE\b", content):
                 return True
-            # TERMINATE_ALL / TERMINATE_PLAN / similar — only after tools have run
+            # TERMINATE_ALL / TERMINATE_PLAN / similar — only after tools have run,
+            # AND only when this message does not also contain text-based tool calls
+            # to execute (the model sometimes packs all work + TERMINATE_ALL into one
+            # message; terminate only once the tool calls have been processed).
             if "TERMINATE" in content and _adapter_ref._tool_call_count > 0:
+                if _extract_text_tool_name(content):
+                    return False  # still has tool calls — let the fallback run first
                 return True
             return False
 
