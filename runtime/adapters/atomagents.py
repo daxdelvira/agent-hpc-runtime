@@ -92,6 +92,7 @@ class AtomAgentsRuntimeAdapter:
         self._bus = bus
         self._config = config
         self._step = 0
+        self._tool_call_count = 0
         self._lock = threading.Lock()
         self._installed = False
 
@@ -134,15 +135,27 @@ class AtomAgentsRuntimeAdapter:
         except ImportError:
             pass
 
-        # Override AutoGen's termination check to use word-boundary matching.
-        # The default uses a substring check ("TERMINATE" in content), which
-        # means "TERMINATE_ALL" and "TERMINATE_PLAN" end the conversation before
-        # the tool-call fallback gets a chance to execute. Word-boundary matching
-        # matches standalone "TERMINATE" but not "TERMINATE_ALL"/"TERMINATE_PLAN".
+        # Override AutoGen's termination check with a state-aware closure.
+        # Problem: the model uses TERMINATE_ALL both (a) prematurely before any
+        # tool runs (bad) and (b) legitimately at the end of successful work (good).
+        # Solution: allow any "TERMINATE*" string only after at least one tool call
+        # has been observed; before that, only allow the bare word "TERMINATE"
+        # (which the model never sends mid-task, only at a clean end).
         import re as _re
-        admin_agent._is_termination_msg = lambda msg: bool(
-            _re.search(r"\bTERMINATE\b", str(msg.get("content", "")))
-        )
+        _adapter_ref = self
+
+        def _smart_terminate(msg: dict) -> bool:
+            content = str(msg.get("content", ""))
+            # Bare TERMINATE (word boundary — does not match TERMINATE_ALL because
+            # '_' is a word character, so there is no \b between E and _)
+            if _re.search(r"\bTERMINATE\b", content):
+                return True
+            # TERMINATE_ALL / TERMINATE_PLAN / similar — only after tools have run
+            if "TERMINATE" in content and _adapter_ref._tool_call_count > 0:
+                return True
+            return False
+
+        admin_agent._is_termination_msg = _smart_terminate
 
         self._installed = True
 
@@ -229,6 +242,8 @@ class AtomAgentsRuntimeAdapter:
         Called just before a tool executes at the given step.
         Checks the pending prediction targeting this step.
         """
+        with self._lock:
+            self._tool_call_count += 1
         self._bus.set_step(step)
         self._bus.emit("tool_call", {"tool": tool_name}, step=step)
         hit, action, ckpt_out = self._detector.on_tool_about_to_execute(

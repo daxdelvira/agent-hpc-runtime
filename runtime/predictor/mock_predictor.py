@@ -66,7 +66,7 @@ _QWEN_72B = ResourceSpec(
     estimated_load_s=2700.0,   # up to 45 min cold NFS load
     confidence=0.0,
     cancellation_safe=False,   # can't abort mid-load
-    consumer_tool="llm_call",
+    consumer_tool="computation_task",
     consumer_step_offset=1,
 )
 
@@ -79,7 +79,7 @@ _QWEN_32B = ResourceSpec(
     estimated_load_s=1200.0,   # ~20 min cold NFS load
     confidence=0.0,
     cancellation_safe=False,
-    consumer_tool="llm_call",
+    consumer_tool="computation_task",
     consumer_step_offset=2,
 )
 
@@ -92,7 +92,7 @@ _W_ZHOU04 = ResourceSpec(
     estimated_load_s=2.0,
     confidence=0.0,
     cancellation_safe=True,
-    consumer_tool="computation_task_screw_dislocation",
+    consumer_tool="computation_task",
     consumer_step_offset=1,
 )
 
@@ -104,7 +104,7 @@ _W_EAM4 = ResourceSpec(
     estimated_load_s=1.5,
     confidence=0.0,
     cancellation_safe=True,
-    consumer_tool="computation_task_screw_dislocation",
+    consumer_tool="computation_task",
     consumer_step_offset=1,
 )
 
@@ -259,7 +259,8 @@ def _infer_workflow(recent_events: list[dict]) -> str:
         tool = payload.get("tool", "")
         if tool in ("run_ase", "molecule_name_to_smiles", "smiles_to_coordinate_file"):
             return "chemgraph"
-        if tool in ("plan_task", "computation_task_screw_dislocation"):
+        if tool in ("plan_task", "computation_task", "computation_task_screw_dislocation",
+                    "computation_task_surface_energy", "computation_task_NEB"):
             return "atomagents"
         sender = payload.get("sender", "")
         if sender in ("engineer_core", "admin_core"):
