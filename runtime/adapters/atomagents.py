@@ -123,6 +123,17 @@ class AtomAgentsRuntimeAdapter:
 
         self._patch_oai_wrapper()
         self._install_reply_handler(admin_agent)
+
+        # Also watch the inner admin agent used inside computation_task
+        # sub-conversations so tool calls there (e.g. create_screw_dislocation
+        # loading an EAM potential file) are also tracked and validated.
+        try:
+            from atomagents.agents import admin as inner_admin  # type: ignore
+            if inner_admin is not admin_agent:
+                self._install_reply_handler(inner_admin)
+        except ImportError:
+            pass
+
         self._installed = True
 
     def close(self) -> None:

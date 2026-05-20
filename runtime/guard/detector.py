@@ -74,7 +74,11 @@ class DivergenceDetector:
         self._store = CheckpointStore(max_horizon=config.max_horizon)
         self._accuracy: dict[str, AccuracyTracker] = {}
         self._conservative_until_step = 0
-        self._pending_by_target: dict[int, CheckpointRecord] = {}
+        # Ordered queue of pending checkpoints (oldest first).
+        # "Next tool call" matching: each tool execution consumes the oldest
+        # pending prediction regardless of how many LLM calls (including
+        # sub-conversation ones) happened in between.
+        self._pending_queue: list[CheckpointRecord] = []
         self._lock = threading.Lock()
 
     def on_prediction(
@@ -90,10 +94,8 @@ class DivergenceDetector:
             prediction=result,
         )
         self._store.add(ckpt)
-        offset = result.resources[0].consumer_step_offset if result.resources else 1
-        target_step = step + offset
         with self._lock:
-            self._pending_by_target[target_step] = ckpt
+            self._pending_queue.append(ckpt)
         return ckpt
 
     def on_tool_about_to_execute(
@@ -102,14 +104,30 @@ class DivergenceDetector:
         step: int,
     ) -> tuple[bool, DivergenceAction, CheckpointRecord | None]:
         """
-        Compare actual tool to the prediction that targeted this step.
+        Compare actual tool to the oldest pending prediction.
+
+        Uses "next tool call" matching: the prediction is validated against
+        whatever tool actually fires next, not against an exact target step.
+        This handles sub-conversation LLM calls that inflate the step counter
+        without producing tool executions.
+
+        Checkpoints expire after max_horizon * 8 steps (generous window so
+        predictions survive through deep sub-conversations).
 
         Returns (hit, action, checkpoint_or_None).
         """
         with self._lock:
-            ckpt = self._pending_by_target.pop(step, None)
+            # Expire checkpoints whose step window has passed
+            max_age = max(self._config.max_horizon * 8, 20)
+            self._pending_queue = [
+                c for c in self._pending_queue
+                if c.status == "pending" and (step - c.step) <= max_age
+            ]
+            if not self._pending_queue:
+                return True, DivergenceAction.CONTINUE, None
+            ckpt = self._pending_queue.pop(0)
 
-        if ckpt is None or ckpt.prediction is None or not ckpt.prediction.resources:
+        if ckpt.prediction is None or not ckpt.prediction.resources:
             return True, DivergenceAction.CONTINUE, None
 
         predicted_tool = ckpt.prediction.resources[0].consumer_tool
