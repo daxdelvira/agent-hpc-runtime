@@ -263,8 +263,9 @@ class AtomAgentsRuntimeAdapter:
             response = original_create(self_wrapper, *args, **kwargs)
             try:
                 adapter._on_llm_response(response, list(kwargs.get("messages", [])))
-            except Exception:
-                pass
+            except Exception as _exc:
+                import sys
+                print(f"[runtime] _on_llm_response error: {_exc}", file=sys.stderr)
             return response
 
         runtime_create._runtime_patched = True
@@ -397,24 +398,59 @@ def _tool_name_from_call(tool_call) -> str:
 def _extract_text_tool_name(content: str) -> str:
     """
     Extract a function name from plain-text tool call content produced by the
-    vLLM hermes parser fallback (autogen_hook._text_tool_reply).
+    vLLM hermes parser.
 
-    Delegates to autogen_hook's own parsers so the parsing logic stays in
-    one place.  Returns "" if no tool call is found.
+    Handles two formats autogen_hook also handles:
+    - JSON: ```json\\n{"function": "name", ...}\\n``` or bare {"name": ...}
+    - Python call: ```python\\nfunc(key=val)\\n``` or bare func(key=val)
+
+    NOTE: _parse_json_call / _parse_python_call are nested inside
+    install_text_tool_call_fallback in autogen_hook and cannot be imported;
+    this function reimplements the same logic inline.
     """
     if not content:
         return ""
-    try:
-        from atomagents.instrumentation.autogen_hook import (  # type: ignore
-            _parse_json_call,
-            _parse_python_call,
-        )
-        fn, _ = _parse_json_call(content)
-        if fn is None:
-            fn, _ = _parse_python_call(content)
-        return fn or ""
-    except Exception:
-        return ""
+    import ast
+    import json as _json
+    import re
+
+    # --- JSON format ---
+    for m in re.finditer(r"```(?:json)?\s*\n?(\{[\s\S]*?\})\s*\n?```", content):
+        try:
+            data = _json.loads(m.group(1))
+            name = data.get("function") or data.get("name")
+            if name:
+                return str(name)
+        except _json.JSONDecodeError:
+            pass
+    stripped = content.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            data = _json.loads(stripped)
+            name = data.get("function") or data.get("name")
+            if name:
+                return str(name)
+        except _json.JSONDecodeError:
+            pass
+
+    # --- Python call syntax ---
+    candidates: list[str] = []
+    for m in re.finditer(r"```(?:python)?\s*\n?([\s\S]*?)\n?```", content):
+        candidates.append(m.group(1).strip())
+    candidates.append(stripped)
+    for code in candidates:
+        if not code:
+            continue
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                call = node.value
+                if isinstance(call.func, ast.Name):
+                    return call.func.id
+    return ""
 
 
 def _read_recent_events(log_path: str, n: int) -> list[dict]:
