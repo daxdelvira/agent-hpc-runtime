@@ -123,9 +123,16 @@ class DivergenceDetector:
                 c for c in self._pending_queue
                 if c.status == "pending" and (step - c.step) <= max_age
             ]
-            if not self._pending_queue:
+            # Only validate predictions made at an EARLIER step. A prediction
+            # created at step N is about what comes AFTER the tool that fired
+            # at step N — not the tool itself. Without this guard, the detector
+            # would pop the freshly-created checkpoint and immediately mark it
+            # as DIVERGE against the very tool that triggered the prediction.
+            eligible = [c for c in self._pending_queue if c.step < step]
+            if not eligible:
                 return True, DivergenceAction.CONTINUE, None
-            ckpt = self._pending_queue.pop(0)
+            ckpt = eligible[0]
+            self._pending_queue.remove(ckpt)
 
         if ckpt.prediction is None or not ckpt.prediction.resources:
             return True, DivergenceAction.CONTINUE, None

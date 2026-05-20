@@ -134,6 +134,16 @@ class AtomAgentsRuntimeAdapter:
         except ImportError:
             pass
 
+        # Override AutoGen's termination check to use word-boundary matching.
+        # The default uses a substring check ("TERMINATE" in content), which
+        # means "TERMINATE_ALL" and "TERMINATE_PLAN" end the conversation before
+        # the tool-call fallback gets a chance to execute. Word-boundary matching
+        # matches standalone "TERMINATE" but not "TERMINATE_ALL"/"TERMINATE_PLAN".
+        import re as _re
+        admin_agent._is_termination_msg = lambda msg: bool(
+            _re.search(r"\bTERMINATE\b", str(msg.get("content", "")))
+        )
+
         self._installed = True
 
     def close(self) -> None:
