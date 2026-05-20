@@ -41,9 +41,11 @@ fi
 # ---------------------------------------------------------------------------
 # Resolve vLLM python
 # ---------------------------------------------------------------------------
-VLLM_PYTHON=$(conda run -n vllm which python 2>/dev/null || echo "")
+VLLM_PYTHON=$(conda run -n vllm_clean which python 2>/dev/null || \
+              conda run -n vllm       which python 2>/dev/null || echo "")
 if [[ -z "$VLLM_PYTHON" ]]; then
-  echo "[start_models] ERROR: vllm conda env not found. Run: conda env create -f setup/environment_vllm.yml" >&2
+  echo "[start_models] ERROR: no vllm conda env found (tried: vllm_clean, vllm)." >&2
+  echo "  Run: conda env create -f setup/environment_vllm.yml" >&2
   exit 1
 fi
 echo "[start_models] vLLM python: $VLLM_PYTHON"
