@@ -138,6 +138,8 @@ def run_exp2(args: argparse.Namespace) -> None:
             from atomagents.runtime.model_orchestrator import ModelOrchestrator
             if args.hw_profile == "rtx6000":
                 from atomagents.runtime.model_config import MODELS_RTX6000 as MODELS
+            elif args.hw_profile == "blackwell":
+                from experiments.model_configs import MODELS_BLACKWELL as MODELS
             else:
                 from atomagents.runtime.model_config import MODELS
             orchestrator = ModelOrchestrator(MODELS)
@@ -287,7 +289,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--hw-profile",
-        choices=["l40s", "rtx6000"],
+        choices=["l40s", "rtx6000", "blackwell"],
         default="l40s",
         help="Hardware profile for GPU assignment",
     )

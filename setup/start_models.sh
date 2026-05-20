@@ -2,10 +2,14 @@
 # start_models.sh — Launch both vLLM servers and wait until they are ready.
 #
 # Usage:
-#   bash setup/start_models.sh                         # auto-detect paths
-#   bash setup/start_models.sh --models-dir /data/models
-#   bash setup/start_models.sh --72b-only              # skip 32B
-#   bash setup/start_models.sh --stop                  # kill both servers
+#   bash setup/start_models.sh                              # auto-detect paths
+#   bash setup/start_models.sh --models-dir /data/models   # explicit weight dirs
+#   bash setup/start_models.sh --72b-only                  # skip 32B
+#   bash setup/start_models.sh --stop                      # kill both servers
+#
+# HuggingFace cache: if HF_HOME is exported in the calling shell, model names
+# are passed directly to vLLM (which resolves weights from the cache).
+# Otherwise --models-dir must point to a dir with qwen_72b/ and qwen_32b/ subdirs.
 #
 # Logs: /tmp/vllm_72b.log  /tmp/vllm_32b.log
 set -euo pipefail
@@ -99,18 +103,31 @@ wait_ready() {
 }
 
 # ---------------------------------------------------------------------------
+# Resolve model identifiers: HF cache (by name) or explicit directory
+# ---------------------------------------------------------------------------
+if [[ -n "${HF_HOME:-}" ]]; then
+  echo "[start_models] HF_HOME=$HF_HOME — using HF cache for model resolution"
+  export HF_HOME
+  MODEL_ID_72B="Qwen/Qwen2.5-VL-72B-Instruct"
+  MODEL_ID_32B="Qwen/Qwen2.5-VL-32B-Instruct"
+else
+  MODEL_ID_72B="$MODELS_DIR/qwen_72b"
+  MODEL_ID_32B="$MODELS_DIR/qwen_32b"
+  if [[ ! -d "$MODEL_ID_72B" ]]; then
+    echo "[start_models] ERROR: 72B weights not found at $MODEL_ID_72B" >&2
+    echo "  Set HF_HOME to use HuggingFace cache, or --models-dir to an explicit path." >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Launch 72B
 # ---------------------------------------------------------------------------
 LOG_72B="$LOG_DIR/vllm_72b.log"
-MODEL_PATH_72B="$MODELS_DIR/qwen_72b"
-if [[ ! -d "$MODEL_PATH_72B" ]]; then
-  echo "[start_models] ERROR: 72B weights not found at $MODEL_PATH_72B" >&2
-  exit 1
-fi
 
 echo "[start_models] Starting 72B on GPUs $GPUS_72B → port 8001 (log: $LOG_72B)"
 CUDA_VISIBLE_DEVICES=$GPUS_72B "$VLLM_PYTHON" -m vllm.entrypoints.openai.api_server \
-  --model "$MODEL_PATH_72B" \
+  --model "$MODEL_ID_72B" \
   --served-model-name "Qwen/Qwen2.5-VL-72B-Instruct" \
   --tensor-parallel-size "$TP_72B" \
   --gpu-memory-utilization 0.97 \
@@ -130,15 +147,15 @@ echo "[start_models] 72B PID: $PID_72B"
 # ---------------------------------------------------------------------------
 if [[ $ONLY_72B -eq 0 ]]; then
   LOG_32B="$LOG_DIR/vllm_32b.log"
-  MODEL_PATH_32B="$MODELS_DIR/qwen_32b"
-  if [[ ! -d "$MODEL_PATH_32B" ]]; then
-    echo "[start_models] ERROR: 32B weights not found at $MODEL_PATH_32B" >&2
+
+  if [[ -z "${HF_HOME:-}" && ! -d "$MODEL_ID_32B" ]]; then
+    echo "[start_models] ERROR: 32B weights not found at $MODEL_ID_32B" >&2
     exit 1
   fi
 
   echo "[start_models] Starting 32B on GPUs $GPUS_32B → port 8002 (log: $LOG_32B)"
   CUDA_VISIBLE_DEVICES=$GPUS_32B "$VLLM_PYTHON" -m vllm.entrypoints.openai.api_server \
-    --model "$MODEL_PATH_32B" \
+    --model "$MODEL_ID_32B" \
     --served-model-name "Qwen/Qwen2.5-VL-32B-Instruct" \
     --tensor-parallel-size "$TP_32B" \
     --gpu-memory-utilization 0.82 \
