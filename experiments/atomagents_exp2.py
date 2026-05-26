@@ -121,8 +121,8 @@ def run_exp2(args: argparse.Namespace) -> None:
             patch_autogen,
             install_text_tool_call_fallback,
         )
-        from atomagents.agents.core_execution_agents import admin_core, engineer_core
-        import atomagents.tools.registry   # registers tools on admin_core
+        from atomagents.agents.core_execution_agents import admin_core, engineer_core, admin as inner_admin
+        import atomagents.tools.registry   # registers tools on admin_core / inner_admin
     except ImportError as e:
         print(f"[cluster] ERROR: AtomAgents not available: {e}")
         print("  This script must be run on a cluster node with AtomAgents installed.")
@@ -156,6 +156,7 @@ def run_exp2(args: argparse.Namespace) -> None:
     # Apply existing instrumentation first
     patch_autogen()
     install_text_tool_call_fallback(admin_core)
+    install_text_tool_call_fallback(inner_admin)
 
     # Build predictor
     if args.predictor == "oracle":
