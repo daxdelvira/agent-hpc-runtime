@@ -132,6 +132,17 @@ class AtomAgentsRuntimeAdapter:
             from atomagents.agents import admin as inner_admin  # type: ignore
             if inner_admin is not admin_agent:
                 self._install_reply_handler(inner_admin)
+                # The inner admin's default is_termination_msg fires on any message
+                # whose last line is "TERMINATE" — including the model's bash-style
+                # multi-call blocks that pack all tool calls + TERMINATE in one reply.
+                # That kills the conversation before the text fallback can execute any
+                # tool.  Override with a stricter check: only terminate when the entire
+                # message content is exactly "TERMINATE" (no other tool calls present).
+                def _inner_admin_terminate(msg: dict) -> bool:
+                    if msg.get("tool_calls"):
+                        return False
+                    return str(msg.get("content", "")).strip() == "TERMINATE"
+                inner_admin._is_termination_msg = _inner_admin_terminate
         except ImportError:
             pass
 
