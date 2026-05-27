@@ -84,8 +84,14 @@ glide and glide plane normal directions are [1,-1,2] and [1,1,0], respectively.
 def run_exp2(args: argparse.Namespace) -> None:
     run_id = args.run_id or str(uuid.uuid4())[:12]
     mode = RuntimeMode(args.runtime_mode)
+
+    # Resolve output paths to absolute now, before we chdir below.
     results_dir = Path(args.results_dir)
     log_dir = Path(args.log_dir)
+    if not results_dir.is_absolute():
+        results_dir = (_PROJECT_ROOT / results_dir).resolve()
+    if not log_dir.is_absolute():
+        log_dir = (_PROJECT_ROOT / log_dir).resolve()
 
     results_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +118,16 @@ def run_exp2(args: argparse.Namespace) -> None:
     print(f"  Swap models   : {args.swap_models}")
     print(f"  Trace file    : {trace_path}")
     print(f"{'='*64}\n")
+
+    # AtomAgents LAMMPS scripts reference '../potential_repository/' which is
+    # relative to the working folder they create.  They expect to be launched
+    # from the AtomAgents directory so that '../potential_repository/' resolves
+    # correctly.  Our experiment lives one level up in agent-hpc-runtime/, so
+    # we must chdir before any LAMMPS work starts.  All output paths were made
+    # absolute above, so log/results files still land in the right place.
+    _atomagents_dir = _PROJECT_ROOT / "workloads" / "AtomAgents"
+    os.chdir(str(_atomagents_dir))
+    print(f"[runtime] Working directory set to: {_atomagents_dir}\n")
 
     # ------------------------------------------------------------------
     # Import AtomAgents components (cluster-only; guarded)
