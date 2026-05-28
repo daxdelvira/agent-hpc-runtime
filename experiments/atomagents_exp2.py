@@ -70,10 +70,19 @@ from runtime.adapters.atomagents import (
 # ---------------------------------------------------------------------------
 
 DEFAULT_TASK_PROMPT = """\
-Compare the structure of 1/2<111> screw dislocation in W using \
+Compare the core structure of the 1/2<111> screw dislocation in W using \
 "W_Zhou04.eam.alloy" and "w_eam4.fs" EAM potentials.
-The dislocation line is aligned along [-1,1,1] direction, and dislocation \
-glide and glide plane normal directions are [1,-1,2] and [1,1,0], respectively.
+The dislocation line is along [-1,1,1], glide direction [1,-1,2], glide plane normal [1,1,0].
+
+Required steps (do these exactly, in order, then TERMINATE):
+1. Call computation_task_screw_dislocation for W_Zhou04.eam.alloy to get its DD map path.
+2. Call computation_task_screw_dislocation for w_eam4.fs to get its DD map path.
+3. Call analyze_screw_core with the DD map from step 1 to classify the core structure.
+4. Call analyze_screw_core with the DD map from step 2 to classify the core structure.
+5. Report whether each potential gives a polarized or unpolarized core, and summarize the comparison.
+
+Do NOT compute surface energy, elastic constants, stacking fault energy, NEB barriers, \
+or any other property beyond the DD maps and core structure classification.
 """
 
 
