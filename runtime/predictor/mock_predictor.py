@@ -13,6 +13,12 @@ ChemGraph standard sequences (single_agent):
 AtomAgents Exp2 sequences:
   plan_task                    → computation_task_screw_dislocation (vllm_model: qwen_72b + data: EAM files)
   computation_task_screw_dislocation → plan_task | done
+  suggest_orientation          → computation_task_screw_dislocation (seen in outer conversation)
+
+Inner tools (create_working_folder, create_potential_file, create_screw_dislocation,
+NEB_screw_simulation, etc.) are called inside a computation_task sub-conversation.
+Model-based prefetch is not useful at that granularity, so we suppress the fallback
+for these tools to avoid false divergences.
 """
 from __future__ import annotations
 
@@ -121,11 +127,33 @@ _CHEMGRAPH_TRANSITIONS: dict[str, list[tuple[ResourceSpec, float]]] = {
     "file_to_atomsdata":         [(_MACE_MP0, 0.88)],
 }
 
+# Inner tools: called inside a computation_task sub-conversation (inner engineer/admin).
+# Model-based prefetch is not useful at this granularity — suppress the model fallback
+# for these to avoid false divergences against outer-level predictions.
+_INNER_TOOLS: frozenset[str] = frozenset({
+    "create_working_folder",
+    "create_potential_file",
+    "suggest_orientation",
+    "create_screw_dislocation",
+    "NEB_screw_simulation",
+    "create_crystal",
+    "lattice_constant_simulation",
+    "surface_energy_simulation",
+    "elastic_constant_simulation",
+    "stacking_fault_simulation",
+    "run_simulation",
+})
+
 # AtomAgents: tool_name → list of (resource, confidence)
 _ATOMAGENTS_TRANSITIONS: dict[str, list[tuple[ResourceSpec, float]]] = {
     "plan_task": [
         (_W_ZHOU04, 0.87),
         (_W_EAM4,   0.87),
+    ],
+    # suggest_orientation appears in the outer conversation just before the next
+    # computation_task_screw_dislocation call (the model calls it to confirm orientations).
+    "suggest_orientation": [
+        (_QWEN_32B, 0.72),
     ],
     # After screw dislocation calc completes, planner may want 32b again
     "computation_task_screw_dislocation": [
@@ -184,8 +212,10 @@ class MockPredictor(Predictor):
                 r = _copy_resource(template, conf, step)
                 resources.append(r)
 
-        # Model-based lookup (for AtomAgents: predict next model based on current)
-        if workflow == "atomagents" and not resources:
+        # Model-based lookup (for AtomAgents: predict next model based on current).
+        # Skip for inner tools — they are part of an ongoing computation_task sub-chat
+        # and model prefetch at that granularity produces only false divergences.
+        if workflow == "atomagents" and not resources and current_tool not in _INNER_TOOLS:
             current_model = _latest_model(recent_events)
             if current_model and current_model in _MODEL_TRANSITIONS:
                 for template, conf in _MODEL_TRANSITIONS[current_model]:
