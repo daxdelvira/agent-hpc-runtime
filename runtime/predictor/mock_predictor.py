@@ -133,7 +133,7 @@ _CHEMGRAPH_TRANSITIONS: dict[str, list[tuple[ResourceSpec, float]]] = {
 _INNER_TOOLS: frozenset[str] = frozenset({
     "create_working_folder",
     "create_potential_file",
-    "suggest_orientation",
+    "suggest_orientation",          # appears in inner conversations, not outer
     "create_screw_dislocation",
     "NEB_screw_simulation",
     "create_crystal",
@@ -142,6 +142,8 @@ _INNER_TOOLS: frozenset[str] = frozenset({
     "elastic_constant_simulation",
     "stacking_fault_simulation",
     "run_simulation",
+    "compute_dislocation_distribution_map",
+    "get_DD_map_path",
 })
 
 # AtomAgents: tool_name → list of (resource, confidence)
@@ -149,11 +151,6 @@ _ATOMAGENTS_TRANSITIONS: dict[str, list[tuple[ResourceSpec, float]]] = {
     "plan_task": [
         (_W_ZHOU04, 0.87),
         (_W_EAM4,   0.87),
-    ],
-    # suggest_orientation appears in the outer conversation just before the next
-    # computation_task_screw_dislocation call (the model calls it to confirm orientations).
-    "suggest_orientation": [
-        (_QWEN_32B, 0.72),
     ],
     # After screw dislocation calc completes, planner may want 32b again
     "computation_task_screw_dislocation": [
@@ -198,7 +195,7 @@ class MockPredictor(Predictor):
     ) -> PredictionResult:
         workflow = self._workflow
         if workflow == "auto":
-            workflow = _infer_workflow(recent_events)
+            workflow = _infer_workflow(recent_events, current_tool_calls)
 
         table = _CHEMGRAPH_TRANSITIONS if workflow == "chemgraph" else _ATOMAGENTS_TRANSITIONS
 
@@ -283,17 +280,62 @@ def _latest_model(recent_events: list[dict]) -> str | None:
     return None
 
 
-def _infer_workflow(recent_events: list[dict]) -> str:
-    """Guess workflow type from event payloads."""
+_ATOMAGENTS_TOOL_NAMES: frozenset[str] = frozenset({
+    "plan_task", "computation_task", "computation_task_screw_dislocation",
+    "computation_task_surface_energy", "computation_task_NEB",
+    "computation_task_elastic", "computation_task_stacking_fault",
+    "analyze_screw_core",
+}) | _INNER_TOOLS
+
+_CHEMGRAPH_TOOL_NAMES: frozenset[str] = frozenset({
+    "run_ase", "molecule_name_to_smiles", "smiles_to_coordinate_file",
+    "smiles_to_atomsdata", "file_to_atomsdata", "extract_output_json",
+})
+
+
+def _infer_workflow(
+    recent_events: list[dict],
+    current_tool_calls: list[dict] | None = None,
+) -> str:
+    """
+    Guess workflow type from event payloads.
+
+    Checks in priority order:
+    1. current_tool_calls — direct hint from the LLM response being processed
+    2. tool_call events in recent history — most reliable
+    3. llm_call events' tool_calls list — catches the very first LLM call
+       before any tool_call events exist
+    4. agent sender field
+    """
+    def _classify(name: str) -> str | None:
+        if name in _CHEMGRAPH_TOOL_NAMES:
+            return "chemgraph"
+        if name in _ATOMAGENTS_TOOL_NAMES:
+            return "atomagents"
+        return None
+
+    # 1. Current tool calls (most immediate signal)
+    for call in (current_tool_calls or []):
+        name = call.get("name") or call.get("function", {}).get("name", "")
+        result = _classify(name)
+        if result:
+            return result
+
+    # 2 & 3. Recent events
     for ev in recent_events:
         payload = ev.get("payload") or {}
-        tool = payload.get("tool", "")
-        if tool in ("run_ase", "molecule_name_to_smiles", "smiles_to_coordinate_file"):
-            return "chemgraph"
-        if tool in ("plan_task", "computation_task", "computation_task_screw_dislocation",
-                    "computation_task_surface_energy", "computation_task_NEB"):
+        # tool_call events have payload.tool (string)
+        result = _classify(payload.get("tool", ""))
+        if result:
+            return result
+        # llm_call events have payload.tool_calls (list of strings)
+        for tc in payload.get("tool_calls") or []:
+            name = tc if isinstance(tc, str) else (tc.get("name", "") if isinstance(tc, dict) else "")
+            result = _classify(name)
+            if result:
+                return result
+        # agent_send events have payload.sender
+        if payload.get("sender", "") in ("engineer_core", "admin_core"):
             return "atomagents"
-        sender = payload.get("sender", "")
-        if sender in ("engineer_core", "admin_core"):
-            return "atomagents"
+
     return "chemgraph"

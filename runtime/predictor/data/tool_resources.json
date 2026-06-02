@@ -76,6 +76,29 @@
     "consumer_step_offset": 1
   },
   {
+    "_comment": "Inner-level data prefetch: create_potential_file always runs after create_working_folder",
+    "_note": "and copies EAM files from potential_repository (NFS) to the working folder.",
+    "_note2": "Prefetching warms the NFS page cache before create_potential_file reads the file."
+  },
+  {
+    "consumer_tool": "create_potential_file",
+    "resource_type": "data_file",
+    "name": "W_Zhou04.eam.alloy",
+    "path": null,
+    "estimated_load_s": 2.0,
+    "cancellation_safe": true,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "create_potential_file",
+    "resource_type": "data_file",
+    "name": "w_eam4.fs",
+    "path": null,
+    "estimated_load_s": 1.5,
+    "cancellation_safe": true,
+    "consumer_step_offset": 1
+  },
+  {
     "consumer_tool": "run_ase",
     "resource_type": "mace_model",
     "name": "mace-mp-0",

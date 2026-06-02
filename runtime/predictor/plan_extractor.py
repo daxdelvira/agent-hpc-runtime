@@ -47,6 +47,8 @@ KNOWN_TOOLS: frozenset[str] = frozenset({
     "stacking_fault_simulation",
     "NEB_screw_simulation",
     "run_simulation",
+    "compute_dislocation_distribution_map",
+    "get_DD_map_path",
     # ChemGraph tools
     "molecule_name_to_smiles",
     "smiles_to_coordinate_file",
