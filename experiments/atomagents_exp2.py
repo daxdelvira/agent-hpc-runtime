@@ -148,6 +148,7 @@ def run_exp2(args: argparse.Namespace) -> None:
         )
         from atomagents.agents.core_execution_agents import admin_core, engineer_core, admin as inner_admin
         import atomagents.tools.registry   # registers tools on admin_core / inner_admin
+        from atomagents.instrumentation.metrics_logger import init_logger as _init_metrics
     except ImportError as e:
         print(f"[cluster] ERROR: AtomAgents not available: {e}")
         print("  This script must be run on a cluster node with AtomAgents installed.")
@@ -182,6 +183,17 @@ def run_exp2(args: argparse.Namespace) -> None:
     patch_autogen()
     install_text_tool_call_fallback(admin_core)
     install_text_tool_call_fallback(inner_admin)
+
+    # Initialise per-phase metrics logger (disk/net/GPU/token CSV).
+    # Must come after patch_autogen() so the autogen hook can call
+    # get_metrics_logger() for every LLM response it intercepts.
+    metrics_csv = str(results_dir / f"atomagents_metrics_{run_id}.csv")
+    ml = _init_metrics(
+        run_id=run_id,
+        mode="baseline" if mode == RuntimeMode.BASELINE else "agent",
+        csv_path=metrics_csv,
+    )
+    print(f"[runtime] Metrics CSV     : {metrics_csv}")
 
     # Build predictor
     if args.predictor == "learned":
@@ -232,6 +244,8 @@ def run_exp2(args: argparse.Namespace) -> None:
     finally:
         elapsed = __import__("time").perf_counter() - t_start
         bus.close()
+        ml.write_summary(total_wall_s=elapsed)
+        ml.close()
 
     # ------------------------------------------------------------------
     # Post-run analysis
@@ -256,7 +270,8 @@ def run_exp2(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"[cluster] Analysis failed: {e}")
 
-    print(f"[cluster] Trace file: {trace_path}")
+    print(f"[cluster] Trace file    : {trace_path}")
+    print(f"[cluster] Metrics CSV   : {metrics_csv}")
     print(f"[cluster] Analyze with:")
     print(f"    python runtime/analysis/trace_analyzer.py {trace_path}\n")
 
