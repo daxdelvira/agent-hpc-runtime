@@ -64,6 +64,7 @@ def analyze(events: list[dict]) -> dict:
 
         elif et == "divergence_detected":
             divergence_count += 1
+            miss_count += 1          # divergence = prediction was wrong
             steps.setdefault(step, {})["divergence"] = p
 
         elif et == "prefetch_started":

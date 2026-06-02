@@ -523,8 +523,26 @@ def _extract_text_tool_name(content: str) -> str:
             if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
                 call = node.value
                 if isinstance(call.func, ast.Name):
-                    return call.func.id
+                    name = call.func.id
+                    # Reject Python builtins / stdlib names — the model sometimes
+                    # emits print(result) or json.dumps(...) which look like tool
+                    # calls but are not registered workflow tools.
+                    if name not in _PYTHON_BUILTINS and "_" in name:
+                        return name
     return ""
+
+
+# Common Python names that are NOT workflow tools.
+_PYTHON_BUILTINS: frozenset[str] = frozenset({
+    "print", "len", "str", "int", "float", "list", "dict", "tuple", "set",
+    "range", "type", "input", "open", "format", "map", "filter", "zip",
+    "enumerate", "sorted", "reversed", "sum", "min", "max", "abs", "round",
+    "repr", "vars", "dir", "help", "id", "hash", "bool", "bytes", "hex",
+    "oct", "bin", "chr", "ord", "eval", "exec", "compile", "isinstance",
+    "issubclass", "hasattr", "getattr", "setattr", "delattr", "callable",
+    "iter", "next", "super", "object", "classmethod", "staticmethod",
+    "property", "Exception", "ValueError", "TypeError", "KeyError",
+})
 
 
 def _extract_response_content(response) -> str:

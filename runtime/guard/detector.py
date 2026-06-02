@@ -131,7 +131,27 @@ class DivergenceDetector:
             eligible = [c for c in self._pending_queue if c.step < step]
             if not eligible:
                 return True, DivergenceAction.CONTINUE, None
-            ckpt = eligible[0]
+
+            # Only pop a checkpoint if its consumer_tool matches the actual tool
+            # (exact or prefix, e.g. "computation_task" matches
+            # "computation_task_screw_dislocation").
+            #
+            # The original "oldest wins" strategy caused outer-level model
+            # predictions (consumer_tool="computation_task") to be consumed and
+            # diverged by inner-level tools like "create_working_folder" that
+            # operate in a completely different sub-conversation scope.
+            # Unmatched checkpoints stay in the queue until they expire via
+            # max_age, so nothing is lost.
+            def _matches(c: CheckpointRecord) -> bool:
+                if not c.prediction or not c.prediction.resources:
+                    return False
+                predicted = c.prediction.resources[0].consumer_tool
+                return tool_name == predicted or tool_name.startswith(predicted)
+
+            matched = [c for c in eligible if _matches(c)]
+            if not matched:
+                return True, DivergenceAction.CONTINUE, None
+            ckpt = matched[0]
             self._pending_queue.remove(ckpt)
 
         if ckpt.prediction is None or not ckpt.prediction.resources:
