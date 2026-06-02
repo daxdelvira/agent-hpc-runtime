@@ -32,6 +32,9 @@ class RuntimeConfig:
     # Prefetch scheduler
     min_remaining_compute_s: float = 5.0  # don't prefetch if less compute time expected
 
+    # Plan extraction
+    plan_extraction_horizon: int = 3    # only attempt plan extraction on steps ≤ this
+
     # Logging
     log_dir: str = "logs/workflow_traces"
     results_dir: str = "results"

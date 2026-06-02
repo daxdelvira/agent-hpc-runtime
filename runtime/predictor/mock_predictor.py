@@ -194,6 +194,7 @@ class MockPredictor(Predictor):
         recent_events: list[dict[str, Any]],
         current_tool_calls: list[dict],
         task_description: str = "",
+        plan_context: Any = None,
     ) -> PredictionResult:
         workflow = self._workflow
         if workflow == "auto":

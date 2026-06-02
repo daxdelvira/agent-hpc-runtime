@@ -31,6 +31,7 @@ class Predictor(ABC):
         recent_events: list[dict[str, Any]],   # last N JSONL records as dicts
         current_tool_calls: list[dict],         # tool_calls from current LLM response
         task_description: str = "",
+        plan_context: Any = None,              # PlanContext if a plan was extracted
     ) -> PredictionResult:
         """Return resource predictions for the next horizon steps."""
 

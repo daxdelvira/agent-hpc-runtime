@@ -1,0 +1,405 @@
+{
+  "version": "1",
+  "n_traces": 21,
+  "n_tool_events": 4887,
+  "generated_at": "2026-06-02T16:27:27.644882+00:00",
+  "tool_transitions": {
+    "computation_task": {
+      "2": [
+        {
+          "target": "create_working_folder",
+          "target_type": "tool",
+          "probability": 0.8,
+          "count": 48,
+          "offset": 2
+        },
+        {
+          "target": "computation_task",
+          "target_type": "tool",
+          "probability": 0.1833,
+          "count": 11,
+          "offset": 2
+        }
+      ]
+    },
+    "save_csv_data": {
+      "2": [
+        {
+          "target": "save_csv_data",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 4,
+          "offset": 2
+        }
+      ]
+    },
+    "generate_visualizations": {
+      "2": [
+        {
+          "target": "save_image_data",
+          "target_type": "tool",
+          "probability": 0.6667,
+          "count": 2,
+          "offset": 2
+        }
+      ]
+    },
+    "save_image_data": {
+      "2": [
+        {
+          "target": "save_image_data",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 2,
+          "offset": 2
+        }
+      ]
+    },
+    "get_computation_results": {
+      "2": [
+        {
+          "target": "computation_task",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 3,
+          "offset": 2
+        }
+      ]
+    },
+    "retrieve_atomic_positions": {
+      "2": [
+        {
+          "target": "computation_task",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 3,
+          "offset": 2
+        }
+      ]
+    },
+    "create_working_folder": {
+      "2": [
+        {
+          "target": "create_potential_file",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 69,
+          "offset": 2
+        }
+      ]
+    },
+    "create_potential_file": {
+      "2": [
+        {
+          "target": "create_potential_file",
+          "target_type": "tool",
+          "probability": 0.9948,
+          "count": 4420,
+          "offset": 2
+        },
+        {
+          "target": "suggest_orientation",
+          "target_type": "tool",
+          "probability": 0.0029,
+          "count": 13,
+          "offset": 2
+        },
+        {
+          "target": "create_screw_dislocation",
+          "target_type": "tool",
+          "probability": 0.0018,
+          "count": 8,
+          "offset": 2
+        },
+        {
+          "target": "computation_task",
+          "target_type": "tool",
+          "probability": 0.0005,
+          "count": 2,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "computation_task",
+          "target_type": "tool",
+          "probability": 0.6667,
+          "count": 2,
+          "offset": 3
+        }
+      ]
+    },
+    "execute_task": {
+      "2": [
+        {
+          "target": "computation_task",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 2,
+          "offset": 2
+        }
+      ]
+    },
+    "create_screw_dislocation": {
+      "2": [
+        {
+          "target": "create_screw_dislocation",
+          "target_type": "tool",
+          "probability": 0.7973,
+          "count": 59,
+          "offset": 2
+        },
+        {
+          "target": "run_simulation",
+          "target_type": "tool",
+          "probability": 0.0946,
+          "count": 7,
+          "offset": 2
+        },
+        {
+          "target": "create_working_folder",
+          "target_type": "tool",
+          "probability": 0.0405,
+          "count": 3,
+          "offset": 2
+        },
+        {
+          "target": "NEB_screw_simulation",
+          "target_type": "tool",
+          "probability": 0.027,
+          "count": 2,
+          "offset": 2
+        },
+        {
+          "target": "run_neb_calculation",
+          "target_type": "tool",
+          "probability": 0.027,
+          "count": 2,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "computation_task_screw_dislocation",
+          "target_type": "tool",
+          "probability": 0.4286,
+          "count": 3,
+          "offset": 3
+        }
+      ]
+    },
+    "computation_task_screw_dislocation": {
+      "2": [
+        {
+          "target": "create_working_folder",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 12,
+          "offset": 2
+        }
+      ]
+    },
+    "run_simulation": {
+      "2": [
+        {
+          "target": "NEB_screw_simulation",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 7,
+          "offset": 2
+        }
+      ]
+    },
+    "NEB_screw_simulation": {
+      "2": [
+        {
+          "target": "NEB_screw_simulation",
+          "target_type": "tool",
+          "probability": 0.5789,
+          "count": 11,
+          "offset": 2
+        },
+        {
+          "target": "create_screw_dislocation",
+          "target_type": "tool",
+          "probability": 0.2632,
+          "count": 5,
+          "offset": 2
+        },
+        {
+          "target": "create_working_folder",
+          "target_type": "tool",
+          "probability": 0.1579,
+          "count": 3,
+          "offset": 2
+        }
+      ]
+    },
+    "computation_task_surface_energy": {
+      "2": [
+        {
+          "target": "computation_task_surface_energy",
+          "target_type": "tool",
+          "probability": 0.75,
+          "count": 6,
+          "offset": 2
+        }
+      ]
+    },
+    "suggest_orientation": {
+      "2": [
+        {
+          "target": "suggest_orientation",
+          "target_type": "tool",
+          "probability": 0.8788,
+          "count": 29,
+          "offset": 2
+        },
+        {
+          "target": "create_screw_dislocation",
+          "target_type": "tool",
+          "probability": 0.1212,
+          "count": 4,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "computation_task_screw_dislocation",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 2,
+          "offset": 3
+        }
+      ]
+    },
+    "create_crystal": {
+      "2": [
+        {
+          "target": "create_crystal",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 12,
+          "offset": 2
+        }
+      ]
+    },
+    "computation_task_NEB": {
+      "2": [
+        {
+          "target": "create_working_folder",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 2,
+          "offset": 2
+        }
+      ]
+    },
+    "run_neb_calculation": {
+      "2": [
+        {
+          "target": "NEB_screw_simulation",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 2,
+          "offset": 2
+        }
+      ]
+    }
+  },
+  "model_transitions": {
+    "Qwen/Qwen2.5-VL-72B-Instruct": {
+      "2": [
+        {
+          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
+          "target_type": "model",
+          "probability": 0.9959,
+          "count": 5057,
+          "offset": 2
+        },
+        {
+          "target": "Qwen/Qwen2.5-VL-32B-Instruct",
+          "target_type": "model",
+          "probability": 0.0041,
+          "count": 21,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
+          "target_type": "model",
+          "probability": 0.9346,
+          "count": 300,
+          "offset": 3
+        },
+        {
+          "target": "Qwen/Qwen2.5-VL-32B-Instruct",
+          "target_type": "model",
+          "probability": 0.0654,
+          "count": 21,
+          "offset": 3
+        }
+      ],
+      "1": [
+        {
+          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
+          "target_type": "model",
+          "probability": 0.9967,
+          "count": 298,
+          "offset": 1
+        }
+      ]
+    },
+    "Qwen/Qwen2.5-VL-32B-Instruct": {
+      "1": [
+        {
+          "target": "Qwen/Qwen2.5-VL-32B-Instruct",
+          "target_type": "model",
+          "probability": 0.6866,
+          "count": 46,
+          "offset": 1
+        },
+        {
+          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
+          "target_type": "model",
+          "probability": 0.3134,
+          "count": 21,
+          "offset": 1
+        }
+      ],
+      "2": [
+        {
+          "target": "Qwen/Qwen2.5-VL-32B-Instruct",
+          "target_type": "model",
+          "probability": 0.5319,
+          "count": 25,
+          "offset": 2
+        },
+        {
+          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
+          "target_type": "model",
+          "probability": 0.4681,
+          "count": 22,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
+          "target_type": "model",
+          "probability": 0.9091,
+          "count": 40,
+          "offset": 3
+        },
+        {
+          "target": "Qwen/Qwen2.5-VL-32B-Instruct",
+          "target_type": "model",
+          "probability": 0.0909,
+          "count": 4,
+          "offset": 3
+        }
+      ]
+    }
+  }
+}

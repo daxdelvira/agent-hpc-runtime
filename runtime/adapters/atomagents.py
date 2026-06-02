@@ -59,6 +59,7 @@ from runtime.events import (
 )
 from runtime.guard.detector import DivergenceDetector
 from runtime.predictor.base import Predictor
+from runtime.predictor.plan_extractor import KNOWN_TOOLS, PlanContext, extract_plan
 from runtime.prefetch.scheduler import PrefetchScheduler
 from runtime.prefetch.simulated import SimulatedPrefetchExecutor
 
@@ -93,6 +94,7 @@ class AtomAgentsRuntimeAdapter:
         self._config = config
         self._step = 0
         self._tool_call_count = 0
+        self._plan_context: PlanContext | None = None
         self._lock = threading.Lock()
         self._installed = False
 
@@ -207,6 +209,22 @@ class AtomAgentsRuntimeAdapter:
         tool_calls = _extract_tool_calls_from_response(response)
         model_name = getattr(response, "model", "") or ""
 
+        # Attempt plan extraction on the first few steps (before any tool has run).
+        # We look at the raw LLM response text — the model often writes a numbered
+        # plan before its first tool call, giving us the full future sequence at once.
+        if self._plan_context is None and step <= self._config.plan_extraction_horizon:
+            content = _extract_response_content(response)
+            if content:
+                ctx = extract_plan(content, KNOWN_TOOLS, step=step)
+                if ctx is not None:
+                    self._plan_context = ctx
+                    self._bus.emit("plan_extracted", {
+                        "step": step,
+                        "tool_sequence": ctx.tool_sequence,
+                        "n_mentions": ctx.n_mentions,
+                        "source": ctx.source,
+                    }, step=step)
+
         self._bus.set_step(step)
         self._bus.emit("llm_call", {
             "step": step,
@@ -230,6 +248,7 @@ class AtomAgentsRuntimeAdapter:
                 step=step,
                 recent_events=recent,
                 current_tool_calls=tool_calls,
+                plan_context=self._plan_context,
             )
         except Exception as exc:
             self._bus.emit("prediction_error", {"error": str(exc)}, step=step)
@@ -506,6 +525,29 @@ def _extract_text_tool_name(content: str) -> str:
                 if isinstance(call.func, ast.Name):
                     return call.func.id
     return ""
+
+
+def _extract_response_content(response) -> str:
+    """
+    Extract the text content from an OpenAI ChatCompletion response.
+    Returns empty string on any failure.
+    """
+    try:
+        choices = getattr(response, "choices", None)
+        if choices is None and isinstance(response, dict):
+            choices = response.get("choices", [])
+        if not choices:
+            return ""
+        first = choices[0]
+        msg = getattr(first, "message", None)
+        if msg is None and isinstance(first, dict):
+            msg = first.get("message", {})
+        content = getattr(msg, "content", None)
+        if content is None and isinstance(msg, dict):
+            content = msg.get("content", "")
+        return content or ""
+    except Exception:
+        return ""
 
 
 def _read_recent_events(log_path: str, n: int) -> list[dict]:

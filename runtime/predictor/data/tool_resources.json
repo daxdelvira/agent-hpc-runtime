@@ -1,0 +1,96 @@
+[
+  {
+    "_comment": "tool_resources.json — maps consumer tool names to the resources they need.",
+    "_note": "Add new workflows here without editing Python. resource_type: vllm_model | mace_model | data_file | artifact"
+  },
+  {
+    "consumer_tool": "computation_task",
+    "resource_type": "vllm_model",
+    "name": "qwen_32b",
+    "model_endpoint": "http://localhost:8002",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 2
+  },
+  {
+    "consumer_tool": "computation_task_screw_dislocation",
+    "resource_type": "vllm_model",
+    "name": "qwen_32b",
+    "model_endpoint": "http://localhost:8002",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "computation_task_screw_dislocation",
+    "resource_type": "data_file",
+    "name": "W_Zhou04.eam.alloy",
+    "path": null,
+    "estimated_load_s": 2.0,
+    "cancellation_safe": true,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "computation_task_screw_dislocation",
+    "resource_type": "data_file",
+    "name": "w_eam4.fs",
+    "path": null,
+    "estimated_load_s": 1.5,
+    "cancellation_safe": true,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "computation_task_surface_energy",
+    "resource_type": "vllm_model",
+    "name": "qwen_32b",
+    "model_endpoint": "http://localhost:8002",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "computation_task_NEB",
+    "resource_type": "vllm_model",
+    "name": "qwen_32b",
+    "model_endpoint": "http://localhost:8002",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "computation_task_elastic",
+    "resource_type": "vllm_model",
+    "name": "qwen_32b",
+    "model_endpoint": "http://localhost:8002",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "plan_task",
+    "resource_type": "vllm_model",
+    "name": "qwen_32b",
+    "model_endpoint": "http://localhost:8002",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "run_ase",
+    "resource_type": "mace_model",
+    "name": "mace-mp-0",
+    "path": null,
+    "estimated_load_s": 40.0,
+    "cancellation_safe": true,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "smiles_to_coordinate_file",
+    "resource_type": "mace_model",
+    "name": "mace-mp-0",
+    "path": null,
+    "estimated_load_s": 40.0,
+    "cancellation_safe": true,
+    "consumer_step_offset": 1
+  }
+]

@@ -184,7 +184,13 @@ def run_exp2(args: argparse.Namespace) -> None:
     install_text_tool_call_fallback(inner_admin)
 
     # Build predictor
-    if args.predictor == "oracle":
+    if args.predictor == "learned":
+        from runtime.predictor.learned_predictor import LearnedPredictor
+        predictor = LearnedPredictor()
+        print(f"[cluster] Predictor: LearnedPredictor "
+              f"(transitions={predictor._table.n_traces} traces, "
+              f"plan_horizon={cfg.plan_extraction_horizon} steps)")
+    elif args.predictor == "oracle":
         print("[cluster] Oracle predictor not yet implemented; falling back to mock.")
         predictor = MockPredictor("atomagents")
     else:
@@ -304,7 +310,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--predictor",
-        choices=["mock", "oracle"],
+        choices=["mock", "learned", "oracle"],
         default="mock",
         help="Predictor implementation",
     )
