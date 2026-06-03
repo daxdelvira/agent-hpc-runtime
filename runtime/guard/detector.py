@@ -117,8 +117,11 @@ class DivergenceDetector:
         Returns (hit, action, checkpoint_or_None).
         """
         with self._lock:
-            # Expire checkpoints whose step window has passed
-            max_age = max(self._config.max_horizon * 8, 20)
+            # Expire checkpoints whose step window has passed.
+            # 60 steps covers the longest observed AtomAgents workflow
+            # (step 1 outer prediction → step 22+ second computation_task)
+            # without expiring model-prefetch checkpoints early.
+            max_age = max(self._config.max_horizon * 8, 60)
             self._pending_queue = [
                 c for c in self._pending_queue
                 if c.status == "pending" and (step - c.step) <= max_age
