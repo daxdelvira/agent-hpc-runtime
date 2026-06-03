@@ -152,17 +152,23 @@ _ATOMAGENTS_TRANSITIONS: dict[str, list[tuple[ResourceSpec, float]]] = {
         (_W_ZHOU04, 0.87),
         (_W_EAM4,   0.87),
     ],
-    # After screw dislocation calc completes, planner may want 32b again
+    # computation_task_screw_dislocation always launches a 32B sub-conversation.
+    # This prediction fires when the OUTER agent is about to call computation_task,
+    # so 32B can start loading while the first LAMMPS relaxation runs (overlap window
+    # is ~30-45 min on PACE NFS, easily covering the ~20 min 32B load time).
     "computation_task_screw_dislocation": [
-        (_QWEN_32B, 0.65),
+        (_QWEN_32B, 0.92),
     ],
+    # Surface/elastic/NEB variants also use 32B for the inner computation
+    "computation_task_surface_energy": [(_QWEN_32B, 0.92)],
+    "computation_task_elastic":        [(_QWEN_32B, 0.92)],
+    "computation_task_NEB":            [(_QWEN_32B, 0.92)],
 }
 
-# Mapping from model names observed in LLM events to likely next model
-_MODEL_TRANSITIONS: dict[str, list[tuple[ResourceSpec, float]]] = {
-    "Qwen/Qwen2.5-VL-72B-Instruct": [(_QWEN_32B, 0.70)],
-    "Qwen/Qwen2.5-VL-32B-Instruct": [(_QWEN_72B, 0.60)],
-}
+# Model→model transitions are intentionally empty here.
+# Empirical traces show 72B→32B at p=0.004 because outer 72B calls dominate.
+# The correct signal is tool-based (computation_task_* → 32B above), not model-based.
+_MODEL_TRANSITIONS: dict[str, list[tuple[ResourceSpec, float]]] = {}
 
 
 class MockPredictor(Predictor):
