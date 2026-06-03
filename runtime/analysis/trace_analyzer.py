@@ -91,8 +91,15 @@ def analyze(events: list[dict]) -> dict:
         elif et == "llm_call":
             steps.setdefault(step, {})["model"] = p.get("model")
 
-    total_predictions = hit_count + miss_count
-    accuracy = hit_count / total_predictions if total_predictions > 0 else None
+    validated_total = hit_count + miss_count
+    # precision  = hits / validated  (quality of predictions that were testable)
+    # coverage   = validated / made   (fraction of predictions that could be tested)
+    # honest_acc = hits / all_made    (counts unvalidated as wrong — conservative)
+    precision   = hit_count / validated_total if validated_total > 0 else None
+    coverage    = validated_total / prediction_count if prediction_count > 0 else None
+    honest_acc  = hit_count / prediction_count if prediction_count > 0 else None
+    # Legacy field kept for backwards compatibility with summary JSONs
+    accuracy    = precision
 
     return {
         "run_ids": sorted(run_ids),
@@ -100,7 +107,11 @@ def analyze(events: list[dict]) -> dict:
         "prediction_count": prediction_count,
         "hit_count": hit_count,
         "miss_count": miss_count,
-        "accuracy": accuracy,
+        "unvalidated_count": prediction_count - validated_total,
+        "accuracy": accuracy,           # precision over validated subset (legacy)
+        "precision": precision,         # same as accuracy — quality over testable set
+        "coverage": coverage,           # fraction of predictions that were validated
+        "honest_accuracy": honest_acc,  # conservative: unvalidated = wrong
         "prefetch_started": prefetch_started_count,
         "prefetch_completed": prefetch_completed_count,
         "prefetch_cancelled": prefetch_cancelled_count,
@@ -113,16 +124,30 @@ def analyze(events: list[dict]) -> dict:
 
 def print_report(summary: dict, verbose: bool = True) -> None:
     run_ids = summary["run_ids"]
-    acc = summary["accuracy"]
-    acc_str = f"{acc:.1%}" if acc is not None else "N/A (no validated predictions yet)"
+    n_made      = summary["prediction_count"]
+    n_hit       = summary["hit_count"]
+    n_miss      = summary["miss_count"]
+    n_unval     = summary.get("unvalidated_count", n_made - n_hit - n_miss)
+    precision   = summary.get("precision",   summary.get("accuracy"))
+    coverage    = summary.get("coverage")
+    honest_acc  = summary.get("honest_accuracy")
+
+    def _pct(v): return f"{v:.1%}" if v is not None else "N/A"
 
     print(f"\n{'='*60}")
     print(f"  Runtime Trace Analysis")
     print(f"  Run ID(s): {', '.join(run_ids) or 'unknown'}")
     print(f"{'='*60}")
     print(f"  Total events        : {summary['total_events']}")
-    print(f"  Predictions made    : {summary['prediction_count']}")
-    print(f"  Prediction accuracy : {acc_str} ({summary['hit_count']} hits / {summary['miss_count']} misses)")
+    print(f"  Predictions made    : {n_made}")
+    print(f"    Validated         : {n_hit + n_miss}  ({n_hit} hits / {n_miss} misses)")
+    print(f"    Unvalidated       : {n_unval}  (expired or no consumer_tool match)")
+    print(f"  Precision           : {_pct(precision)}"
+          f"  (hits / validated — quality over testable set)")
+    print(f"  Coverage            : {_pct(coverage)}"
+          f"  (validated / made — how many predictions were testable)")
+    print(f"  Honest accuracy     : {_pct(honest_acc)}"
+          f"  (hits / made — conservative; treats unvalidated as wrong)")
     print(f"  Divergences         : {summary['divergence_count']}")
     print(f"  Prefetch started    : {summary['prefetch_started']}")
     print(f"  Prefetch completed  : {summary['prefetch_completed']}")
