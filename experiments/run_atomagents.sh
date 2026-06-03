@@ -5,15 +5,17 @@
 # No SLURM required — run this directly on your GPU node.
 #
 # Usage:
-#   bash experiments/run_atomagents.sh [MODE] [PREDICTOR]
+#   bash experiments/run_atomagents.sh [MODE] [PREDICTOR] [LAMMPS_SLOWDOWN_S]
 #
-#   MODE      : baseline | observe_only | simulated | real  (default: observe_only)
-#   PREDICTOR : mock | learned                              (default: learned)
+#   MODE             : baseline | observe_only | simulated | real  (default: observe_only)
+#   PREDICTOR        : mock | learned                              (default: learned)
+#   LAMMPS_SLOWDOWN_S: seconds of sleep per LAMMPS relax step     (default: 0)
 #
 # Examples:
-#   bash experiments/run_atomagents.sh                        # observe_only + learned
+#   bash experiments/run_atomagents.sh                               # observe_only + learned
 #   bash experiments/run_atomagents.sh baseline
 #   bash experiments/run_atomagents.sh real learned
+#   bash experiments/run_atomagents.sh real learned 200              # slow LAMMPS for prefetch testing
 #
 # Model weights:
 #   Set HF_HOME to your HuggingFace cache dir, or MODEL_BASE_DIR to a directory
@@ -27,6 +29,7 @@ set -euo pipefail
 
 MODE="${1:-observe_only}"
 PREDICTOR="${2:-learned}"
+SLOWDOWN="${3:-0}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETUP="$REPO_ROOT/setup/start_models.sh"
@@ -71,12 +74,16 @@ fi
 # ---- Run the experiment -------------------------------------------------------
 echo ""
 echo "[run] Launching experiment..."
+SLOWDOWN_FLAG=""
+[[ "$SLOWDOWN" -gt 0 ]] && SLOWDOWN_FLAG="--lammps-slowdown $SLOWDOWN"
+
 conda run -n atomagents \
   python -u "$REPO_ROOT/experiments/atomagents_exp2.py" \
     --runtime-mode "$MODE" \
     --predictor    "$PREDICTOR" \
     --hw-profile   blackwell \
-    $EXTRA_FLAGS
+    $EXTRA_FLAGS \
+    $SLOWDOWN_FLAG
 
 # ---- Post-run analysis --------------------------------------------------------
 echo ""

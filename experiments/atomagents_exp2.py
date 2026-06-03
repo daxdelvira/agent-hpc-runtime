@@ -131,6 +131,12 @@ def run_exp2(args: argparse.Namespace) -> None:
     run_id = args.run_id or str(uuid.uuid4())[:12]
     mode = RuntimeMode(args.runtime_mode)
 
+    # Propagate slowdown before AtomAgents tools are imported so the env var
+    # is visible when screw_dislocation.py reads it at call time.
+    if args.lammps_slowdown > 0:
+        os.environ["LAMMPS_SLOWDOWN_S"] = str(args.lammps_slowdown)
+        print(f"[runtime] LAMMPS slowdown : {args.lammps_slowdown}s per relax step")
+
     # Resolve output paths to absolute now, before we chdir below.
     results_dir = Path(args.results_dir)
     log_dir = Path(args.log_dir)
@@ -163,6 +169,7 @@ def run_exp2(args: argparse.Namespace) -> None:
     print(f"  HW Profile    : {args.hw_profile}")
     print(f"  Swap models   : {args.swap_models}")
     print(f"  No-start-mdls : {getattr(args, 'no_start_models', False)}")
+    print(f"  LAMMPS slowdn : {args.lammps_slowdown}s per relax")
     print(f"  Trace file    : {trace_path}")
     print(f"{'='*64}\n")
 
@@ -406,6 +413,15 @@ def main() -> None:
              "(e.g. started manually before the experiment). "
              "The orchestrator is still created so ModelPrefetchExecutor can "
              "speculatively start additional models.",
+    )
+    parser.add_argument(
+        "--lammps-slowdown",
+        type=int,
+        default=0,
+        dest="lammps_slowdown",
+        help="Add N seconds of sleep after each LAMMPS relax step to simulate "
+             "a slower NFS-backed run. Useful for prefetch overlap testing on "
+             "fast local hardware. Default 0 (no slowdown).",
     )
     parser.add_argument(
         "--task-prompt",
