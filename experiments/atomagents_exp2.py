@@ -288,6 +288,20 @@ def run_exp2(args: argparse.Namespace) -> None:
     print("[runtime] Adapter installed. Starting experiment…\n")
 
     # ------------------------------------------------------------------
+    # System profiler — continuous CPU+GPU sampling across all processes
+    # (vLLM 72B, vLLM 32B, LAMMPS, orchestration) for CPU:GPU ratio analysis
+    # ------------------------------------------------------------------
+    from runtime.measurement.system_profiler import SystemProfiler
+    profiler = SystemProfiler(
+        run_id=run_id,
+        results_dir=str(results_dir),
+        interval_s=3.0,
+        port_72b=8001,
+        port_32b=8002,
+    )
+    profiler.start()
+
+    # ------------------------------------------------------------------
     # Run the experiment
     # ------------------------------------------------------------------
     task_prompt = args.task_prompt or DEFAULT_TASK_PROMPT
@@ -303,6 +317,7 @@ def run_exp2(args: argparse.Namespace) -> None:
         traceback.print_exc()
     finally:
         elapsed = __import__("time").perf_counter() - t_start
+        profiler.stop()
         bus.close()
         ml.write_summary(total_wall_s=elapsed)
         ml.close()
@@ -311,6 +326,7 @@ def run_exp2(args: argparse.Namespace) -> None:
     # Post-run analysis
     # ------------------------------------------------------------------
     print(f"\n[cluster] Experiment finished in {elapsed:.1f}s.")
+    print(f"[cluster] System profile  : {profiler.csv_path}")
 
     try:
         events = _load_events(trace_path)
