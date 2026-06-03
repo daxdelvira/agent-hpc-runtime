@@ -162,6 +162,7 @@ def run_exp2(args: argparse.Namespace) -> None:
     print(f"  Run ID        : {run_id}")
     print(f"  HW Profile    : {args.hw_profile}")
     print(f"  Swap models   : {args.swap_models}")
+    print(f"  No-start-mdls : {getattr(args, 'no_start_models', False)}")
     print(f"  Trace file    : {trace_path}")
     print(f"{'='*64}\n")
 
@@ -207,7 +208,10 @@ def run_exp2(args: argparse.Namespace) -> None:
                 from atomagents.runtime.model_config import MODELS
             orchestrator = ModelOrchestrator(MODELS)
 
-            if mode == RuntimeMode.REAL:
+            if args.no_start_models:
+                print("[cluster] --no-start-models set: skipping server startup "
+                      "(assuming models already running at configured ports).")
+            elif mode == RuntimeMode.REAL:
                 # Real-prefetch mode: only pre-load the base (72B) model.
                 # ModelPrefetchExecutor will speculatively load qwen_32b
                 # while qwen_72b is still reasoning.
@@ -393,6 +397,15 @@ def main() -> None:
         "--swap-models",
         action="store_true",
         help="Enable model swapping via ModelOrchestrator (requires GPUs)",
+    )
+    parser.add_argument(
+        "--no-start-models",
+        action="store_true",
+        dest="no_start_models",
+        help="Skip vLLM server startup — use when servers are already running "
+             "(e.g. started manually before the experiment). "
+             "The orchestrator is still created so ModelPrefetchExecutor can "
+             "speculatively start additional models.",
     )
     parser.add_argument(
         "--task-prompt",
