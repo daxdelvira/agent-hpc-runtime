@@ -157,7 +157,7 @@ def draw_timeline(ax, phases: list[dict], model_load_s: float, total_s: float) -
                 row = ROWS["lammps_zhou"]
                 lammps_zhou_count += 1
                 color = C["lammps"]
-                label = f"{ph['dur']:.0f}s\n({375:.0f}s slow)"
+                label = f"{ph['dur']:.0f}s"
             else:
                 row = ROWS["lammps_eam"]
                 lammps_eam_count += 1
@@ -388,7 +388,7 @@ def make_figure(csv_path: str, output_path: str, model_load_s: float = 155.1) ->
         ax.set_xlim(0, total_s * 1.01)
 
     fig.suptitle(
-        "AtomAgents Exp2 — Run d3e412f6  •  Blackwell (375s LAMMPS slowdown)",
+        "AtomAgents Exp2 — Run d3e412f6  •  Blackwell",
         fontsize=12, color=C["text"], fontweight="bold", y=0.995,
     )
 
