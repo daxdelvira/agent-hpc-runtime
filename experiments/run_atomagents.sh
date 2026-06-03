@@ -84,11 +84,11 @@ echo "[run] Experiment complete. Analyzing latest trace..."
 LATEST_TRACE=$(ls -t "$REPO_ROOT/logs/workflow_traces"/runtime_trace_*.jsonl 2>/dev/null | head -1 || true)
 
 if [[ -n "$LATEST_TRACE" ]]; then
-  conda run -n atomagents \
+  PYTHONPATH="$REPO_ROOT" conda run -n atomagents \
     python "$REPO_ROOT/runtime/analysis/trace_analyzer.py" "$LATEST_TRACE"
   echo ""
   echo "[run] Full overlap report:"
-  conda run -n atomagents \
+  PYTHONPATH="$REPO_ROOT" conda run -n atomagents \
     python "$REPO_ROOT/runtime/analysis/overlap_report.py" "$LATEST_TRACE"
 else
   echo "[run] No trace file found in logs/workflow_traces/ — skipping analysis."
@@ -96,4 +96,4 @@ fi
 
 echo ""
 echo "[run] Compare all runs with:"
-echo "  conda run -n atomagents python runtime/analysis/compare_runs.py results/summary_*.json"
+echo "  PYTHONPATH=$REPO_ROOT conda run -n atomagents python $REPO_ROOT/runtime/analysis/compare_runs.py $REPO_ROOT/results/summary_*.json"
