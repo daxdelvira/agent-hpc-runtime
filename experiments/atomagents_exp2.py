@@ -64,6 +64,10 @@ from runtime.adapters.atomagents import (
     make_atomagents_adapter,
 )
 
+# Real-prefetch executors — imported lazily inside run_exp2() so the file
+# is safe to import locally without atomagents / psutil installed.
+_REAL_EXECUTORS_AVAILABLE = True
+
 
 # ---------------------------------------------------------------------------
 # Experiment constants
@@ -89,6 +93,39 @@ or any other property beyond the DD maps and core structure classification.
 # ---------------------------------------------------------------------------
 # Main runner
 # ---------------------------------------------------------------------------
+
+def _build_executor(mode: RuntimeMode, orchestrator, metrics=None):
+    """
+    Select the appropriate prefetch executor for the given runtime mode.
+
+    REAL mode with an active orchestrator → CompositeExecutor:
+      - vllm_model  → ModelPrefetchExecutor  (background model server start)
+      - data_file   → FileStagingExecutor     (copy EAM files to $SCRATCH)
+      - everything else → SimulatedPrefetchExecutor (log-only fallback)
+
+    All other modes → SimulatedPrefetchExecutor (no real I/O).
+    """
+    if mode != RuntimeMode.REAL:
+        return SimulatedPrefetchExecutor()
+
+    try:
+        from runtime.prefetch.model_prefetch import ModelPrefetchExecutor
+        from runtime.prefetch.data_prefetch import FileStagingExecutor, CompositeExecutor
+
+        executors = {}
+        if orchestrator is not None:
+            executors["vllm_model"] = ModelPrefetchExecutor(
+                orchestrator, probes=None
+            )
+            print("[runtime] Real executor: ModelPrefetchExecutor for vllm_model")
+        executors["data_file"] = FileStagingExecutor()
+        print(f"[runtime] Real executor: FileStagingExecutor → {executors['data_file'].scratch_dir}")
+
+        return CompositeExecutor(executors=executors, default=SimulatedPrefetchExecutor())
+    except Exception as exc:
+        print(f"[runtime] WARNING: Could not build real executor ({exc}); falling back to simulated.")
+        return SimulatedPrefetchExecutor()
+
 
 def run_exp2(args: argparse.Namespace) -> None:
     run_id = args.run_id or str(uuid.uuid4())[:12]
@@ -169,8 +206,20 @@ def run_exp2(args: argparse.Namespace) -> None:
             else:
                 from atomagents.runtime.model_config import MODELS
             orchestrator = ModelOrchestrator(MODELS)
-            print("[cluster] Starting model orchestrator…")
-            orchestrator.ensure_all_models_ready()
+
+            if mode == RuntimeMode.REAL:
+                # Real-prefetch mode: only pre-load the base (72B) model.
+                # ModelPrefetchExecutor will speculatively load qwen_32b
+                # while qwen_72b is still reasoning.
+                base_model = next(
+                    (n for n in MODELS if "72b" in n.lower()), list(MODELS.keys())[-1]
+                )
+                print(f"[cluster] Starting base model ({base_model}) only — "
+                      f"runtime will speculatively load others.")
+                orchestrator.start_model_measured(base_model, metrics=None)
+            else:
+                print("[cluster] Starting model orchestrator (all models)…")
+                orchestrator.ensure_all_models_ready()
         except Exception as e:
             print(f"[cluster] WARNING: Could not start model orchestrator: {e}")
             orchestrator = None
@@ -210,7 +259,7 @@ def run_exp2(args: argparse.Namespace) -> None:
 
     # Build runtime components
     bus = EventBus(run_id=run_id, log_path=trace_path)
-    executor = SimulatedPrefetchExecutor()
+    executor = _build_executor(mode, orchestrator, ml)
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
 

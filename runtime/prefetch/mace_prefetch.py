@@ -45,24 +45,39 @@ from typing import Any
 from runtime.prefetch.base import PrefetchExecutor, PrefetchStatus, PrefetchTask
 
 
-# Module-level cache shared between MacePrefetchExecutor and run_ase().
-# Key: model file path (str). Value: loaded MACECalculator instance.
-_MACE_CACHE: dict[str, Any] = {}
+# Module-level cache shared between MacePrefetchExecutor and MaceCalc.
+# Key: (calculator_type, model_str) tuple.  Value: loaded MACECalculator instance.
+_MACE_CACHE: dict[tuple, Any] = {}
 _CACHE_LOCK = threading.Lock()
 
 
-def get_cached_calculator(model_path: str) -> Any | None:
+def _mace_cache_key(calculator_type: str, model: Any) -> tuple[str, str]:
+    """Canonical cache key: (calculator_type, str(model or 'default'))."""
+    return (calculator_type, str(model) if model is not None else "default")
+
+
+def get_cached_mace_calculator(calculator_type: str, model: Any) -> Any | None:
     """
-    Return a pre-loaded MACECalculator for model_path, or None if not cached.
+    Return a pre-loaded MACECalculator for the given spec, or None if not cached.
     Pops the entry — each cached instance is consumed exactly once.
 
-    Usage in run_ase():
-        calc = get_cached_calculator(model_path)
-        if calc is None:
-            calc = MACECalculator(model_paths=model_path, ...)
+    Used in MaceCalc.get_calculator() to bypass the model load when prefetch
+    has already completed.
+
+    Parameters
+    ----------
+    calculator_type : str   e.g. "mace_mp", "mace_off", "mace_anicc"
+    model           : str | Path | None   model variant or None for default
     """
+    key = _mace_cache_key(calculator_type, model)
     with _CACHE_LOCK:
-        return _MACE_CACHE.pop(model_path, None)
+        return _MACE_CACHE.pop(key, None)
+
+
+# Legacy alias — kept for any existing callers that use the path-based API.
+def get_cached_calculator(model_path: str) -> Any | None:
+    """Deprecated: use get_cached_mace_calculator(). Returns None for unknown paths."""
+    return None
 
 
 def cache_size() -> int:
@@ -92,7 +107,7 @@ class MacePrefetchExecutor(PrefetchExecutor):
     def __init__(
         self,
         device: str = "cpu",
-        cache: dict[str, Any] | None = None,
+        cache: dict[tuple, Any] | None = None,
     ) -> None:
         self._device = device
         self._cache = cache if cache is not None else _MACE_CACHE
@@ -165,35 +180,79 @@ class MacePrefetchExecutor(PrefetchExecutor):
     # Internal
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Cache key helpers  (same logic as get_cached_mace_calculator above)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _key_from_resource(resource) -> tuple[str, str]:
+        """Derive (calculator_type, model_str) from a ResourceSpec.
+
+        Interprets resource.name as "<calc_type>:<model>" or a legacy name
+        like "mace-mp-0".  Defaults to mace_mp with the default model.
+        """
+        name = resource.name or ""
+        if ":" in name:
+            calc_type, model_str = name.split(":", 1)
+        elif "mace_mp" in name.lower() or "mace-mp" in name.lower():
+            calc_type, model_str = "mace_mp", "default"
+        elif "mace_off" in name.lower() or "mace-off" in name.lower():
+            calc_type, model_str = "mace_off", "default"
+        elif "mace_ani" in name.lower() or "mace-ani" in name.lower():
+            calc_type, model_str = "mace_anicc", "default"
+        else:
+            calc_type, model_str = "mace_mp", "default"
+        return calc_type.strip(), model_str.strip()
+
     def _load_mace(self, task: PrefetchTask) -> dict[str, Any]:
-        """Background thread: import and initialise MACECalculator, store in cache."""
-        model_path = task.resource.path
+        """
+        Background thread: load a MACE calculator using the same mace_mp /
+        mace_off entry points that ChemGraph uses, then store in _MACE_CACHE.
+
+        The cache key is (calculator_type, model_str) — the same key that
+        MaceCalc.get_calculator() checks before doing its own load.
+        """
+        calc_type, model_str = self._key_from_resource(task.resource)
+        model_arg: Any = None if model_str == "default" else model_str
+        cache_key = _mace_cache_key(calc_type, model_arg)
         t0 = time.perf_counter()
 
         try:
-            from mace.calculators import MACECalculator  # type: ignore
+            if calc_type == "mace_mp":
+                from mace.calculators import mace_mp  # type: ignore
+                calc = mace_mp(
+                    model=model_arg,
+                    device=self._device,
+                    default_dtype="float32",
+                )
+            elif calc_type == "mace_off":
+                from mace.calculators import mace_off  # type: ignore
+                calc = mace_off(
+                    model=model_arg,
+                    device=self._device,
+                    default_dtype="float32",
+                )
+            elif calc_type == "mace_anicc":
+                from mace.calculators import mace_anicc  # type: ignore
+                calc = mace_anicc(device=self._device, model_path=model_arg)
+            else:
+                raise ValueError(f"Unknown MACE calculator type: {calc_type!r}")
+
         except ImportError:
             task.status = PrefetchStatus.FAILED
             task.error = "mace package not installed; run: pip install mace-torch"
             return {"elapsed_s": 0.0, "success": False, "error": task.error}
-
-        try:
-            calc = MACECalculator(
-                model_paths=model_path,
-                device=self._device,
-                default_dtype="float32",
-            )
-            elapsed = time.perf_counter() - t0
-            task.completed_at = time.perf_counter()
-
-            if task.status not in (PrefetchStatus.CANCELLED,):
-                with _CACHE_LOCK:
-                    self._cache[model_path] = calc
-                task.status = PrefetchStatus.COMPLETED
-
-            return {"elapsed_s": elapsed, "success": True}
-
         except Exception as exc:
             task.status = PrefetchStatus.FAILED
             task.error = str(exc)
             return {"elapsed_s": time.perf_counter() - t0, "success": False, "error": str(exc)}
+
+        elapsed = time.perf_counter() - t0
+        task.completed_at = time.perf_counter()
+
+        if task.status not in (PrefetchStatus.CANCELLED,):
+            with _CACHE_LOCK:
+                self._cache[cache_key] = calc
+            task.status = PrefetchStatus.COMPLETED
+
+        return {"elapsed_s": elapsed, "success": True, "cache_key": str(cache_key)}
