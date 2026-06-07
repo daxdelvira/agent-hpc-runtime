@@ -225,6 +225,15 @@ class PrefetchScheduler:
         estimated_remaining_compute_s: float,
     ) -> tuple[bool, str]:
         cfg = self._config
+
+        # Ablation: resource-type filter
+        if cfg.skip_resource_types and resource.resource_type in cfg.skip_resource_types:
+            return False, f"resource_type_skipped ({resource.resource_type})"
+
+        # Ablation: naive mode bypasses confidence and cancellable checks entirely
+        if cfg.naive_prefetch:
+            return True, "naive_prefetch"
+
         if resource.confidence < cfg.confidence_threshold:
             return False, f"confidence_below_threshold ({resource.confidence:.2f} < {cfg.confidence_threshold})"
         if resource.consumer_step_offset > cfg.max_horizon:

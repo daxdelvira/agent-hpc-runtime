@@ -38,3 +38,23 @@ class RuntimeConfig:
     # Logging
     log_dir: str = "logs/workflow_traces"
     results_dir: str = "results"
+
+    # ----------------------------------------------------------------
+    # Ablation knobs — set via CLI flags in experiment runners
+    # ----------------------------------------------------------------
+
+    # Skip divergence cancellation: on mismatch, track accuracy but don't
+    # cancel in-flight prefetches or enter conservative mode.
+    disable_divergence_cancellation: bool = False
+
+    # Naive prefetch: ignore confidence threshold and cancellable checks —
+    # prefetch every prediction regardless of confidence.
+    naive_prefetch: bool = False
+
+    # Resource-type filter: resource types in this set are never prefetched.
+    # E.g. {"vllm_model"} disables model prefetch; {"data_file"} disables
+    # data staging. Empty set = no filtering (default behaviour).
+    skip_resource_types: list = field(default_factory=list)
+
+    # Human-readable label stored in summary JSON for ablation bookkeeping.
+    condition: str = "full_system"

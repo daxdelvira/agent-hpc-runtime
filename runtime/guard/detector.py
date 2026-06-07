@@ -203,5 +203,11 @@ class DivergenceDetector:
         }
 
     def _choose_action(self, ckpt: CheckpointRecord, step: int) -> DivergenceAction:
-        """Conservative default: always INVALIDATE_ALL on divergence."""
+        """Conservative default: always INVALIDATE_ALL on divergence.
+
+        When disable_divergence_cancellation is set (ablation), record the
+        miss but take no action — in-flight prefetches are left running.
+        """
+        if self._config.disable_divergence_cancellation:
+            return DivergenceAction.CONTINUE
         return DivergenceAction.INVALIDATE_ALL

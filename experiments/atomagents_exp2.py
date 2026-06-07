@@ -25,16 +25,26 @@ Usage
 
 Flags
 -----
-    --runtime-mode    observe_only | simulated | real | baseline (default: observe_only)
-    --predictor       mock | oracle (default: mock)
-    --run-id          custom run ID (default: auto-generated)
-    --hw-profile      l40s | rtx6000 (default: l40s)
-    --swap-models     enable model swapping (requires --hw-profile rtx6000 or explicit gpu config)
-    --task-prompt     override the default Exp2 task prompt
-    --results-dir     directory for output CSV / JSONL (default: results/)
-    --log-dir         directory for JSONL traces (default: logs/workflow_traces/)
-    --confidence      predictor confidence threshold (default: 0.85)
-    --horizon         max lookahead in steps (default: 2)
+    --runtime-mode         observe_only | simulated | real | baseline (default: observe_only)
+    --predictor            mock | learned | oracle (default: mock)
+    --run-id               custom run ID (default: auto-generated)
+    --hw-profile           l40s | rtx6000 | blackwell (default: l40s)
+    --swap-models          enable model swapping
+    --task-prompt          override the default Exp2 task prompt
+    --results-dir          directory for output CSV / JSONL (default: results/)
+    --log-dir              directory for JSONL traces (default: logs/workflow_traces/)
+    --confidence           predictor confidence threshold (default: 0.85)
+    --horizon              max lookahead in steps (default: 2)
+
+Ablation flags (deactivate one component at a time)
+----------------------------------------------------
+    --no-plan-extraction   disable plan extraction (sets plan_extraction_horizon=0)
+    --no-divergence-guard  disable prefetch cancellation on mismatch
+    --naive-prefetch       prefetch every prediction regardless of confidence
+    --skip-resource-types  comma-separated resource types to never prefetch
+                           (e.g. "vllm_model" or "data_file,vllm_model")
+    --condition            human-readable label stored in summary JSON
+                           (auto-inferred from ablation flags if omitted)
 """
 from __future__ import annotations
 
@@ -151,12 +161,21 @@ def run_exp2(args: argparse.Namespace) -> None:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     trace_path = str(log_dir / f"runtime_trace_{ts}_{run_id}.jsonl")
 
+    # Resolve ablation flags → condition label
+    skip_types = [t.strip() for t in (args.skip_resource_types or "").split(",") if t.strip()]
+    condition = args.condition or _infer_condition(args, skip_types)
+
     cfg = RuntimeConfig(
         mode=mode,
         run_id=run_id,
         confidence_threshold=args.confidence,
         max_horizon=args.horizon,
         conservative_mode_steps=3,
+        plan_extraction_horizon=0 if args.no_plan_extraction else 3,
+        disable_divergence_cancellation=args.no_divergence_guard,
+        naive_prefetch=args.naive_prefetch,
+        skip_resource_types=skip_types,
+        condition=condition,
         log_dir=str(log_dir),
         results_dir=str(results_dir),
     )
@@ -165,11 +184,16 @@ def run_exp2(args: argparse.Namespace) -> None:
     print(f"  AtomAgents Exp2 — Runtime Layer")
     print(f"  Mode          : {mode.value}")
     print(f"  Predictor     : {args.predictor}")
+    print(f"  Condition     : {condition}")
     print(f"  Run ID        : {run_id}")
     print(f"  HW Profile    : {args.hw_profile}")
     print(f"  Swap models   : {args.swap_models}")
     print(f"  No-start-mdls : {getattr(args, 'no_start_models', False)}")
     print(f"  LAMMPS slowdn : {args.lammps_slowdown}s per relax")
+    print(f"  Plan horizon  : {cfg.plan_extraction_horizon} steps")
+    print(f"  Naive prefetch: {cfg.naive_prefetch}")
+    print(f"  No diverg grd : {cfg.disable_divergence_cancellation}")
+    print(f"  Skip types    : {cfg.skip_resource_types or 'none'}")
     print(f"  Trace file    : {trace_path}")
     print(f"{'='*64}\n")
 
@@ -340,6 +364,13 @@ def run_exp2(args: argparse.Namespace) -> None:
         out["run_id"] = run_id
         out["mode"] = mode.value
         out["predictor"] = args.predictor
+        out["condition"] = condition
+        out["ablation"] = {
+            "no_plan_extraction": args.no_plan_extraction,
+            "no_divergence_guard": args.no_divergence_guard,
+            "naive_prefetch": args.naive_prefetch,
+            "skip_resource_types": skip_types,
+        }
         with open(summary_path, "w") as f:
             json.dump(out, f, indent=2)
         print(f"[cluster] Summary written to: {summary_path}")
@@ -367,6 +398,24 @@ def run_exp2(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _infer_condition(args: argparse.Namespace, skip_types: list[str]) -> str:
+    """Auto-generate a condition label from active ablation flags."""
+    if args.runtime_mode == "baseline":
+        return "baseline"
+    parts = []
+    if args.no_plan_extraction:
+        parts.append("no_plan")
+    if args.no_divergence_guard:
+        parts.append("no_diverg_guard")
+    if args.naive_prefetch:
+        parts.append("naive_prefetch")
+    for t in skip_types:
+        parts.append(f"no_{t.replace('_', '')}")
+    if args.predictor != "mock":
+        parts.append(f"pred_{args.predictor}")
+    return "_".join(parts) if parts else "full_system"
+
 
 def _load_events(path: str) -> list[dict]:
     events = []
@@ -465,6 +514,39 @@ def main() -> None:
         type=int,
         default=2,
         help="Maximum lookahead steps for prefetch scheduling",
+    )
+
+    # ---- Ablation flags ----
+    parser.add_argument(
+        "--no-plan-extraction",
+        action="store_true",
+        dest="no_plan_extraction",
+        help="Ablation: disable plan extraction (sets plan_extraction_horizon=0)",
+    )
+    parser.add_argument(
+        "--no-divergence-guard",
+        action="store_true",
+        dest="no_divergence_guard",
+        help="Ablation: do not cancel prefetches or enter conservative mode on mismatch",
+    )
+    parser.add_argument(
+        "--naive-prefetch",
+        action="store_true",
+        dest="naive_prefetch",
+        help="Ablation: prefetch every prediction ignoring confidence threshold",
+    )
+    parser.add_argument(
+        "--skip-resource-types",
+        default="",
+        dest="skip_resource_types",
+        help="Ablation: comma-separated resource types to never prefetch "
+             "(e.g. 'vllm_model' or 'data_file,vllm_model')",
+    )
+    parser.add_argument(
+        "--condition",
+        default=None,
+        help="Human-readable condition label stored in summary JSON "
+             "(auto-inferred from ablation flags if omitted)",
     )
 
     args = parser.parse_args()

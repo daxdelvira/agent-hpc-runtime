@@ -159,18 +159,19 @@ def print_comparison_table(records: list[dict], verbose: bool = True) -> None:
 def _print_workflow_table(records: list[dict], workflow: str, verbose: bool) -> None:
     cols = [
         ("Run ID",       10, lambda r: (r.get("run_id") or "")[:10]),
-        ("Mode",          12, lambda r: r.get("mode", "")[:12]),
-        ("Predictor",      8, lambda r: r.get("predictor", "mock")[:8]),
-        ("Wall(s)",        7, lambda r: _fmt_time(r.get("wall_time_s"))),
-        ("Accuracy",      14, _fmt_acc),
-        ("Diverg",         6, lambda r: str(r.get("divergence_count", "—"))),
-        ("PF strt",        7, lambda r: str(r.get("prefetch_started", "—"))),
-        ("PF done",        7, lambda r: str(r.get("prefetch_completed", "—"))),
-        ("PF wast",        7, lambda r: str(r.get("wasted_prefetch", "—"))),
-        ("benefit_s",      9, lambda r: _fmt_float(
+        ("Condition",    16, lambda r: (r.get("condition") or r.get("mode", ""))[:16]),
+        ("Mode",          9, lambda r: r.get("mode", "")[:9]),
+        ("Predictor",     8, lambda r: r.get("predictor", "mock")[:8]),
+        ("Wall(s)",       7, lambda r: _fmt_time(r.get("wall_time_s"))),
+        ("Stall(s)",      7, lambda r: _fmt_float(r.get("total_stall_s"), ".1f")),
+        ("Benefit(s)",    9, lambda r: _fmt_float(
             r.get("total_benefit_s") or r.get("estimated_total_benefit_s"), ".1f",
         )),
-        ("waste_s",        7, lambda r: _fmt_float(r.get("total_waste_s"), ".1f")),
+        ("Accuracy",     14, _fmt_acc),
+        ("Diverg",        6, lambda r: str(r.get("divergence_count", "—"))),
+        ("PF strt",       7, lambda r: str(r.get("prefetch_started", "—"))),
+        ("PF wast",       7, lambda r: str(r.get("wasted_prefetch", "—"))),
+        ("waste_s",       7, lambda r: _fmt_float(r.get("total_waste_s"), ".1f")),
     ]
 
     if any(r.get("total_tokens") for r in records):
