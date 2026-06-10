@@ -1,10 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=atomagents_swap_real
 #SBATCH --account=gts-ag117
+#SBATCH -p gpu-rtxpro-blackwell
 #SBATCH -qembers
-#SBATCH --gres=gpu:H200:4              # 4 GPUs: 72B on 2,3  +  32B on 0,1 (speculative)
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=120G
+#SBATCH --gres=gpu:4                   # 4× RTX PRO 6000 Blackwell: 72B on 2,3 + 32B on 0,1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=48G
 #SBATCH --time=03:00:00
 #SBATCH -o %x.%j.out
 #SBATCH -e %x.%j.err
@@ -27,16 +28,20 @@
 set -Eeuo pipefail
 
 ############### CONFIG ###############
-MODEL_ENV="${MODEL_ENV:-dummy_agent}"       # conda env for vLLM servers
+MODEL_ENV="${MODEL_ENV:-vllm_clean128}"     # conda env for vLLM servers (CUDA 12.8, vLLM 0.19.0)
 EXP_ENV="${EXP_ENV:-atoms}"                # conda env for the experiment
 PREDICTOR="${PREDICTOR:-learned}"          # mock | learned
-HW_PROFILE="${HW_PROFILE:-l40s}"           # l40s | blackwell
+HW_PROFILE="${HW_PROFILE:-blackwell}"      # blackwell | l40s | rtx6000
 PORT_72B="${PORT_72B:-8001}"
 PORT_32B="${PORT_32B:-8002}"
-MODEL_72B="${MODEL_72B:-Qwen/Qwen2.5-72B-Instruct}"
-MODEL_32B="${MODEL_32B:-Qwen/Qwen2.5-32B-Instruct}"
-VLLM_ARGS_72B="${VLLM_ARGS_72B:- --enable-auto-tool-choice --tool-call-parser hermes --dtype=half --tensor-parallel-size=2 --max-model-len=16384}"
-VLLM_ARGS_32B="${VLLM_ARGS_32B:- --enable-auto-tool-choice --tool-call-parser hermes --dtype=half --tensor-parallel-size=2 --max-model-len=16384}"
+# Local VL snapshot paths (downloaded to ~/scratch/hf_home/hub/).
+_HF_HUB="${HOME}/scratch/hf_home/hub"
+MODEL_72B="${MODEL_72B:-${_HF_HUB}/models--Qwen--Qwen2.5-VL-72B-Instruct/snapshots/89c86200743eec961a297729e7990e8f2ddbc4c5}"
+MODEL_32B="${MODEL_32B:-${_HF_HUB}/models--Qwen--Qwen2.5-VL-32B-Instruct/snapshots/7cfb30d71a1f4f49a57592323337a4a4727301da}"
+# --served-model-name aliases the snapshot path to the HF model ID that
+# AtomAgents config_list uses for routing requests.
+VLLM_ARGS_72B="${VLLM_ARGS_72B:- --enable-auto-tool-choice --tool-call-parser hermes --dtype=float16 --tensor-parallel-size=2 --max-model-len=16384 --gpu-memory-utilization=0.97 --disable-custom-all-reduce --enforce-eager --served-model-name Qwen/Qwen2.5-VL-72B-Instruct}"
+VLLM_ARGS_32B="${VLLM_ARGS_32B:- --enable-auto-tool-choice --tool-call-parser hermes --dtype=float16 --tensor-parallel-size=2 --max-model-len=16384 --gpu-memory-utilization=0.82 --disable-custom-all-reduce --served-model-name Qwen/Qwen2.5-VL-32B-Instruct}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-2700}"   # 45 min for 72B
 EXP_TIMEOUT="${EXP_TIMEOUT:-120m}"
 ######################################
@@ -86,10 +91,17 @@ start_server(){
   local name="$1" gpus="$2" port="$3" model="$4" args="$5" logfile="$6"
   log "Starting $name  GPUs=[$gpus]  port=$port  model=$model"
   : > "$logfile"
+  local tmpdir="${REPO_ROOT}/.vllm_tmp_${port}"
+  mkdir -p "$tmpdir"
   setsid bash -c "
     source /usr/local/pace-apps/manual/packages/anaconda3/2023.03/etc/profile.d/conda.sh
     conda activate $MODEL_ENV
     export CUDA_VISIBLE_DEVICES=$gpus
+    export TMPDIR='$tmpdir'
+    export TEMP='$tmpdir'
+    export TMP='$tmpdir'
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    export XALT_EXECUTABLE_TRACKING=no
     exec python -m vllm.entrypoints.openai.api_server \
       --host 0.0.0.0 --port $port --model $model $args \
       >>$logfile 2>&1

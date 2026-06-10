@@ -7,7 +7,7 @@ Import from atomagents_exp2.py via --hw-profile flag.
 import os
 
 # vLLM python (shared project env, same across all PACE nodes in r-ag117-0)
-VLLM_PYTHON = "/storage/project/r-ag117-0/shared/agent_hpc/envs/vllm_clean/bin/python"
+VLLM_PYTHON = "/storage/project/r-ag117-0/shared/agent_hpc/envs/vllm_clean128/bin/python"
 
 # HF hub snapshot paths for Blackwell node
 # Weights live in ~/scratch/hf_home/hub/ (user-local scratch, not project storage)
@@ -49,6 +49,9 @@ MODELS_BLACKWELL = {
             "--tool-call-parser", "hermes",
             "--dtype", "float16",
             "--disable-custom-all-reduce",
+            # vLLM serves the model under the snapshot path by default; this alias
+            # makes requests with the HF model ID (as in AtomAgents config_list) work.
+            "--served-model-name", "Qwen/Qwen2.5-VL-32B-Instruct",
         ],
     },
 
@@ -72,6 +75,7 @@ MODELS_BLACKWELL = {
             "--dtype", "float16",
             "--disable-custom-all-reduce",
             "--enforce-eager",
+            "--served-model-name", "Qwen/Qwen2.5-VL-72B-Instruct",
         ],
     },
 }
