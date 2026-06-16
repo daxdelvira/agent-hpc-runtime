@@ -99,6 +99,41 @@
     "consumer_step_offset": 1
   },
   {
+    "_comment": "Exp3: code_task dispatches to text-72B specialist (port 8003).",
+    "_note": "After plan_task the engineer typically calls code_task, so predict qwen_72b_text."
+  },
+  {
+    "consumer_tool": "code_task",
+    "resource_type": "vllm_model",
+    "name": "qwen_72b_text",
+    "model_endpoint": "http://localhost:8003",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "plan_task",
+    "resource_type": "vllm_model",
+    "name": "qwen_72b_text",
+    "model_endpoint": "http://localhost:8003",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 2
+  },
+  {
+    "_comment": "After code_task the engineer calls computation_task; predict 72b-vl swap back.",
+    "_note": "The model router handles the actual swap; this entry lets the prefetcher track it."
+  },
+  {
+    "consumer_tool": "computation_task_screw_dislocation",
+    "resource_type": "vllm_model",
+    "name": "qwen_72b",
+    "model_endpoint": "http://localhost:8001",
+    "estimated_load_s": 1200.0,
+    "cancellation_safe": false,
+    "consumer_step_offset": 1
+  },
+  {
     "consumer_tool": "run_ase",
     "resource_type": "mace_model",
     "name": "mace-mp-0",

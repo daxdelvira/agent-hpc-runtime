@@ -17,7 +17,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXP_ENV="${EXP_ENV:-atoms}"            # experiment env (AtomAgents + runtime)
 PREDICTOR="${PREDICTOR:-learned}"
 HW_PROFILE="${HW_PROFILE:-blackwell}"
-EXP_TIMEOUT="${EXP_TIMEOUT:-120m}"
+EXP_TIMEOUT="${EXP_TIMEOUT:-180m}"
 NO_START_MODELS="${NO_START_MODELS:-0}"
 ABLATION="${ABLATION:-0}"
 CONDITION="${CONDITION:-}"
@@ -33,12 +33,38 @@ for arg in "$@"; do
   esac
 done
 
+LAMMPS_SLOWDOWN_S="${LAMMPS_SLOWDOWN_S:-900}"
+export LAMMPS_SLOWDOWN_S
+
 log "Node       : $(hostname)"
 log "Repo root  : $REPO_ROOT"
 log "HW profile : $HW_PROFILE"
 log "Predictor  : $PREDICTOR"
+log "LAMMPS slow: ${LAMMPS_SLOWDOWN_S}s per relax step"
+
+# vLLM ZMQ worker IPC sockets need a writable TMPDIR.  On PACE Blackwell hold
+# jobs /tmp may be absent or unwritable.  /dev/shm is always a real tmpfs and
+# works reliably for Unix domain sockets.
+_JOB_ID="${SLURM_JOB_ID:-$$}"
+if [[ -d /dev/shm && -w /dev/shm ]]; then
+  VLLM_TMP="/dev/shm/atomagents_${USER:-vllm}_${_JOB_ID}"
+else
+  VLLM_TMP="${REPO_ROOT}/tmp/vllm_${_JOB_ID}"
+fi
+mkdir -p "$VLLM_TMP"
+export TMPDIR="$VLLM_TMP"
+log "TMPDIR     : $TMPDIR"
 
 ATOMS_PYTHON="/storage/project/r-ag117-0/shared/agent_hpc/envs/${EXP_ENV}/bin/python"
+
+# Pick experiment script: exp3 for blackwell_swap (3-model forced-swap), exp2 otherwise.
+if [[ "$HW_PROFILE" == "blackwell_swap" || "$HW_PROFILE" == "rtx6000" ]]; then
+  EXP_SCRIPT="${REPO_ROOT}/experiments/atomagents_exp3.py"
+  log "Experiment : atomagents_exp3 (3-model forced-swap)"
+else
+  EXP_SCRIPT="${REPO_ROOT}/experiments/atomagents_exp2.py"
+  log "Experiment : atomagents_exp2 (original)"
+fi
 
 # Build base flags
 BASE_FLAGS=(
@@ -47,7 +73,26 @@ BASE_FLAGS=(
   --hw-profile "$HW_PROFILE"
   --swap-models
 )
+if [[ "$HW_PROFILE" == "blackwell_swap" || "$HW_PROFILE" == "rtx6000" ]]; then
+  BASE_FLAGS+=(--lammps-slowdown "$LAMMPS_SLOWDOWN_S")
+fi
 [[ "$NO_START_MODELS" == "1" ]] && BASE_FLAGS+=(--no-start-models)
+
+cleanup_vllm(){
+  # Kill any lingering vLLM processes and wait for all 4 GPUs to drop below 1 GB.
+  # Called before each condition so stale servers don't block new ones.
+  pkill -f "vllm_clean128" 2>/dev/null || true
+  local attempts=0
+  while (( attempts < 60 )); do
+    local used
+    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits \
+           | awk '{s+=$1} END {print s}')
+    [[ "$used" -lt 2048 ]] && break
+    sleep 5
+    (( attempts++ )) || true
+  done
+  log "GPUs cleared (${attempts} polls). Continuing."
+}
 
 run_condition(){
   local label="$1"; shift
@@ -56,10 +101,12 @@ run_condition(){
   local logfile="${REPO_ROOT}/logs/blackwell_${label}_${ts}.log"
   mkdir -p "${REPO_ROOT}/logs"
 
+  cleanup_vllm
+
   log "===== Condition: $label ====="
   set +e
   timeout --preserve-status "$EXP_TIMEOUT" \
-    "$ATOMS_PYTHON" -u "${REPO_ROOT}/experiments/atomagents_exp2.py" \
+    "$ATOMS_PYTHON" -u "$EXP_SCRIPT" \
       "${BASE_FLAGS[@]}" \
       --condition "$label" \
       "${extra_flags[@]}" \
