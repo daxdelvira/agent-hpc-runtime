@@ -43,6 +43,10 @@ class PrefetchTask:
     cancelled_at: float | None = None
     error: str | None = None
 
+    # Proactive swap: executor stops current model before loading this one.
+    # Set from resource.proactive_swap by the scheduler.
+    proactive_swap: bool = False
+
     # Populated when workflow step consumes this resource:
     consumed_at: float | None = None
     # For research comparison: load latency that would have occurred without prefetch

@@ -89,15 +89,15 @@ MODELS_BLACKWELL = {
 #   model and loads the next one on every agent-role transition.
 #
 #   Model roles in exp3:
-#     qwen_72b     (port 8001) — main engineer agent  (vision + reasoning)
-#     qwen_32b     (port 8002) — planner/critic agents (vision + planning)
+#     qwen_72b     (port 8007) — main engineer agent  (vision + reasoning)
+#     qwen_32b     (port 8012) — planner/critic agents (vision + planning)
 #     qwen_72b_text(port 8003) — code specialist agent (text, scripts)
 # ---------------------------------------------------------------------------
 MODELS_BLACKWELL_SWAP = {
     "qwen_72b": {
         "python_bin": VLLM_PYTHON,
         "model_name": _SNAPSHOT_72B_VL,
-        "port": 8001,
+        "port": 8007,
         "gpus": [0, 1, 2, 3],
         "tensor_parallel_size": 4,
         "gpu_memory_utilization": 0.95,
@@ -115,7 +115,7 @@ MODELS_BLACKWELL_SWAP = {
     "qwen_32b": {
         "python_bin": VLLM_PYTHON,
         "model_name": _SNAPSHOT_32B_VL,
-        "port": 8002,
+        "port": 8012,
         "gpus": [0, 1, 2, 3],
         "tensor_parallel_size": 4,
         "gpu_memory_utilization": 0.82,
@@ -152,18 +152,21 @@ MODELS_BLACKWELL_SWAP = {
 
 # ---------------------------------------------------------------------------
 # L40S profile (exp3 — shared GPU pool, forced model swapping)
-#   All three models share GPUs 0-5 (tp=6, 6 × 48 GB = 288 GB).
+#   All three models share GPUs 0-3 (tp=4, 4 × 48 GB = 192 GB usable).
+#   Qwen2.5-VL-72B has 64 attention heads → tp must divide 64; tp=6 fails.
 #   72B fp16 ≈ 144 GB; 32B fp16 ≈ 64 GB; 72B-text fp16 ≈ 144 GB.
+#   4 × 46GB × 0.94 = 173 GB > 144 GB — all three models fit one at a time.
+#   GPUs 4-5 are intentionally left idle (no valid tp for 64-head model).
 #   Only ONE model can be resident at a time.
 # ---------------------------------------------------------------------------
 MODELS_L40S = {
     "qwen_72b": {
         "python_bin": VLLM_PYTHON,
         "model_name": _SNAPSHOT_72B_VL,
-        "port": 8001,
-        "gpus": [0, 1, 2, 3, 4, 5],
-        "tensor_parallel_size": 6,
-        "gpu_memory_utilization": 0.92,
+        "port": 8007,
+        "gpus": [0, 1, 2, 3],
+        "tensor_parallel_size": 4,
+        "gpu_memory_utilization": 0.94,
         "max_model_len": 16384,
         "load_timeout": 3600,
         "extra_args": [
@@ -178,9 +181,9 @@ MODELS_L40S = {
     "qwen_32b": {
         "python_bin": VLLM_PYTHON,
         "model_name": _SNAPSHOT_32B_VL,
-        "port": 8002,
-        "gpus": [0, 1, 2, 3, 4, 5],
-        "tensor_parallel_size": 6,
+        "port": 8012,
+        "gpus": [0, 1, 2, 3],
+        "tensor_parallel_size": 4,
         "gpu_memory_utilization": 0.82,
         "max_model_len": 16384,
         "load_timeout": 1800,
@@ -197,9 +200,9 @@ MODELS_L40S = {
         "python_bin": VLLM_PYTHON,
         "model_name": _SNAPSHOT_72B_TEXT,
         "port": 8003,
-        "gpus": [0, 1, 2, 3, 4, 5],
-        "tensor_parallel_size": 6,
-        "gpu_memory_utilization": 0.92,
+        "gpus": [0, 1, 2, 3],
+        "tensor_parallel_size": 4,
+        "gpu_memory_utilization": 0.94,
         "max_model_len": 16384,
         "load_timeout": 3600,
         "extra_args": [

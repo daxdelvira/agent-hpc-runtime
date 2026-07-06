@@ -2,11 +2,24 @@
 adapters/chemgraph.py — Runtime adapter for ChemGraph (LangGraph/LangChain).
 
 Extends ChemGraphCallbackHandler without modifying ChemGraph source code.
-Adds prediction and divergence-guard hooks at two key interception points:
 
-  on_llm_end   → after LLM response: extract tool_calls, call predictor,
-                  create checkpoint, schedule prefetches
-  on_tool_start → before tool executes: compare to prediction, detect divergence
+LangGraph callback propagation note
+------------------------------------
+In LangGraph 1.x, graph-level config callbacks propagate to *chain* and *tool*
+callbacks (on_chain_start, on_tool_start) but NOT to LLM callbacks inside node
+functions.  Node functions call llm.invoke(messages) without forwarding the
+config, so on_llm_end / on_chat_model_start never fire.
+
+We therefore use on_tool_start as the primary prediction/divergence hook:
+
+  on_tool_start(A):
+    1. Check _pending_checkpoint: was A the predicted consumer?  → HIT or MISS
+    2. Make a new prediction for what comes AFTER A → schedule prefetch
+
+  on_llm_end: passive — just calls super() for metrics.  When on_llm_end does
+    fire (future LangGraph versions or direct LangChain invocations) the
+    tool-start logic remains correct because it uses expected_at_step gating
+    instead of a raw step comparison.
 
 When config.mode == BASELINE the adapter behaves identically to the parent
 class (zero additional overhead).
@@ -18,7 +31,6 @@ Usage
     cb = make_runtime_callback(
         predictor=MockPredictor("chemgraph"),
         scheduler=scheduler,
-        guard=guard,
         config=cfg,
     )
     langgraph_config = {"configurable": {"thread_id": "1"}, "callbacks": [cb]}
@@ -50,6 +62,7 @@ from runtime.events import (
 )
 from runtime.guard.checkpoint import CheckpointRecord, CheckpointStore
 from runtime.predictor.base import Predictor
+from runtime.predictor.plan_extractor import KNOWN_TOOLS, extract_plan
 from runtime.prefetch.scheduler import PrefetchScheduler
 
 
@@ -60,8 +73,12 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
     continues to work unchanged.
 
     New behaviour (skipped when mode=BASELINE):
-    - on_llm_end  : call predictor → create checkpoint → schedule prefetches
-    - on_tool_start: check divergence guard
+    - on_tool_start: (1) check whether this tool matches the previous prediction,
+                     (2) make a new prediction for what comes after this tool,
+                     (3) schedule prefetches for predicted resources
+    - on_llm_end: passive — just calls super(); no runtime logic here because
+                  LangGraph 1.x does not propagate graph-level callbacks to
+                  node-internal LLM invocations (llm.invoke without config=).
     """
 
     def __init__(
@@ -83,16 +100,95 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         self._task_description = task_description
         self._step = 0
         self._checkpoint_store = CheckpointStore(max_horizon=self._config.max_horizon)
-        self._conservative_until_step = 0   # step at which conservative mode expires
-        # Pending checkpoint for the current step (set in on_llm_end)
+        self._conservative_until_step = 0
         self._pending_checkpoint: CheckpointRecord | None = None
+        # Set once when the PlannerAgent node emits its plan (multi_agent workflow).
+        self._plan_context = None
 
     @property
     def _is_active(self) -> bool:
         return self._config.mode != RuntimeMode.BASELINE and self._predictor is not None
 
     # ------------------------------------------------------------------
-    # on_llm_end — fires after every LLM response
+    # on_chain_start — guard against LangGraph passing None for serialized
+    # ------------------------------------------------------------------
+
+    def on_chain_start(
+        self,
+        serialized: dict[str, Any],
+        inputs: dict[str, Any],
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        tags=None,
+        **kwargs,
+    ) -> None:
+        # LangGraph 1.x occasionally passes serialized=None for internal chain
+        # nodes.  The parent handler calls serialized.get(...) which raises
+        # AttributeError.  Substitute an empty dict so the parent can proceed.
+        super().on_chain_start(
+            serialized or {},
+            inputs or {},
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
+            **kwargs,
+        )
+
+    # ------------------------------------------------------------------
+    # on_chain_end — extract plan when PlannerAgent node finishes
+    # ------------------------------------------------------------------
+
+    def on_chain_end(
+        self,
+        outputs: dict[str, Any],
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        **kwargs,
+    ) -> None:
+        # Peek at the node name before super() pops it from _chain_names.
+        node_name = self._chain_names.get(str(run_id), "")
+        super().on_chain_end(outputs, run_id=run_id, parent_run_id=parent_run_id, **kwargs)
+
+        if node_name != "PlannerAgent" or self._plan_context is not None:
+            return
+        if not self._bus or not isinstance(outputs, dict):
+            return
+
+        # PlannerAgent returns {"messages": ["<PlannerResponse JSON>"]}
+        # LangGraph may pass the raw string OR an AIMessage object (after reducer).
+        messages = outputs.get("messages", [])
+        if not messages:
+            return
+        raw = messages[-1]
+        if isinstance(raw, str):
+            raw_content = raw
+        elif hasattr(raw, "content") and isinstance(raw.content, str):
+            raw_content = raw.content
+        else:
+            return
+
+        import json as _json
+        try:
+            plan_data = _json.loads(raw_content)
+            tasks = plan_data.get("worker_tasks", [])
+            combined_text = " ".join(t.get("prompt", "") for t in tasks)
+        except Exception:
+            return
+
+        ctx = extract_plan(combined_text, KNOWN_TOOLS, step=0, source="planner_agent")
+        if ctx is not None:
+            self._plan_context = ctx
+            self._bus.emit("plan_extracted", {
+                "step": 0,
+                "tool_sequence": ctx.tool_sequence,
+                "n_mentions": ctx.n_mentions,
+                "source": ctx.source,
+            }, step=0)
+
+    # ------------------------------------------------------------------
+    # on_llm_end — passive; just records metrics via parent
     # ------------------------------------------------------------------
 
     def on_llm_end(
@@ -103,40 +199,111 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        # Always call parent first (records metrics CSV, WorkflowTracker)
         super().on_llm_end(response, run_id=run_id, parent_run_id=parent_run_id, **kwargs)
+        # No runtime logic here: LangGraph 1.x does not propagate graph-level
+        # config callbacks into node-internal llm.invoke() calls, so this hook
+        # does not fire reliably.  All prediction logic lives in on_tool_start.
+
+    # ------------------------------------------------------------------
+    # on_tool_start — primary prediction / divergence hook
+    # ------------------------------------------------------------------
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        tags=None,
+        **kwargs,
+    ) -> None:
+        # Always call parent (records metrics, WorkflowTracker tool_call event)
+        super().on_tool_start(serialized, input_str, run_id=run_id,
+                               parent_run_id=parent_run_id, tags=tags, **kwargs)
 
         if not self._is_active:
             return
 
+        tool_name = serialized.get("name") or kwargs.get("name", "unknown_tool")
         self._step += 1
         if self._bus:
             self._bus.set_step(self._step)
 
-        # Extract tool_calls from the LLM response
-        tool_calls = _extract_tool_calls(response)
+        # ------------------------------------------------------------------
+        # Phase 1: check the PREVIOUS prediction against this tool.
+        # The pending checkpoint says "expect consumer_tool at expected_at_step".
+        # Gate by expected_at_step so multi-step lookahead predictions (step_offset>1)
+        # are not invalidated by intermediate tool calls.
+        # ------------------------------------------------------------------
+        if self._pending_checkpoint is not None:
+            ckpt = self._pending_checkpoint
+            if ckpt.prediction.resources:
+                predicted_tool = ckpt.prediction.resources[0].consumer_tool
+                expected_at_step = ckpt.prediction.resources[0].expected_at_step or 0
 
-        # Gather recent WorkflowTracker events as predictor context
+                if self._step >= expected_at_step:
+                    hit = (tool_name == predicted_tool)
+                    if hit:
+                        self._checkpoint_store.resolve(ckpt.checkpoint_id, "validated")
+                        if self._bus:
+                            self._bus.emit_event(make_prediction_validated_event(
+                                self._config.run_id, self._step, True,
+                                ckpt.checkpoint_id, tool_name,
+                            ))
+                        if self._scheduler:
+                            self._scheduler.on_resource_consumed(
+                                ckpt.prediction.resources[0].resource_id,
+                                consumed_at=time.perf_counter(),
+                                current_step=self._step,
+                            )
+                    else:
+                        self._checkpoint_store.resolve(
+                            ckpt.checkpoint_id, "diverged", "INVALIDATE_ALL"
+                        )
+                        if self._bus:
+                            self._bus.emit_event(make_divergence_detected_event(
+                                self._config.run_id, self._step, predicted_tool,
+                                tool_name, ckpt.checkpoint_id, "INVALIDATE_ALL",
+                            ))
+                        if self._scheduler:
+                            self._scheduler.cancel_all_pending(
+                                reason="divergence",
+                                checkpoint_id=ckpt.checkpoint_id,
+                                current_step=self._step,
+                            )
+                        self._conservative_until_step = (
+                            self._step + self._config.conservative_mode_steps
+                        )
+                        if self._bus:
+                            self._bus.emit_event(make_conservative_mode_event(
+                                self._config.run_id, self._step, "divergence",
+                                self._config.conservative_mode_steps,
+                            ))
+                    self._pending_checkpoint = None
+                    self._checkpoint_store.expire_old(self._step)
+                # else: too early — multi-step lookahead, keep pending
+
+        # ------------------------------------------------------------------
+        # Phase 2: make a new prediction for what comes AFTER this tool
+        # ------------------------------------------------------------------
+        in_conservative = self._step <= self._conservative_until_step
+        if in_conservative:
+            return
+
         recent_events = _read_recent_events(
             getattr(self._tracker, "log_path", None),
             n=self._config.predictor_context_events,
         )
 
-        # Skip prediction during conservative mode
-        in_conservative = self._step <= self._conservative_until_step
-        if in_conservative:
-            return
-
-        # Call predictor
         try:
             result: PredictionResult = self._predictor.predict(
                 step=self._step,
                 recent_events=recent_events,
-                current_tool_calls=tool_calls,
+                current_tool_calls=[{"name": tool_name}],
                 task_description=self._task_description,
             )
         except Exception as e:
-            # Predictor failure must never abort the workflow
             if self._bus:
                 self._bus.emit("prediction_error", {"error": str(e)}, step=self._step)
             return
@@ -144,11 +311,11 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         if not result.resources:
             return
 
-        # Emit prediction event
         if self._bus:
-            self._bus.emit_event(make_prediction_result_event(self._config.run_id, self._step, result))
+            self._bus.emit_event(make_prediction_result_event(
+                self._config.run_id, self._step, result
+            ))
 
-        # Create checkpoint (WAL record before any speculative I/O)
         log_pos = self._bus.current_log_position() if self._bus else 0
         checkpoint = CheckpointRecord(
             step=self._step,
@@ -163,7 +330,6 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                 self._config.run_id, self._step, checkpoint.checkpoint_id, log_pos,
             ))
 
-        # Schedule prefetches for each predicted resource
         if self._scheduler is not None and self._config.mode != RuntimeMode.OBSERVE_ONLY:
             for resource in result.resources:
                 self._scheduler.schedule(
@@ -171,78 +337,6 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                     current_step=self._step,
                     checkpoint_id=checkpoint.checkpoint_id,
                 )
-
-    # ------------------------------------------------------------------
-    # on_tool_start — fires before every tool execution
-    # ------------------------------------------------------------------
-
-    def on_tool_start(
-        self,
-        serialized: dict[str, Any],
-        input_str: str,
-        *,
-        run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags=None,
-        **kwargs,
-    ) -> None:
-        # Always call parent (records metrics)
-        super().on_tool_start(serialized, input_str, run_id=run_id,
-                               parent_run_id=parent_run_id, tags=tags, **kwargs)
-
-        if not self._is_active or self._pending_checkpoint is None:
-            return
-
-        tool_name = serialized.get("name") or kwargs.get("name", "unknown_tool")
-        ckpt = self._pending_checkpoint
-        pred = ckpt.prediction
-
-        if not pred or not pred.resources:
-            return
-
-        predicted_tool = pred.resources[0].consumer_tool
-        hit = tool_name == predicted_tool
-
-        if hit:
-            self._checkpoint_store.resolve(ckpt.checkpoint_id, "validated")
-            if self._bus:
-                self._bus.emit_event(make_prediction_validated_event(
-                    self._config.run_id, self._step, True,
-                    ckpt.checkpoint_id, tool_name,
-                ))
-            # Notify scheduler the resource is being consumed now
-            if self._scheduler:
-                self._scheduler.on_resource_consumed(
-                    pred.resources[0].resource_id,
-                    consumed_at=time.perf_counter(),
-                    current_step=self._step,
-                )
-        else:
-            self._checkpoint_store.resolve(ckpt.checkpoint_id, "diverged", "INVALIDATE_ALL")
-            if self._bus:
-                self._bus.emit_event(make_divergence_detected_event(
-                    self._config.run_id, self._step, predicted_tool, tool_name,
-                    ckpt.checkpoint_id, "INVALIDATE_ALL",
-                ))
-            # Cancel all prefetches for this checkpoint
-            if self._scheduler:
-                self._scheduler.cancel_all_pending(
-                    reason="divergence",
-                    checkpoint_id=ckpt.checkpoint_id,
-                    current_step=self._step,
-                )
-            # Enter conservative mode
-            self._conservative_until_step = self._step + self._config.conservative_mode_steps
-            if self._bus:
-                self._bus.emit_event(make_conservative_mode_event(
-                    self._config.run_id, self._step, "divergence",
-                    self._config.conservative_mode_steps,
-                ))
-
-        self._pending_checkpoint = None
-
-        # Expire old checkpoints
-        self._checkpoint_store.expire_old(self._step)
 
 
 # ---------------------------------------------------------------------------

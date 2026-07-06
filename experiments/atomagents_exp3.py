@@ -7,10 +7,10 @@ Key differences from exp2:
     an automatic model swap if the required model is not currently running.
   - A `code_task` tool is registered on engineer_core; it routes to the
     text-72B specialist (port 8003) for LAMMPS script generation.
-  - Task prompt elicits 2× plan_task + 2× code_task + 2× LAMMPS cycles,
-    creating 6+ model swap events and meaningful prefetch windows.
-  - LAMMPS_SLOWDOWN_S (default 300 via runner) creates ~5-min compute
-    windows for the prefetcher to overlap model loads.
+  - Task prompt elicits 1× plan_task + 2× code_task + 2× LAMMPS cycles;
+    plan_task is also called internally by each computation_task_screw_dislocation.
+  - LAMMPS_SLOWDOWN_S (default 600 via run_l40s.sh) creates 10-min compute
+    windows for proactive model swap: evict current model, load next during LAMMPS.
 
 Usage
 -----
@@ -60,15 +60,17 @@ from runtime.adapters.atomagents import (
 #
 # Designed to elicit:
 #   engineer (72B-VL)  →  plan_task (32B-VL)  →  code_task (72B-text)
-#   →  computation_task (LAMMPS 1, 5-min window)
-#   →  plan_task again (32B-VL)  →  code_task (72B-text)
-#   →  computation_task (LAMMPS 2, 5-min window)
-#   →  analyze_screw_core ×2  →  report
+#   →  computation_task_screw_dislocation (LAMMPS 1, 10-min window;
+#       proactive prefetch loads 32B during LAMMPS, then calls plan_task internally)
+#   →  code_task (72B-text)
+#   →  computation_task_screw_dislocation (LAMMPS 2, 10-min window; same pattern)
+#   →  report
 #
-# Model swap sequence (with all models sharing GPUs):
+# Model swap sequence (all models share one GPU pool):
 #   start 72B-VL → swap to 32B (plan1) → swap to 72B-text (code1)
-#   → swap to 72B-VL (LAMMPS1) → swap to 32B (plan2) → swap to 72B-text (code2)
-#   → swap to 72B-VL (LAMMPS2 + analyze + report)
+#   → swap to 72B-VL → [LAMMPS1: proactive: stop 72B-VL, load 32B] → plan_task (32B hot)
+#   → swap to 72B-text (code2) → swap to 72B-VL
+#   → [LAMMPS2: proactive: stop 72B-VL, load 32B] → plan_task (32B hot) → report
 # ---------------------------------------------------------------------------
 DEFAULT_TASK_PROMPT_EXP3 = """\
 Compare the core structure of the 1/2<111> screw dislocation in W using \
@@ -80,20 +82,25 @@ Required steps (do these exactly, in this order, then TERMINATE):
 2. Call code_task to get the LAMMPS input parameters and script outline verified by the \
 code specialist for potential 1 (W_Zhou04.eam.alloy). Pass a clear description of what \
 the script should do (create crystal, introduce screw dislocation, relax with CG minimizer).
-3. Call computation_task_screw_dislocation for W_Zhou04.eam.alloy using guidance from step 2.
-4. Call plan_task again to review the intermediate result from step 3 and re-plan the \
-approach for potential 2 (w_eam4.fs), noting any adjustments needed.
-5. Call code_task to get the LAMMPS input parameters for potential 2 (w_eam4.fs) reviewed \
-by the code specialist, incorporating any adjustments from step 4.
-6. Call computation_task_screw_dislocation for w_eam4.fs using guidance from step 5.
-7. Call analyze_screw_core with the DD map path returned in step 3 to classify the core structure.
-8. Call analyze_screw_core with the DD map path returned in step 6 to classify the core structure.
-9. Report whether each potential gives a polarized or unpolarized core and summarize the \
-structural comparison.
+3. Call computation_task_screw_dislocation for W_Zhou04.eam.alloy with \
+analysis_query="Classify the screw dislocation core (polarized or unpolarized?) and \
+identify any adjustments needed before running w_eam4.fs." \
+This function runs LAMMPS and then automatically performs structural analysis — \
+do NOT call plan_task again after this step.
+4. Call code_task to get the LAMMPS input parameters for potential 2 (w_eam4.fs) reviewed \
+by the code specialist, incorporating any structural insights from step 3.
+5. Call computation_task_screw_dislocation for w_eam4.fs with \
+analysis_query="Classify the screw dislocation core (polarized or unpolarized?) and \
+compare the energetics with the W_Zhou04.eam.alloy result." \
+This function runs LAMMPS and then automatically performs structural analysis — \
+do NOT call plan_task again after this step.
+6. Report whether each potential gives a polarized or unpolarized core and summarize the \
+structural and energetic comparison between the two potentials.
 
 Critical rules:
-- Always call plan_task before each set of computations (steps 1 and 4).
-- Always call code_task before each computation_task_screw_dislocation (steps 2 and 5).
+- Call plan_task ONLY in step 1. computation_task_screw_dislocation handles its own \
+  structural analysis via the analysis_query argument — do NOT call plan_task after steps 3 or 5.
+- Always call code_task before each computation_task_screw_dislocation (steps 2 and 4).
 - Do NOT compute surface energy, elastic constants, stacking fault energy, NEB barriers, \
 or any other property.
 - Do NOT invent tool names. Only call tools that are registered with you.
@@ -425,8 +432,8 @@ def run_exp3(args: argparse.Namespace) -> None:
         run_id=run_id,
         results_dir=str(results_dir),
         interval_s=3.0,
-        port_72b=8001,
-        port_32b=8002,
+        port_72b=8007,
+        port_32b=8012,
     )
     profiler.start()
 

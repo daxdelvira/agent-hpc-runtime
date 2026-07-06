@@ -7,19 +7,23 @@
     "consumer_tool": "computation_task",
     "resource_type": "vllm_model",
     "name": "qwen_32b",
-    "model_endpoint": "http://localhost:8002",
-    "estimated_load_s": 1200.0,
+    "model_endpoint": "http://localhost:8012",
+    "estimated_load_s": 330.0,
     "cancellation_safe": false,
     "consumer_step_offset": 2
   },
   {
+    "_comment": "Exp3 proactive-swap: when computation_task fires, stop qwen_72b during LAMMPS window (GPU idle) and immediately reload it.",
+    "_note": "After LAMMPS ends the framework needs qwen_72b to process the tool result; reloading during the 900s window hides the 465s stall.",
     "consumer_tool": "computation_task_screw_dislocation",
     "resource_type": "vllm_model",
-    "name": "qwen_32b",
-    "model_endpoint": "http://localhost:8002",
-    "estimated_load_s": 1200.0,
+    "name": "qwen_72b",
+    "model_endpoint": "http://localhost:8007",
+    "estimated_load_s": 465.0,
     "cancellation_safe": false,
-    "consumer_step_offset": 1
+    "consumer_step_offset": 1,
+    "proactive_swap": true,
+    "compute_window_min_s": 600
   },
   {
     "consumer_tool": "computation_task_screw_dislocation",
@@ -43,8 +47,8 @@
     "consumer_tool": "computation_task_surface_energy",
     "resource_type": "vllm_model",
     "name": "qwen_32b",
-    "model_endpoint": "http://localhost:8002",
-    "estimated_load_s": 1200.0,
+    "model_endpoint": "http://localhost:8012",
+    "estimated_load_s": 330.0,
     "cancellation_safe": false,
     "consumer_step_offset": 1
   },
@@ -52,8 +56,8 @@
     "consumer_tool": "computation_task_NEB",
     "resource_type": "vllm_model",
     "name": "qwen_32b",
-    "model_endpoint": "http://localhost:8002",
-    "estimated_load_s": 1200.0,
+    "model_endpoint": "http://localhost:8012",
+    "estimated_load_s": 330.0,
     "cancellation_safe": false,
     "consumer_step_offset": 1
   },
@@ -61,8 +65,8 @@
     "consumer_tool": "computation_task_elastic",
     "resource_type": "vllm_model",
     "name": "qwen_32b",
-    "model_endpoint": "http://localhost:8002",
-    "estimated_load_s": 1200.0,
+    "model_endpoint": "http://localhost:8012",
+    "estimated_load_s": 330.0,
     "cancellation_safe": false,
     "consumer_step_offset": 1
   },
@@ -70,8 +74,8 @@
     "consumer_tool": "plan_task",
     "resource_type": "vllm_model",
     "name": "qwen_32b",
-    "model_endpoint": "http://localhost:8002",
-    "estimated_load_s": 1200.0,
+    "model_endpoint": "http://localhost:8012",
+    "estimated_load_s": 330.0,
     "cancellation_safe": false,
     "consumer_step_offset": 1
   },
@@ -107,7 +111,7 @@
     "resource_type": "vllm_model",
     "name": "qwen_72b_text",
     "model_endpoint": "http://localhost:8003",
-    "estimated_load_s": 1200.0,
+    "estimated_load_s": 450.0,
     "cancellation_safe": false,
     "consumer_step_offset": 1
   },
@@ -116,27 +120,15 @@
     "resource_type": "vllm_model",
     "name": "qwen_72b_text",
     "model_endpoint": "http://localhost:8003",
-    "estimated_load_s": 1200.0,
+    "estimated_load_s": 450.0,
     "cancellation_safe": false,
     "consumer_step_offset": 2
   },
   {
-    "_comment": "After code_task the engineer calls computation_task; predict 72b-vl swap back.",
-    "_note": "The model router handles the actual swap; this entry lets the prefetcher track it."
-  },
-  {
-    "consumer_tool": "computation_task_screw_dislocation",
-    "resource_type": "vllm_model",
-    "name": "qwen_72b",
-    "model_endpoint": "http://localhost:8001",
-    "estimated_load_s": 1200.0,
-    "cancellation_safe": false,
-    "consumer_step_offset": 1
-  },
-  {
+    "_comment": "mace_mp:medium matches MaceCalc(calculator_type='mace_mp', model='medium') — ChemGraph's default.",
     "consumer_tool": "run_ase",
     "resource_type": "mace_model",
-    "name": "mace-mp-0",
+    "name": "mace_mp:medium",
     "path": null,
     "estimated_load_s": 40.0,
     "cancellation_safe": true,
@@ -145,7 +137,7 @@
   {
     "consumer_tool": "smiles_to_coordinate_file",
     "resource_type": "mace_model",
-    "name": "mace-mp-0",
+    "name": "mace_mp:medium",
     "path": null,
     "estimated_load_s": 40.0,
     "cancellation_safe": true,

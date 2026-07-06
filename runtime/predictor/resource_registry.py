@@ -43,6 +43,7 @@ def _spec_from_dict(d: dict) -> ResourceSpec:
         cancellation_safe=d.get("cancellation_safe", True),
         consumer_tool=d.get("consumer_tool", ""),
         consumer_step_offset=d.get("consumer_step_offset", 1),
+        proactive_swap=d.get("proactive_swap", False),
     )
 
 
@@ -142,7 +143,7 @@ class ResourceRegistry:
             "Qwen/Qwen2.5-32B-Instruct": "qwen_32b",
         }
         _MODEL_ENDPOINT: dict[str, str] = {
-            "qwen_72b": "http://localhost:8001",
+            "qwen_72b": "http://localhost:8007",
             "qwen_32b": "http://localhost:8002",
         }
         _MODEL_LOAD_S: dict[str, float] = {

@@ -77,6 +77,7 @@ class ResourceSpec:
     cancellation_safe: bool = True      # False for vLLM models (can't abort mid-load)
     consumer_tool: str = ""             # e.g. "run_ase", "computation_task_screw_dislocation"
     consumer_step_offset: int = 1       # steps from now until needed
+    proactive_swap: bool = False        # if True: stop current model during compute window, load this one
 
     def to_dict(self) -> dict:
         return asdict(self)

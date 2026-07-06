@@ -102,6 +102,7 @@ class PrefetchScheduler:
             checkpoint_id=checkpoint_id,
             workflow_step_at_start=current_step,
             predicted_at_step=current_step,
+            proactive_swap=resource.proactive_swap,
         )
         with self._lock:
             self._tasks[task.task_id] = task
@@ -241,6 +242,11 @@ class PrefetchScheduler:
         # For non-cancellable resources, require higher confidence
         if not resource.cancellation_safe and resource.confidence < min(0.9, cfg.confidence_threshold + 0.1):
             return False, "non_cancellable_resource_requires_higher_confidence"
+        # Proactive-swap tasks: load during a known compute window (e.g. LAMMPS).
+        # The window length is enforced via compute_window_min_s in tool_resources.json
+        # rather than the generic overlap check, so skip the overlap heuristic here.
+        if resource.proactive_swap:
+            return True, "proactive_swap_compute_window"
         # If we know the load time and there's not enough compute left to overlap: skip
         if (
             resource.estimated_load_s is not None

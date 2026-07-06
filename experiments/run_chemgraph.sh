@@ -67,6 +67,7 @@ RUNTIME_ENABLED_FLAG=""
 [[ "$MODE" != "baseline" ]] && RUNTIME_ENABLED_FLAG="RUNTIME_ENABLED=1"
 
 env $RUNTIME_ENABLED_FLAG \
+  OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}" \
   conda run -n chemgraph \
     python -u "$REPO_ROOT/experiments/chemgraph_exp.py" \
       --runtime-mode "$MODE" \

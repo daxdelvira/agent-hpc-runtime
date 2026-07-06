@@ -46,8 +46,11 @@ from runtime.prefetch.base import PrefetchExecutor, PrefetchStatus, PrefetchTask
 
 
 # Module-level cache shared between MacePrefetchExecutor and MaceCalc.
-# Key: (calculator_type, model_str) tuple.  Value: loaded MACECalculator instance.
+# Key: (calculator_type, model_str) tuple.
+# _MACE_CACHE: completed calculators ready for use (popped on consumption).
+# _MACE_PENDING: in-progress loads — value is a threading.Event set when done.
 _MACE_CACHE: dict[tuple, Any] = {}
+_MACE_PENDING: dict[tuple, threading.Event] = {}
 _CACHE_LOCK = threading.Lock()
 
 
@@ -56,22 +59,41 @@ def _mace_cache_key(calculator_type: str, model: Any) -> tuple[str, str]:
     return (calculator_type, str(model) if model is not None else "default")
 
 
-def get_cached_mace_calculator(calculator_type: str, model: Any) -> Any | None:
+def get_cached_mace_calculator(
+    calculator_type: str,
+    model: Any,
+    wait_timeout_s: float = 0.0,
+) -> Any | None:
     """
     Return a pre-loaded MACECalculator for the given spec, or None if not cached.
     Pops the entry — each cached instance is consumed exactly once.
 
-    Used in MaceCalc.get_calculator() to bypass the model load when prefetch
-    has already completed.
+    If a prefetch is still in progress (load started but not yet complete)
+    and wait_timeout_s > 0, this call blocks until the load finishes or the
+    timeout expires.  This prevents a double-load race where MaceCalc starts
+    its own load just as the background prefetch finishes.
 
     Parameters
     ----------
     calculator_type : str   e.g. "mace_mp", "mace_off", "mace_anicc"
     model           : str | Path | None   model variant or None for default
+    wait_timeout_s  : float   seconds to wait for an in-progress prefetch (0 = no wait)
     """
     key = _mace_cache_key(calculator_type, model)
     with _CACHE_LOCK:
-        return _MACE_CACHE.pop(key, None)
+        if key in _MACE_CACHE:
+            return _MACE_CACHE.pop(key)
+        # Capture the Event while still holding the lock so we don't miss the
+        # moment it transitions from PENDING → CACHE.
+        pending_event = _MACE_PENDING.get(key) if wait_timeout_s > 0 else None
+
+    if pending_event is not None:
+        # Block until the background load completes or times out
+        pending_event.wait(timeout=wait_timeout_s)
+        with _CACHE_LOCK:
+            return _MACE_CACHE.pop(key, None)
+
+    return None
 
 
 # Legacy alias — kept for any existing callers that use the path-based API.
@@ -119,11 +141,8 @@ class MacePrefetchExecutor(PrefetchExecutor):
         self._lock = threading.Lock()
 
     def start(self, task: PrefetchTask) -> None:
-        if not task.resource.path:
-            task.status = PrefetchStatus.FAILED
-            task.error = "resource.path is None; cannot load MACE model"
-            return
-
+        # MACE loading uses resource.name (e.g. "mace_mp:medium"), not path.
+        # path=None is normal and expected for all MACE resources.
         task.started_at = time.perf_counter()
         task.status = PrefetchStatus.IN_PROGRESS
 
@@ -211,26 +230,35 @@ class MacePrefetchExecutor(PrefetchExecutor):
 
         The cache key is (calculator_type, model_str) — the same key that
         MaceCalc.get_calculator() checks before doing its own load.
+
+        Registers an Event in _MACE_PENDING before loading so that
+        MaceCalc.get_calculator() can wait for it (via wait_timeout_s) instead
+        of starting a concurrent duplicate load.
         """
         calc_type, model_str = self._key_from_resource(task.resource)
         model_arg: Any = None if model_str == "default" else model_str
         cache_key = _mace_cache_key(calc_type, model_arg)
-        t0 = time.perf_counter()
 
+        # Signal that a load is in progress so any concurrent caller can wait
+        pending_event = threading.Event()
+        with _CACHE_LOCK:
+            _MACE_PENDING[cache_key] = pending_event
+
+        t0 = time.perf_counter()
         try:
             if calc_type == "mace_mp":
                 from mace.calculators import mace_mp  # type: ignore
                 calc = mace_mp(
                     model=model_arg,
                     device=self._device,
-                    default_dtype="float32",
+                    default_dtype="float64",   # matches MaceCalc default
                 )
             elif calc_type == "mace_off":
                 from mace.calculators import mace_off  # type: ignore
                 calc = mace_off(
                     model=model_arg,
                     device=self._device,
-                    default_dtype="float32",
+                    default_dtype="float64",   # matches MaceCalc default
                 )
             elif calc_type == "mace_anicc":
                 from mace.calculators import mace_anicc  # type: ignore
@@ -241,18 +269,26 @@ class MacePrefetchExecutor(PrefetchExecutor):
         except ImportError:
             task.status = PrefetchStatus.FAILED
             task.error = "mace package not installed; run: pip install mace-torch"
+            with _CACHE_LOCK:
+                _MACE_PENDING.pop(cache_key, None)
+            pending_event.set()
             return {"elapsed_s": 0.0, "success": False, "error": task.error}
         except Exception as exc:
             task.status = PrefetchStatus.FAILED
             task.error = str(exc)
+            with _CACHE_LOCK:
+                _MACE_PENDING.pop(cache_key, None)
+            pending_event.set()
             return {"elapsed_s": time.perf_counter() - t0, "success": False, "error": str(exc)}
 
         elapsed = time.perf_counter() - t0
         task.completed_at = time.perf_counter()
 
-        if task.status not in (PrefetchStatus.CANCELLED,):
-            with _CACHE_LOCK:
+        with _CACHE_LOCK:
+            _MACE_PENDING.pop(cache_key, None)
+            if task.status not in (PrefetchStatus.CANCELLED,):
                 self._cache[cache_key] = calc
-            task.status = PrefetchStatus.COMPLETED
+                task.status = PrefetchStatus.COMPLETED
+        pending_event.set()  # unblock any waiter regardless of cancellation
 
         return {"elapsed_s": elapsed, "success": True, "cache_key": str(cache_key)}

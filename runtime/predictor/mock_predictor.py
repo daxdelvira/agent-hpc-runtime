@@ -37,12 +37,15 @@ def _hash(s: str) -> str:
     return hashlib.md5(s.encode()).hexdigest()[:12]
 
 
-# ChemGraph: MACE model loaded by run_ase
+# ChemGraph: MACE model loaded by run_ase.
+# Name uses "calc_type:model" format parsed by MacePrefetchExecutor._key_from_resource().
+# "mace_mp:medium" matches MaceCalc(calculator_type="mace_mp", model="medium"),
+# which is what ChemGraph's default H2O task requests.
 _MACE_MP0 = ResourceSpec(
-    resource_id=_hash("mace-mp-0"),
+    resource_id=_hash("mace_mp:medium"),
     resource_type="mace_model",
-    name="mace-mp-0",
-    path=None,           # populated from config at runtime if available
+    name="mace_mp:medium",
+    path=None,
     estimated_load_s=40.0,
     confidence=0.0,      # set per-prediction
     cancellation_safe=True,
@@ -52,9 +55,9 @@ _MACE_MP0 = ResourceSpec(
 
 # Same resource, 2-step lookahead (molecule→smiles→run_ase)
 _MACE_MP0_2 = ResourceSpec(
-    resource_id=_hash("mace-mp-0"),
+    resource_id=_hash("mace_mp:medium"),
     resource_type="mace_model",
-    name="mace-mp-0",
+    name="mace_mp:medium",
     path=None,
     estimated_load_s=40.0,
     confidence=0.0,
@@ -68,7 +71,7 @@ _QWEN_72B = ResourceSpec(
     resource_id=_hash("qwen_72b"),
     resource_type="vllm_model",
     name="qwen_72b",
-    model_endpoint="http://localhost:8001",
+    model_endpoint="http://localhost:8007",
     estimated_load_s=2700.0,   # up to 45 min cold NFS load
     confidence=0.0,
     cancellation_safe=False,   # can't abort mid-load
@@ -81,12 +84,29 @@ _QWEN_32B = ResourceSpec(
     resource_id=_hash("qwen_32b"),
     resource_type="vllm_model",
     name="qwen_32b",
-    model_endpoint="http://localhost:8002",
+    model_endpoint="http://localhost:8012",
     estimated_load_s=1200.0,   # ~20 min cold NFS load
     confidence=0.0,
     cancellation_safe=False,
     consumer_tool="computation_task",
     consumer_step_offset=2,
+)
+
+# Exp3: proactive-swap variant — stop qwen_72b at LAMMPS start (GPU idle, 900s window)
+# and immediately reload it in the background so it is hot when LAMMPS finishes.
+# After LAMMPS the framework always needs qwen_72b to process the tool result; hiding
+# this 465s reload inside the LAMMPS window saves the full stall.
+_QWEN_72B_PROACTIVE = ResourceSpec(
+    resource_id=_hash("qwen_72b"),
+    resource_type="vllm_model",
+    name="qwen_72b",
+    model_endpoint="http://localhost:8007",
+    estimated_load_s=465.0,
+    confidence=0.0,
+    cancellation_safe=False,
+    consumer_tool="computation_task_screw_dislocation",
+    consumer_step_offset=1,
+    proactive_swap=True,
 )
 
 # AtomAgents: EAM potential files for screw dislocation
@@ -152,12 +172,11 @@ _ATOMAGENTS_TRANSITIONS: dict[str, list[tuple[ResourceSpec, float]]] = {
         (_W_ZHOU04, 0.87),
         (_W_EAM4,   0.87),
     ],
-    # computation_task_screw_dislocation always launches a 32B sub-conversation.
-    # This prediction fires when the OUTER agent is about to call computation_task,
-    # so 32B can start loading while the first LAMMPS relaxation runs (overlap window
-    # is ~30-45 min on PACE NFS, easily covering the ~20 min 32B load time).
+    # Exp3 proactive-swap: when computation_task_screw_dislocation fires, stop qwen_72b
+    # during the LAMMPS window (GPU idle) and reload it in background.  After LAMMPS,
+    # the framework needs qwen_72b immediately to process the tool result → 0s stall.
     "computation_task_screw_dislocation": [
-        (_QWEN_32B, 0.92),
+        (_QWEN_72B_PROACTIVE, 0.92),
     ],
     # Surface/elastic/NEB variants also use 32B for the inner computation
     "computation_task_surface_energy": [(_QWEN_32B, 0.92)],

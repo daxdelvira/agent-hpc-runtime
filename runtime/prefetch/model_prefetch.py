@@ -178,9 +178,39 @@ class ModelPrefetchExecutor(PrefetchExecutor):
         Snapshots hardware probes before/after if self._probes is set.
         After the load finishes, checks for a cancellation that arrived mid-load
         and marks the task WASTED instead of COMPLETED.
+
+        Proactive-swap path (task.proactive_swap=True):
+          Used when a long compute window (e.g. LAMMPS) provides GPU idle time.
+          The compute tool (computation_task_screw_dislocation) stops the current
+          model right before LAMMPS starts.  This background thread waits until
+          the GPUs are free, then loads the next model concurrently with LAMMPS.
+          This avoids stopping qwen_72b too early (before a bad-arg retry fires).
         """
         probe_before = self._probes.snapshot() if self._probes else None
         try:
+            if task.proactive_swap:
+                # Wait for the current model to be stopped by the compute tool.
+                # Timeout after 10 min; fall back to stopping it ourselves.
+                deadline = time.perf_counter() + 600.0
+                while time.perf_counter() < deadline:
+                    current = self._orchestrator.get_running_model()
+                    if current is None:
+                        break
+                    time.sleep(5.0)
+                else:
+                    current = self._orchestrator.get_running_model()
+                    if current and current != task.resource.name:
+                        print(
+                            f"[model_prefetch] Proactive swap timeout: stopping {current} "
+                            f"(fallback) to load {task.resource.name}.",
+                            flush=True,
+                        )
+                        self._orchestrator.stop_model(current)
+                print(
+                    f"[model_prefetch] Proactive swap: GPUs free — loading {task.resource.name}.",
+                    flush=True,
+                )
+
             elapsed = self._orchestrator.start_model_measured(
                 task.resource.name,
                 metrics=None,

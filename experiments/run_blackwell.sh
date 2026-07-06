@@ -79,9 +79,35 @@ fi
 [[ "$NO_START_MODELS" == "1" ]] && BASE_FLAGS+=(--no-start-models)
 
 cleanup_vllm(){
-  # Kill any lingering vLLM processes and wait for all 4 GPUs to drop below 1 GB.
-  # Called before each condition so stale servers don't block new ones.
+  # Kill our own vLLM processes and wait for GPUs to clear.
+  # Also checks that none of our experiment ports are occupied by a foreign model;
+  # if they are, abort rather than silently using the wrong model.
   pkill -f "vllm_clean128" 2>/dev/null || true
+
+  # Ports used by this experiment (must match MODELS_BLACKWELL_SWAP in model_configs.py).
+  local OUR_PORTS=(8007 8012 8003)
+  local OUR_MODELS=("Qwen/Qwen2.5-VL-72B-Instruct" "Qwen/Qwen2.5-VL-32B-Instruct" "Qwen/Qwen2.5-72B-Instruct")
+  sleep 3  # brief pause for pkill to propagate
+  for port in "${OUR_PORTS[@]}"; do
+    local model_id
+    model_id=$(curl -s --connect-timeout 2 "http://localhost:${port}/v1/models" 2>/dev/null \
+      | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data'][0]['id'])" 2>/dev/null \
+      || echo "FREE")
+    if [[ "$model_id" == "FREE" ]]; then
+      continue
+    fi
+    local is_ours=0
+    for m in "${OUR_MODELS[@]}"; do
+      [[ "$model_id" == "$m" ]] && is_ours=1 && break
+    done
+    if [[ "$is_ours" -eq 0 ]]; then
+      log "ERROR: Port ${port} is occupied by a foreign model: ${model_id}"
+      log "This is likely another user's vLLM server on a shared node."
+      log "Change the port for this model in experiments/model_configs.py and rerun."
+      exit 1
+    fi
+  done
+
   local attempts=0
   while (( attempts < 60 )); do
     local used

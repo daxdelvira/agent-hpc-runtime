@@ -58,7 +58,7 @@ _PROJECT_ROOT = _HERE.parent
 # Make runtime importable
 sys.path.insert(0, str(_PROJECT_ROOT))
 # Make ChemGraph importable (agent_hpc/ChemGraph/src)
-_CG_SRC = _PROJECT_ROOT.parent / "agent_hpc" / "ChemGraph" / "src"
+_CG_SRC = _PROJECT_ROOT.parent / "ChemGraph" / "src"
 if _CG_SRC.exists():
     sys.path.insert(0, str(_CG_SRC))
 
@@ -184,7 +184,17 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         results_dir=str(results_dir),
     )
 
-    bus = EventBus(run_id=run_id, log_path=trace_path)
+    # Share ChemGraph's WorkflowTracker file so runtime events and workflow
+    # events (llm_call, tool_call) are interleaved in one JSONL for analysis.
+    try:
+        from chemgraph.instrumentation.workflow_tracker import tracker as _cg_tracker
+        bus = EventBus(run_id=run_id, shared_file=_cg_tracker._file)
+        trace_path = _cg_tracker.log_path
+        print(f"[runtime] Sharing WorkflowTracker log: {trace_path}")
+    except Exception as _e:
+        print(f"[runtime] Could not share WorkflowTracker file ({_e}); using standalone log.")
+        bus = EventBus(run_id=run_id, log_path=trace_path)
+
     executor = _build_executor(mode, args.mace_device)
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
@@ -222,10 +232,34 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     # Build ChemGraph agent
     # ------------------------------------------------------------------
     model_name = args.model_name or os.environ.get("CHEMGRAPH_MODEL", "gpt-4o-mini")
-    cg_kwargs: dict = {"model_name": model_name, "workflow_type": "single_agent"}
+    workflow_type = args.workflow_type
+    cg_kwargs: dict = {"model_name": model_name, "workflow_type": workflow_type}
+    if args.planner_model:
+        cg_kwargs["planner_model_name"] = args.planner_model
+        print(f"[chemgraph] Planner model: {args.planner_model!r}  "
+              f"Worker model: {model_name!r}")
+
+    if workflow_type == "multi_agent":
+        # Augment the planner prompt so it names ChemGraph tool functions
+        # explicitly — this lets the runtime extract a structured plan sequence
+        # from the planner's output via plan_extractor.py.
+        from chemgraph.prompt.multi_agent_prompt import planner_prompt as _base_prompt
+        _tool_addendum = (
+            "\n\nIMPORTANT: In each task prompt, explicitly name which Python "
+            "tool function the worker should call. The available tool names are:\n"
+            "  molecule_name_to_smiles, smiles_to_coordinate_file, smiles_to_atomsdata,\n"
+            "  file_to_atomsdata, run_ase, extract_output_json\n"
+            "Always include the exact function name (e.g. 'call molecule_name_to_smiles "
+            "to convert the molecule name to a SMILES string')."
+        )
+        cg_kwargs["planner_prompt"] = _base_prompt + _tool_addendum
     if args.base_url:
         cg_kwargs["base_url"] = args.base_url
-    if args.api_key:
+        # Local vLLM servers don't check the API key; use a dummy value so
+        # LangChain/OpenAI SDK doesn't prompt for one or raise a missing-key error.
+        api_key = args.api_key or os.environ.get("OPENAI_API_KEY", "dummy")
+        cg_kwargs["api_key"] = api_key
+    elif args.api_key:
         cg_kwargs["api_key"] = args.api_key
 
     try:
@@ -356,7 +390,18 @@ def main() -> None:
     parser.add_argument(
         "--model-name",
         default=None,
-        help="LLM model name for ChemGraph (default: gpt-4o-mini or CHEMGRAPH_MODEL env)",
+        help="LLM model name for workers (default: gpt-4o-mini or CHEMGRAPH_MODEL env)",
+    )
+    parser.add_argument(
+        "--planner-model",
+        default=None,
+        help="Smaller LLM for the PlannerAgent in multi_agent mode (default: same as --model-name)",
+    )
+    parser.add_argument(
+        "--workflow-type",
+        default="single_agent",
+        choices=["single_agent", "multi_agent", "python_relp", "graspa", "mock_agent"],
+        help="ChemGraph workflow type (default: single_agent)",
     )
     parser.add_argument("--base-url", default=None, help="LLM API base URL")
     parser.add_argument("--api-key", default=None, help="LLM API key")
