@@ -101,6 +101,25 @@ Then compare the two results and summarise key geometric differences.
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _infer_condition(args: argparse.Namespace, mode, skip_types: list[str]) -> str:
+    if mode.value == "baseline":
+        return "baseline"
+    parts = []
+    if getattr(args, "no_plan_extraction", False):
+        parts.append("no_plan")
+    if getattr(args, "no_divergence_guard", False):
+        parts.append("no_diverg_guard")
+    if getattr(args, "naive_prefetch", False):
+        parts.append("naive_prefetch")
+    for t in skip_types:
+        parts.append(f"no_{t.replace('_', '')}")
+    return "_".join(parts) if parts else "full_system"
+
+
+# ---------------------------------------------------------------------------
 # Executor builder
 # ---------------------------------------------------------------------------
 
@@ -174,12 +193,20 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Runtime layer setup
     # ------------------------------------------------------------------
+    skip_types = [s.strip() for s in getattr(args, "skip_resource_types", "").split(",") if s.strip()]
+    condition = getattr(args, "condition", None) or _infer_condition(args, mode, skip_types)
+
     cfg = RuntimeConfig(
         mode=mode,
         run_id=run_id,
         confidence_threshold=args.confidence,
         max_horizon=args.horizon,
         conservative_mode_steps=3,
+        plan_extraction_horizon=0 if getattr(args, "no_plan_extraction", False) else 3,
+        disable_divergence_cancellation=getattr(args, "no_divergence_guard", False),
+        naive_prefetch=getattr(args, "naive_prefetch", False),
+        skip_resource_types=skip_types,
+        condition=condition,
         log_dir=str(log_dir),
         results_dir=str(results_dir),
     )
@@ -321,6 +348,13 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             "workflow": "chemgraph_mace",
             "model_name": model_name,
             "mace_device": args.mace_device,
+            "condition": condition,
+            "ablation": {
+                "no_plan_extraction": getattr(args, "no_plan_extraction", False),
+                "no_divergence_guard": getattr(args, "no_divergence_guard", False),
+                "naive_prefetch": getattr(args, "naive_prefetch", False),
+                "skip_resource_types": skip_types,
+            },
             "total_benefit_s": overlap.get("total_benefit_s", 0.0),
             "total_waste_s": overlap.get("total_waste_s", 0.0),
             "estimated_total_benefit_s": overlap.get("estimated_total_benefit_s", 0.0),
@@ -419,6 +453,16 @@ def main() -> None:
         help="Predictor confidence threshold",
     )
     parser.add_argument("--horizon", type=int, default=2)
+    parser.add_argument("--no-plan-extraction", action="store_true", dest="no_plan_extraction",
+        help="Disable LLM plan extraction (plan_extraction_horizon=0)")
+    parser.add_argument("--no-divergence-guard", action="store_true", dest="no_divergence_guard",
+        help="Track divergences but do not cancel pending prefetches")
+    parser.add_argument("--naive-prefetch", action="store_true", dest="naive_prefetch",
+        help="Prefetch on every prediction regardless of confidence")
+    parser.add_argument("--skip-resource-types", default="", dest="skip_resource_types",
+        help="Comma-separated resource types to never prefetch (e.g. mace_mp)")
+    parser.add_argument("--condition", default=None,
+        help="Override the auto-inferred ablation condition label in the summary JSON")
 
     args = parser.parse_args()
 

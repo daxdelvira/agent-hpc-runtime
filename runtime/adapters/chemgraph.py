@@ -153,6 +153,8 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
 
         if node_name != "PlannerAgent" or self._plan_context is not None:
             return
+        if self._step > self._config.plan_extraction_horizon:
+            return
         if not self._bus or not isinstance(outputs, dict):
             return
 
@@ -266,20 +268,21 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                                 self._config.run_id, self._step, predicted_tool,
                                 tool_name, ckpt.checkpoint_id, "INVALIDATE_ALL",
                             ))
-                        if self._scheduler:
-                            self._scheduler.cancel_all_pending(
-                                reason="divergence",
-                                checkpoint_id=ckpt.checkpoint_id,
-                                current_step=self._step,
+                        if not self._config.disable_divergence_cancellation:
+                            if self._scheduler:
+                                self._scheduler.cancel_all_pending(
+                                    reason="divergence",
+                                    checkpoint_id=ckpt.checkpoint_id,
+                                    current_step=self._step,
+                                )
+                            self._conservative_until_step = (
+                                self._step + self._config.conservative_mode_steps
                             )
-                        self._conservative_until_step = (
-                            self._step + self._config.conservative_mode_steps
-                        )
-                        if self._bus:
-                            self._bus.emit_event(make_conservative_mode_event(
-                                self._config.run_id, self._step, "divergence",
-                                self._config.conservative_mode_steps,
-                            ))
+                            if self._bus:
+                                self._bus.emit_event(make_conservative_mode_event(
+                                    self._config.run_id, self._step, "divergence",
+                                    self._config.conservative_mode_steps,
+                                ))
                     self._pending_checkpoint = None
                     self._checkpoint_store.expire_old(self._step)
                 # else: too early — multi-step lookahead, keep pending
