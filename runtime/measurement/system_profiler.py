@@ -41,6 +41,12 @@ try:
 except ImportError:
     _HAVE_PSUTIL = False
 
+try:
+    import pynvml
+    _HAVE_PYNVML = True
+except ImportError:
+    _HAVE_PYNVML = False
+
 
 # ── Columns ───────────────────────────────────────────────────────────────────
 
@@ -70,6 +76,8 @@ COLUMNS = [
 
     # Per-GPU (one column set per GPU, added dynamically at start)
     # gpu0_util_pct, gpu0_mem_used_mb, gpu0_power_w, ...
+    # gpu0_pcie_rx_mb_s, gpu0_pcie_tx_mb_s (host→GPU / GPU→host, via NVML;
+    # -1 if pynvml is unavailable — attributes DRAM→GPU model uploads)
 ]
 
 
@@ -169,6 +177,40 @@ def _query_nvidia_smi() -> list[dict[str, Any]]:
     return gpus
 
 
+def _init_nvml_handles() -> dict[int, Any]:
+    """
+    Initialize NVML and return {gpu_index: handle}.
+    Returns {} if pynvml is unavailable or init fails (e.g. no GPUs).
+    """
+    if not _HAVE_PYNVML:
+        return {}
+    try:
+        pynvml.nvmlInit()
+        return {
+            i: pynvml.nvmlDeviceGetHandleByIndex(i)
+            for i in range(pynvml.nvmlDeviceGetCount())
+        }
+    except Exception:
+        return {}
+
+
+def _query_pcie(handles: dict[int, Any]) -> dict[int, tuple[float, float]]:
+    """
+    Return {gpu_index: (rx_mb_s, tx_mb_s)}. RX = host→GPU (model uploads).
+    NVML samples each counter over a ~20 ms window, so this call blocks
+    ~40 ms per GPU — fine at a multi-second sampling interval.
+    """
+    out: dict[int, tuple[float, float]] = {}
+    for idx, h in handles.items():
+        try:
+            rx_kb = pynvml.nvmlDeviceGetPcieThroughput(h, pynvml.NVML_PCIE_UTIL_RX_BYTES)
+            tx_kb = pynvml.nvmlDeviceGetPcieThroughput(h, pynvml.NVML_PCIE_UTIL_TX_BYTES)
+            out[idx] = (rx_kb / 1024.0, tx_kb / 1024.0)
+        except Exception:
+            out[idx] = (-1.0, -1.0)
+    return out
+
+
 # ── Main class ─────────────────────────────────────────────────────────────────
 
 class SystemProfiler:
@@ -257,6 +299,10 @@ class SystemProfiler:
         # Probe GPU count once
         gpus_initial = _query_nvidia_smi()
         gpu_indices = [g["index"] for g in gpus_initial]
+        nvml_handles = _init_nvml_handles()
+        if gpu_indices and not nvml_handles:
+            print("[profiler] WARNING: pynvml unavailable — PCIe throughput "
+                  "columns will be -1.", flush=True)
 
         # Build CSV columns dynamically (add GPU columns)
         columns = list(COLUMNS)
@@ -267,6 +313,8 @@ class SystemProfiler:
                 f"gpu{idx}_mem_used_mb",
                 f"gpu{idx}_mem_total_mb",
                 f"gpu{idx}_power_w",
+                f"gpu{idx}_pcie_rx_mb_s",
+                f"gpu{idx}_pcie_tx_mb_s",
             ]
 
         with open(self.csv_path, "w", newline="", buffering=1) as f:
@@ -328,6 +376,16 @@ class SystemProfiler:
                     row[f"gpu{idx}_mem_used_mb"]   = g["mem_used_mb"]
                     row[f"gpu{idx}_mem_total_mb"]  = g["mem_total_mb"]
                     row[f"gpu{idx}_power_w"]        = g["power_w"]
+
+                # PCIe throughput (host↔GPU) via NVML
+                if nvml_handles:
+                    for idx, (rx, tx) in _query_pcie(nvml_handles).items():
+                        row[f"gpu{idx}_pcie_rx_mb_s"] = f"{rx:.1f}"
+                        row[f"gpu{idx}_pcie_tx_mb_s"] = f"{tx:.1f}"
+                else:
+                    for idx in gpu_indices:
+                        row[f"gpu{idx}_pcie_rx_mb_s"] = -1
+                        row[f"gpu{idx}_pcie_tx_mb_s"] = -1
 
                 writer.writerow(row)
                 self._stop_event.wait(self.interval_s)

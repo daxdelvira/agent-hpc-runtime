@@ -75,6 +75,7 @@ class OraclePredictor(Predictor):
         path = Path(self._trace_path)
         if not path.exists():
             return
+        seq = 0
         with open(path) as f:
             for line in f:
                 line = line.strip()
@@ -85,10 +86,17 @@ class OraclePredictor(Predictor):
                 except json.JSONDecodeError:
                     continue
                 if ev.get("event_type") == "tool_call":
-                    step = ev.get("step", 0)
                     tool = ev.get("payload", {}).get("tool", "")
-                    if step and tool:
-                        self._step_to_tool[step] = tool
+                    if not tool:
+                        continue
+                    seq += 1
+                    # WorkflowTracker tool_call events carry no "step" field —
+                    # only runtime events do.  The runtime adapter increments its
+                    # step counter once per tool start, so the k-th tool_call in
+                    # file order IS step k.  Use the explicit step when present,
+                    # else fall back to the sequential index.
+                    step = ev.get("step") or seq
+                    self._step_to_tool[step] = tool
 
     @property
     def predictor_id(self) -> str:
@@ -100,6 +108,7 @@ class OraclePredictor(Predictor):
         recent_events: list[dict],
         current_tool_calls: list[dict],
         task_description: str = "",
+        plan_context=None,   # accepted for interface parity; oracle ignores it
     ) -> PredictionResult:
         """
         Return a perfect prediction for what resource will be needed next.

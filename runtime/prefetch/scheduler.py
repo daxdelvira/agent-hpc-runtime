@@ -138,9 +138,11 @@ class PrefetchScheduler:
         # (e.g., ModelPrefetchExecutor sets COMPLETED inside _load_model before
         # this poll thread wakes up).
         if task.status not in (PrefetchStatus.PENDING, PrefetchStatus.IN_PROGRESS):
+            extras: dict = {}
             try:
                 result = self._executor.get_result(task)
                 elapsed = result.get("elapsed_s", 0.0)
+                extras = {k: v for k, v in result.items() if k != "elapsed_s"}
             except Exception as e:
                 task.status = PrefetchStatus.FAILED
                 task.error = str(e)
@@ -148,6 +150,7 @@ class PrefetchScheduler:
 
             self._emit("prefetch_completed", make_prefetch_completed_event(
                 self._config.run_id, step, task.task_id, elapsed,
+                status=task.status.value, extras=extras,
             ).payload, step)
 
     # ------------------------------------------------------------------

@@ -91,6 +91,7 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         config: RuntimeConfig | None = None,
         bus: EventBus | None = None,
         task_description: str = "",
+        orchestrator=None,
     ) -> None:
         super().__init__(metrics_logger, workflow_tracker, gpu_index)
         self._predictor = predictor
@@ -98,16 +99,32 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         self._config = config or RuntimeConfig(mode=RuntimeMode.BASELINE)
         self._bus = bus
         self._task_description = task_description
+        self._orchestrator = orchestrator  # ModelOrchestrator | None — set in swap mode
         self._step = 0
         self._checkpoint_store = CheckpointStore(max_horizon=self._config.max_horizon)
         self._conservative_until_step = 0
         self._pending_checkpoint: CheckpointRecord | None = None
         # Set once when the PlannerAgent node emits its plan (multi_agent workflow).
         self._plan_context = None
+        self._worker_prefetch_scheduled = False
+        self._cache_stage_scheduled = False
+        self._cache_resource_id = ""
+        self._worker_consumed_recorded = False
+        # Option D: aggregator (co-resident) prefetch bookkeeping.
+        self._aggregator_prefetch_started = False
+        self._aggregator_consumed_recorded = False
 
     @property
     def _is_active(self) -> bool:
         return self._config.mode != RuntimeMode.BASELINE and self._predictor is not None
+
+    def _running_model_set(self) -> set[str]:
+        """Names of all managed models whose vLLM process is alive (co-resident
+        aware, unlike get_running_model() which returns only the first)."""
+        if self._orchestrator is None:
+            return set()
+        procs = getattr(self._orchestrator, "processes", {}) or {}
+        return {name for name, p in procs.items() if p.poll() is None}
 
     # ------------------------------------------------------------------
     # on_chain_start — guard against LangGraph passing None for serialized
@@ -135,6 +152,107 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
             **kwargs,
         )
 
+        # Swap mode, Option A: begin warming the worker model's weight shards into
+        # the OS page cache as early as possible — at the very first chain start,
+        # concurrent with GPU-bound planner inference.  Pure host I/O; does not stop
+        # the planner or touch the GPU.  Fires once per run.
+        self._maybe_stage_worker_cache()
+
+        # Swap mode: ensure the worker LLM is loaded before WorkerAgent executes.
+        # In REAL mode the prefetch thread is already loading it (may already be done).
+        # In BASELINE/non-REAL mode no prefetch was scheduled, so we trigger the swap
+        # on-demand here — this is the sequential (non-overlapped) baseline path.
+        node_name = self._chain_names.get(str(run_id), "")
+        if (
+            node_name == "WorkerAgent"
+            and self._orchestrator is not None
+            and self._config.vllm_worker_model
+        ):
+            worker_model = self._config.vllm_worker_model
+            t_wait0 = time.perf_counter()
+            on_demand_swap = False
+            running = self._orchestrator.get_running_model()
+            if running != worker_model:
+                on_demand_swap = True
+                # The vLLM load is about to read the worker weights: this is the
+                # point the staged page cache gets consumed.  Record it so the
+                # overlap trace attributes the staging benefit to this swap.
+                if self._cache_resource_id and self._scheduler is not None:
+                    self._scheduler.on_resource_consumed(
+                        self._cache_resource_id,
+                        consumed_at=time.perf_counter(),
+                        current_step=self._step,
+                    )
+                # Worker not yet loaded: swap now (stop planner, start worker).
+                if running:
+                    self._orchestrator.stop_model(running)
+                self._orchestrator.start_model(worker_model)
+            # Record consumption of the prefetched worker-LLM (and its staged
+            # cache) at NEED time — i.e. now, before the readiness wait.  This
+            # marks the prefetch tasks used instead of wasted, and lets the
+            # trace distinguish "ready in time" (completed < consumed) from
+            # "late" (completed after consumed ≈ the residual wait below).
+            if not self._worker_consumed_recorded and self._scheduler is not None:
+                self._worker_consumed_recorded = True
+                import hashlib as _hashlib
+                worker_rid = _hashlib.md5(worker_model.encode()).hexdigest()[:16]
+                self._scheduler.on_resource_consumed(
+                    worker_rid, consumed_at=t_wait0, current_step=self._step)
+                if self._cache_resource_id and not on_demand_swap:
+                    self._scheduler.on_resource_consumed(
+                        self._cache_resource_id, consumed_at=t_wait0,
+                        current_step=self._step)
+            # Cold Lustre loads of 72B: ~45 min typical worst case, but the
+            # evening-degraded window (40 MB/s observed) exceeded 2700 s and
+            # failed an otherwise-healthy trial on 2026-07-10.  Match the
+            # orchestrator's load_timeout (5400) — a slow swap is valid data
+            # (it IS the exposed stall); a timeout is a lost trial.
+            self._orchestrator.wait_until_ready(worker_model, timeout=5400)
+            # Exposed staging time on the critical path: how long the workflow
+            # sat blocked here waiting for the worker LLM to become ready.
+            # ≈ full swap time in baseline (on-demand), ≈ residual in real mode
+            # (prefetch started earlier), ≈ 0 when the prefetch finished in time.
+            wait_s = time.perf_counter() - t_wait0
+            if self._bus is not None and (on_demand_swap or wait_s > 0.1):
+                self._bus.emit("worker_swap_wait", {
+                    "model": worker_model,
+                    "wait_s": wait_s,
+                    "on_demand_swap": on_demand_swap,
+                    "prefetch_scheduled": self._worker_prefetch_scheduled,
+                    "cache_stage_scheduled": self._cache_stage_scheduled,
+                    "mode": self._config.mode.value,
+                }, step=self._step)
+
+        # Option D: ensure the (co-resident) aggregator LLM is ready before the
+        # AggregatorAgent runs.  In active/REAL mode the prefetch thread was
+        # started at run_mace_ensemble's tool_start (during the GPU-idle compute
+        # window) and is likely already READY, so this wait is ~0.  In baseline
+        # (no prefetch) we start it on-demand here — the sequential cost the
+        # overlap is meant to hide.  The aggregator sits on its own GPUs, so no
+        # worker stop/swap is needed regardless of path.
+        if (
+            node_name == "AggregatorAgent"
+            and self._orchestrator is not None
+            and self._config.vllm_aggregator_model
+        ):
+            agg_model = self._config.vllm_aggregator_model
+            t_wait0 = time.perf_counter()
+            on_demand_start = False
+            running_models = self._running_model_set()
+            if agg_model not in running_models:
+                on_demand_start = True
+                self._orchestrator.start_model(agg_model)
+            self._orchestrator.wait_until_ready(agg_model, timeout=1800)
+            wait_s = time.perf_counter() - t_wait0
+            if self._bus is not None:
+                self._bus.emit("aggregator_swap_wait", {
+                    "model": agg_model,
+                    "wait_s": wait_s,
+                    "on_demand_start": on_demand_start,
+                    "prefetch_started": self._aggregator_prefetch_started,
+                    "mode": self._config.mode.value,
+                }, step=self._step)
+
     # ------------------------------------------------------------------
     # on_chain_end — extract plan when PlannerAgent node finishes
     # ------------------------------------------------------------------
@@ -152,6 +270,8 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         super().on_chain_end(outputs, run_id=run_id, parent_run_id=parent_run_id, **kwargs)
 
         if node_name != "PlannerAgent" or self._plan_context is not None:
+            return
+        if self._config.mode == RuntimeMode.BASELINE:
             return
         if self._step > self._config.plan_extraction_horizon:
             return
@@ -188,6 +308,146 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                 "n_mentions": ctx.n_mentions,
                 "source": ctx.source,
             }, step=0)
+
+            # Swap mode: schedule the worker LLM model prefetch now.
+            # The model load begins in a background thread (ModelPrefetchExecutor);
+            # on_chain_start will block WorkerAgent until wait_until_ready() returns.
+            self._schedule_worker_model_prefetch()
+
+    # ------------------------------------------------------------------
+    # _maybe_stage_worker_cache — Option A: page-cache staging (swap mode)
+    # ------------------------------------------------------------------
+
+    def _maybe_stage_worker_cache(self) -> None:
+        """
+        Schedule a "model_cache" prefetch that warms the worker model's weight
+        shards into the OS page cache during the planner phase.
+
+        Fires once, at the first chain start, so the host-side read overlaps the
+        full planner inference (which occupies the GPUs).  When the WorkerAgent
+        swap later loads the worker into vLLM, it reads from warm cache — hiding
+        the ~130 s of cold Lustre I/O that the cold swap pays on the critical path.
+
+        Guards mirror the vllm_model prefetch: needs a worker model + scheduler,
+        never in BASELINE, disabled when stage_worker_cache is False or when
+        "model_cache" is in skip_resource_types (the no_cache_stage ablation).
+        """
+        if (
+            self._cache_stage_scheduled
+            or not self._config.stage_worker_cache
+            or not self._config.vllm_worker_model
+            or self._scheduler is None
+            or self._config.mode == RuntimeMode.BASELINE
+            or "model_cache" in self._config.skip_resource_types
+        ):
+            return
+
+        from runtime.events import PredictionResult, ResourceSpec
+        from runtime.guard.checkpoint import CheckpointRecord
+        import hashlib
+
+        model_name = self._config.vllm_worker_model
+        resource_id = "cache_" + hashlib.md5(model_name.encode()).hexdigest()[:12]
+        self._cache_resource_id = resource_id
+
+        # Staging is host I/O only: it does NOT stop the planner and is safely
+        # cancellable, so estimated_load_s reflects the cold read it hides.
+        resource = ResourceSpec(
+            resource_id=resource_id,
+            resource_type="model_cache",
+            name=model_name,
+            path=self._config.worker_model_path or None,
+            estimated_size_bytes=_worker_model_size_bytes(self._config),
+            estimated_load_s=130.0,
+            confidence=1.0,
+            cancellation_safe=True,
+            consumer_tool="",
+            consumer_step_offset=1,
+        )
+        result = PredictionResult(
+            step=0,
+            resources=[resource],
+            confidence=1.0,
+            predictor_id="swap_cache_stage",
+        )
+        ckpt = CheckpointRecord(step=0, log_position=0, prediction=result)
+        self._checkpoint_store.add(ckpt)
+
+        if self._bus:
+            self._bus.emit_event(make_prediction_result_event(self._config.run_id, 0, result))
+
+        self._scheduler.schedule(
+            resource=resource,
+            current_step=0,
+            checkpoint_id=ckpt.checkpoint_id,
+        )
+        self._cache_stage_scheduled = True
+
+    # ------------------------------------------------------------------
+    # _schedule_worker_model_prefetch — swap-mode helper
+    # ------------------------------------------------------------------
+
+    def _schedule_worker_model_prefetch(self) -> None:
+        """
+        Schedule a vllm_model prefetch for the worker LLM after plan extraction.
+        Only fires once per run (guarded by _worker_prefetch_scheduled).
+        Requires config.vllm_worker_model to be set and a scheduler present.
+        """
+        if (
+            self._worker_prefetch_scheduled
+            or not self._config.vllm_worker_model
+            or self._scheduler is None
+            or self._config.mode == RuntimeMode.BASELINE
+            or "vllm_model" in self._config.skip_resource_types
+        ):
+            return
+
+        from runtime.events import PredictionResult, ResourceSpec
+        import hashlib
+
+        model_name = self._config.vllm_worker_model
+        resource_id = hashlib.md5(model_name.encode()).hexdigest()[:16]
+
+        # Shared GPU pool: the planner must be stopped before the worker can
+        # load.  The planner LLM is only used by the PlannerAgent entry node,
+        # which has just finished — safe to evict now.
+        if self._orchestrator is not None:
+            running = self._orchestrator.get_running_model()
+            if running and running != model_name:
+                self._orchestrator.stop_model(running)
+
+        resource = ResourceSpec(
+            resource_id=resource_id,
+            resource_type="vllm_model",
+            name=model_name,
+            estimated_size_bytes=_worker_model_size_bytes(self._config),
+            estimated_load_s=120.0,
+            confidence=1.0,
+            cancellation_safe=False,
+            consumer_tool="",
+            consumer_step_offset=1,
+        )
+
+        import uuid as _uuid
+        from runtime.guard.checkpoint import CheckpointRecord
+        result = PredictionResult(
+            step=0,
+            resources=[resource],
+            confidence=1.0,
+            predictor_id="plan_extraction",
+        )
+        ckpt = CheckpointRecord(step=0, log_position=0, prediction=result)
+        self._checkpoint_store.add(ckpt)
+
+        if self._bus:
+            self._bus.emit_event(make_prediction_result_event(self._config.run_id, 0, result))
+
+        self._scheduler.schedule(
+            resource=resource,
+            current_step=0,
+            checkpoint_id=ckpt.checkpoint_id,
+        )
+        self._worker_prefetch_scheduled = True
 
     # ------------------------------------------------------------------
     # on_llm_end — passive; just records metrics via parent
@@ -231,6 +491,40 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         self._step += 1
         if self._bus:
             self._bus.set_step(self._step)
+
+        # ------------------------------------------------------------------
+        # Option D: the long-running ensemble tool just started — its MACE
+        # compute occupies the CPU for ~11 min while the worker GPUs sit idle.
+        # Kick off the (co-resident) aggregator model load NOW so it overlaps
+        # that window and is READY by the time control reaches AggregatorAgent.
+        # Non-blocking: start_model() spawns the server and returns; the
+        # readiness wait happens in on_chain_start("AggregatorAgent").
+        # ------------------------------------------------------------------
+        if (
+            tool_name == "run_mace_ensemble"
+            and self._orchestrator is not None
+            and self._config.vllm_aggregator_model
+            and not self._aggregator_prefetch_started
+            and self._config.mode != RuntimeMode.OBSERVE_ONLY
+        ):
+            agg_model = self._config.vllm_aggregator_model
+            if agg_model not in self._running_model_set():
+                self._aggregator_prefetch_started = True
+                t0 = time.perf_counter()
+                try:
+                    self._orchestrator.start_model(agg_model)
+                    if self._bus:
+                        self._bus.emit("aggregator_prefetch_start", {
+                            "model": agg_model,
+                            "trigger_tool": tool_name,
+                            "mode": self._config.mode.value,
+                        }, step=self._step)
+                except Exception as exc:
+                    self._aggregator_prefetch_started = False
+                    if self._bus:
+                        self._bus.emit("aggregator_prefetch_error", {
+                            "model": agg_model, "error": str(exc),
+                        }, step=self._step)
 
         # ------------------------------------------------------------------
         # Phase 1: check the PREVIOUS prediction against this tool.
@@ -305,6 +599,7 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                 recent_events=recent_events,
                 current_tool_calls=[{"name": tool_name}],
                 task_description=self._task_description,
+                plan_context=self._plan_context,
             )
         except Exception as e:
             if self._bus:
@@ -345,6 +640,18 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _worker_model_size_bytes(config: RuntimeConfig) -> int | None:
+    """Total shard bytes of the worker model snapshot, or None if unknown."""
+    if not config.worker_model_path:
+        return None
+    try:
+        from runtime.prefetch.model_cache_prefetch import list_model_shards
+        shards = list_model_shards(config.worker_model_path)
+        return sum(p.stat().st_size for p in shards) or None
+    except Exception:
+        return None
+
 
 def _extract_tool_calls(response: LLMResult) -> list[dict]:
     """Extract tool_calls from a LangChain LLMResult."""
@@ -398,6 +705,7 @@ def make_runtime_callback(
     workflow_tracker=None,
     gpu_index: int = 0,
     task_description: str = "",
+    orchestrator=None,            # ModelOrchestrator | None — set in swap mode
 ) -> RuntimeChemGraphCallback:
     """
     Convenience factory for RuntimeChemGraphCallback.
@@ -436,4 +744,5 @@ def make_runtime_callback(
         config=config,
         bus=bus,
         task_description=task_description,
+        orchestrator=orchestrator,
     )

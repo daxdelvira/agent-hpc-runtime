@@ -44,10 +44,16 @@ _SNAPSHOT_32B = _SNAPSHOT_32B_VL
 #   Both fit simultaneously; no forced swapping.
 # ---------------------------------------------------------------------------
 MODELS_BLACKWELL = {
+    # Ports fixed 2026-07-09: these MUST match workloads/AtomAgents/config_list
+    # (the AutoGen agents' endpoints: 72B→8007, 32B→8012 — the same ports the
+    # SWAP profile uses), or the router's port_map never matches the agents'
+    # base_urls and every LLM call gets Connection refused.  The historical
+    # 8001/8002 never matched AND collided with another user's vLLM on :8002
+    # (Blackwell nodes are shared).
     "qwen_32b": {
         "python_bin": VLLM_PYTHON,
         "model_name": _SNAPSHOT_32B_VL,
-        "port": 8002,
+        "port": 8012,
         "gpus": [0, 1],
         "tensor_parallel_size": 2,
         "gpu_memory_utilization": 0.82,
@@ -65,7 +71,7 @@ MODELS_BLACKWELL = {
     "qwen_72b": {
         "python_bin": VLLM_PYTHON,
         "model_name": _SNAPSHOT_72B_VL,
-        "port": 8001,
+        "port": 8007,
         "gpus": [2, 3],
         "tensor_parallel_size": 2,
         "gpu_memory_utilization": 0.97,
@@ -146,6 +152,86 @@ MODELS_BLACKWELL_SWAP = {
             "--disable-custom-all-reduce",
             "--enforce-eager",
             "--served-model-name", "Qwen/Qwen2.5-72B-Instruct",
+        ],
+    },
+}
+
+# ---------------------------------------------------------------------------
+# ChemGraph swap profile — shared GPU pool, forced model swapping
+#   planner (32B-VL) and worker (72B-Instruct) share all 4 GPUs (tp=4).
+#   32B-VL at 0.90 utilization claims ~346 GB; 72B-Instruct needs ~144 GB →
+#   cannot be co-resident.  Only ONE model fits at a time.
+#   Workflow: planner loaded first → plan extracted → runtime prefetches worker
+#   (stops planner, loads worker in background) → worker runs hot.
+# ---------------------------------------------------------------------------
+MODELS_CHEMGRAPH_SWAP = {
+    "qwen_32b_vl": {
+        "python_bin": VLLM_PYTHON,
+        "model_name": _SNAPSHOT_32B_VL,
+        "port": 8002,
+        "gpus": [0, 1, 2, 3],
+        "tensor_parallel_size": 4,
+        "gpu_memory_utilization": 0.90,
+        "max_model_len": 16384,
+        # Lustre bandwidth swings 40-300 MB/s across the day; at the low end
+        # the 65 GB planner alone needs >25 min (observed 2026-07-08, L40S).
+        "load_timeout": 3600,
+        "extra_args": [
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "hermes",
+            "--dtype", "float16",
+            "--disable-custom-all-reduce",
+            "--enforce-eager",
+            "--served-model-name", "Qwen/Qwen2.5-VL-32B-Instruct",
+        ],
+    },
+    "qwen_72b_instruct": {
+        "python_bin": VLLM_PYTHON,
+        "model_name": _SNAPSHOT_72B_TEXT,
+        "port": 8001,
+        "gpus": [0, 1, 2, 3],
+        "tensor_parallel_size": 4,
+        # 0.95 -> 0.92 (2026-07-11): a ~1.7 GiB non-drainable context on GPU 0
+        # (L40S job 10932526) left free memory at 94.8% and vLLM refuses to
+        # start when free < requested utilization — two ensemble trials died
+        # at worker boot.  0.92 leaves ~3.5 GiB/GPU headroom; weights need
+        # ~36.3 GiB/GPU so KV space is still ample.  Weight-load/stall
+        # measurements are unaffected by the utilization fraction.
+        "gpu_memory_utilization": 0.92,
+        "max_model_len": 16384,
+        # See planner note: sized for worst-case Lustre (145 GB worker).
+        "load_timeout": 5400,
+        "extra_args": [
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "hermes",
+            "--dtype", "float16",
+            "--disable-custom-all-reduce",
+            "--enforce-eager",
+            "--served-model-name", "Qwen/Qwen2.5-72B-Instruct",
+        ],
+    },
+    # Distinct AGGREGATOR model for the Option D compute-window prefetch demo.
+    # Lives on the otherwise-idle GPUs 4-5 (tp=2) so it can be loaded
+    # CO-RESIDENT with the 72B worker (GPUs 0-3) during the long GPU-idle MACE
+    # ensemble compute window — no swap/stop of the worker required.  A 32B-VL
+    # fp16 ≈ 64 GB; 2 × 46 GB × 0.92 ≈ 85 GB leaves headroom for KV cache.
+    # 32B has 64 query / 8 KV heads → tp=2 divides both.
+    "qwen_32b_aggregator": {
+        "python_bin": VLLM_PYTHON,
+        "model_name": _SNAPSHOT_32B_VL,
+        "port": 8004,
+        "gpus": [4, 5],
+        "tensor_parallel_size": 2,
+        "gpu_memory_utilization": 0.92,
+        "max_model_len": 8192,
+        "load_timeout": 1800,
+        "extra_args": [
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "hermes",
+            "--dtype", "float16",
+            "--disable-custom-all-reduce",
+            "--enforce-eager",
+            "--served-model-name", "Qwen/Qwen2.5-VL-32B-Instruct-Aggregator",
         ],
     },
 }

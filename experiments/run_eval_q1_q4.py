@@ -1,0 +1,754 @@
+"""
+run_eval_q1_q4.py — unified evaluation driver for the paper's Q1–Q4 experiments.
+
+Runs (workload × configuration × trial) sweeps, saving every artifact needed by
+scripts/parse_eval_traces.py into a resumable, never-overwritten result tree:
+
+    results/eval_q1_q4/
+      commands.log                     — every command launched, timestamped
+      runs/<workload>/<config>/
+        t03__20260707-181501__27b7b0f/ — one dir per trial (never reused)
+          meta.json                    — command, env, node, GPUs, git, timestamps, status
+          stdout.log                   — full run output
+          summary.json                 — copied workflow summary
+          trace.jsonl                  — copied runtime trace
+          system_profile.csv           — copied CPU/GPU profiler samples (if any)
+
+Resume: completed trials are counted per (workload, config); re-running the same
+command only launches the missing remainder.  Failed/timeout trials are kept on
+disk (marked in meta.json) but do not count toward N.
+
+Workloads
+---------
+chemgraph_swap   ChemGraph multi-agent split-model workflow: 32B-VL planner →
+                 72B-Instruct worker on a shared 4-GPU pool (forced swap).
+                 Runtime hides the swap via plan-triggered worker prefetch +
+                 page-cache staging.  ~10–15 min/trial on 4× Blackwell.
+atomagents_exp2  AtomAgents screw-dislocation (2-model, simultaneous residency).
+atomagents_exp3  AtomAgents 3-model forced-swap (LAMMPS compute windows).
+                 ~1–3 h/trial — budget accordingly.
+deepdrivemd      NOT integrated yet (no runtime adapter/entrypoint).  Listed so
+                 the result tree and parser are ready; selecting it errors out.
+
+Usage
+-----
+    # Everything Q1–Q4 needs on the ChemGraph swap workload, 10 trials each,
+    # round-robin so partial sweeps stay balanced:
+    python experiments/run_eval_q1_q4.py --workload chemgraph_swap --trials 10
+
+    # Specific configs only
+    python experiments/run_eval_q1_q4.py --workload chemgraph_swap \
+        --configs baseline,full_system,naive_prefetch --trials 5
+
+    # Show completion status of the result tree
+    python experiments/run_eval_q1_q4.py --list
+
+    # Print the commands without running
+    python experiments/run_eval_q1_q4.py --workload chemgraph_swap --dry-run
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+PROJECT_ROOT = _HERE.parent
+EVAL_ROOT = PROJECT_ROOT / "results" / "eval_q1_q4"
+RUNS_ROOT = EVAL_ROOT / "runs"
+
+CG_PYTHON = "/storage/project/r-ag117-0/shared/agent_hpc/envs/chemgraph/bin/python"
+ATOMS_PYTHON = "/storage/project/r-ag117-0/shared/agent_hpc/envs/atoms/bin/python"
+_AA_NVIDIA = ("/storage/project/r-ag117-0/shared/agent_hpc/envs/atomagents/"
+              "lib/python3.11/site-packages/nvidia")
+_TORCH_LIB = ("/storage/project/r-ag117-0/shared/agent_hpc/envs/chemgraph/"
+              "lib/python3.10/site-packages/torch/lib")
+
+# Fallback oracle reference trace (validated full_system swap run, 2026-07-06).
+_FALLBACK_ORACLE_TRACE = str(
+    PROJECT_ROOT / "logs/workflow_traces/"
+    "chemgraph_trace_20260706_142854_d61a4951-6e15-4275-8869-10547ca4b6bd.jsonl"
+)
+
+# MegaMmap/Hermes stack (external-system comparison, config "megammap_stage").
+# Paths from ~/scratch/mega_stack/mega_env.sh; every binary carries an RPATH to
+# mega_stack/lib, so only PATH (mpirun) and the HERMES_* vars are injected.
+MEGA_STACK = os.path.expanduser("~/scratch/mega_stack")
+MEGA_MPI_BIN = ("/usr/local/pace-apps/spack/packages/linux-rhel9-x86_64_v3/"
+                "gcc-12.3.0/openmpi-4.1.5-ahgvv7r3aju6cty4nlmcd5hihsckie7j/bin")
+MEGA_MODEL_PRELOAD = ("/storage/project/r-ag117-0/shared/agent_hpc/"
+                      "mega_mmap_integration/megammap_tests/build/bin/mm_model_preload")
+HERMES_INTERCEPTOR = f"{MEGA_STACK}/lib/libhermes_posix.so"
+# Agentic daemon config (50 GB RAM + 200 GB NVMe tier). NOTE: sized for the
+# bigmem holds — on a 48 GB-cgroup job override with HERMES_CONF_EVAL.
+HERMES_CONF_EVAL = os.environ.get(
+    "HERMES_CONF_EVAL",
+    os.path.expanduser("~/scratch/mega_src/hermes/config/hermes_agentic.yaml"),
+)
+
+
+# ---------------------------------------------------------------------------
+# Configuration registry
+# ---------------------------------------------------------------------------
+
+# Flags shared by every chemgraph_swap run.  Mirrors the validated recipe in
+# experiments/run_cg_swap_ablations.sh + run_cg_ensemble_validate.sh:
+#   - planner = Qwen2.5-VL-32B on port 8002, worker = Qwen2.5-72B on port 8001
+#   - --evict-worker-cache so every trial starts from a cold Lustre page cache
+#   - --profile so GPU idle time / memory overhead are measured per run
+CHEMGRAPH_SWAP_BASE = [
+    "--workflow-type", "multi_agent",
+    "--model-name", "Qwen/Qwen2.5-72B-Instruct",
+    "--planner-model", "Qwen/Qwen2.5-VL-32B-Instruct",
+    "--base-url", "http://localhost:8001/v1",
+    "--mace-device", "cpu",
+    "--hw-profile", "chemgraph_swap",
+    "--swap-models",
+    "--evict-worker-cache",
+    "--profile",
+]
+
+# config name -> dict(mode, predictor, flags, needs_oracle_trace)
+# Names follow the paper's configuration list; the runner's --condition label is
+# set to the config name so summaries/traces are self-describing.
+CHEMGRAPH_SWAP_CONFIGS: dict[str, dict] = {
+    "baseline": {
+        "mode": "baseline", "predictor": "mock", "flags": [],
+        "desc": "vanilla workflow; on-demand sequential model swap",
+    },
+    "observe_only": {
+        "mode": "observe_only", "predictor": "learned", "flags": [],
+        "desc": "predictor enabled, no prefetch I/O",
+    },
+    "simulated": {
+        "mode": "simulated", "predictor": "learned", "flags": [],
+        "desc": "predictor + simulated prefetch decisions, no real I/O",
+    },
+    "full_system": {
+        "mode": "real", "predictor": "learned", "flags": [],
+        "desc": "full SystemName: plan-triggered worker prefetch + cache staging"
+                " + confidence/divergence gates",
+    },
+    "no_cache_stage": {
+        "mode": "real", "predictor": "learned", "flags": ["--no-cache-stage"],
+        "desc": "full system minus page-cache staging (cold swap on critical path)",
+    },
+    "naive_prefetch": {
+        "mode": "real", "predictor": "learned", "flags": ["--naive-prefetch"],
+        "desc": "prefetch every prediction; no confidence/safety gates",
+    },
+    "no_divergence_guard": {
+        "mode": "real", "predictor": "learned", "flags": ["--no-divergence-guard"],
+        "desc": "divergences tracked but in-flight prefetches never cancelled",
+    },
+    "no_plan": {
+        "mode": "real", "predictor": "learned", "flags": ["--no-plan-extraction"],
+        "desc": "system ablation: no plan extraction (also disables plan-triggered"
+                " worker prefetch)",
+    },
+    "plan_only": {
+        "mode": "real", "predictor": "plan_only", "flags": [],
+        "desc": "predictor ablation: plan-context signal only",
+    },
+    "transition_only": {
+        "mode": "real", "predictor": "transition_only", "flags": [],
+        "desc": "predictor ablation: learned transition table only",
+    },
+    "oracle": {
+        "mode": "real", "predictor": "oracle", "flags": [],
+        "needs_oracle_trace": True,
+        "desc": "upper bound: perfect-hindsight predictor replaying a reference trace",
+    },
+    # External-system comparison, not an ablation: staging backend replaced by
+    # MegaMmap/Hermes (mm_model_preload into the Hermes buffer pool during
+    # planning; worker vLLM reads weights through libhermes_posix.so).
+    # Needs the Hermes daemon — the driver starts/stops it per trial.
+    "megammap_stage": {
+        "mode": "real", "predictor": "learned", "flags": ["--megammap-stage"],
+        "needs_hermes": True,
+        "desc": "full system with MegaMmap/Hermes as the staging tier "
+                "(seq preload; comparison against page-cache staging)",
+    },
+    "megammap_stage_rand": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--megammap-stage", "--megammap-tx", "rand"],
+        "needs_hermes": True,
+        "desc": "MegaMmap staging with random page order (no prefetch signal — "
+                "models an unknown next model)",
+    },
+}
+
+# AtomAgents conditions mirror experiments/run_blackwell.sh.
+ATOMAGENTS_CONFIGS: dict[str, dict] = {
+    "baseline":            {"mode": "baseline", "predictor": "mock", "flags": []},
+    "observe_only":        {"mode": "observe_only", "predictor": "learned", "flags": []},
+    "full_system":         {"mode": "real", "predictor": "learned", "flags": []},
+    "no_plan":             {"mode": "real", "predictor": "learned", "flags": ["--no-plan-extraction"]},
+    "no_divergence_guard": {"mode": "real", "predictor": "learned", "flags": ["--no-divergence-guard"]},
+    "naive_prefetch":      {"mode": "real", "predictor": "learned", "flags": ["--naive-prefetch"]},
+    "no_model_prefetch":   {"mode": "real", "predictor": "learned", "flags": ["--skip-resource-types", "vllm_model"]},
+    "no_data_prefetch":    {"mode": "real", "predictor": "learned", "flags": ["--skip-resource-types", "data_file"]},
+}
+
+WORKLOADS: dict[str, dict] = {
+    "chemgraph_swap": {
+        "script": "experiments/chemgraph_exp.py",
+        "python": CG_PYTHON,
+        "base_flags": CHEMGRAPH_SWAP_BASE,
+        "configs": CHEMGRAPH_SWAP_CONFIGS,
+        # Sized for worst-case Lustre (~40 MB/s observed): planner alone can
+        # need ~30 min and the worker swap ~1 h.
+        "timeout_s": 9000,
+        "est_run_s": 1800,
+    },
+    # Out-of-core variant: run_mace_ensemble screens ~200 CIF structures on CPU,
+    # creating a genuine multi-minute GPU-idle window in which model staging /
+    # swap can be fully hidden (Option D).  Same configs as chemgraph_swap.
+    "chemgraph_ensemble": {
+        "script": "experiments/chemgraph_exp.py",
+        "python": CG_PYTHON,
+        # Option D: the worker's run_mace_ensemble call is a long GPU-idle CPU
+        # window; a DISTINCT aggregator model (32B, GPUs 4-5, port 8004) is
+        # prefetched during that window so it is hot at AggregatorAgent.
+        # Without these flags the ensemble degenerates to the swap topology's
+        # ~11 s window (measured: chemgraph_ensemble_noagg baseline t01,
+        # 2026-07-09 — worker swap 384 s exposed BEFORE the MACE screen).
+        "base_flags": CHEMGRAPH_SWAP_BASE + [
+            "--ensemble-dataset", "data/materials_ensemble",
+            "--aggregator-model", "Qwen/Qwen2.5-VL-32B-Instruct-Aggregator",
+            "--aggregator-base-url", "http://localhost:8004/v1",
+        ],
+        "configs": CHEMGRAPH_SWAP_CONFIGS,
+        "timeout_s": 10800,
+        "est_run_s": 2400,
+    },
+    "atomagents_exp2": {
+        "script": "experiments/atomagents_exp2.py",
+        "python": ATOMS_PYTHON,
+        "base_flags": ["--hw-profile", "blackwell", "--swap-models"],
+        "configs": ATOMAGENTS_CONFIGS,
+        "timeout_s": 10800,
+        "est_run_s": 5400,
+    },
+    "atomagents_exp3": {
+        "script": "experiments/atomagents_exp3.py",
+        "python": ATOMS_PYTHON,
+        "base_flags": ["--hw-profile", "blackwell_swap", "--swap-models",
+                       "--lammps-slowdown", os.environ.get("LAMMPS_SLOWDOWN_S", "900")],
+        "configs": ATOMAGENTS_CONFIGS,
+        "timeout_s": 14400,
+        "est_run_s": 7200,
+    },
+    # DeepDriveMD is not integrated with the runtime yet: there is no
+    # runtime/adapters/deepdrivemd.py and no experiment entrypoint.  The key
+    # exists so the eval tree/parser are structured for it; selecting it fails
+    # loudly instead of fabricating data.
+    "deepdrivemd": {
+        "script": None,
+        "configs": {},
+        "not_runnable": ("DeepDriveMD has no runtime adapter/entrypoint yet "
+                         "(TODO: runtime/adapters/deepdrivemd.py + "
+                         "experiments/deepdrivemd_exp.py)."),
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def log(msg: str) -> None:
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def git_commit() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=str(PROJECT_ROOT),
+            capture_output=True, text=True, timeout=10).stdout.strip() or "nogit"
+    except Exception:
+        return "nogit"
+
+
+def gpu_info() -> list[str]:
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=15).stdout.strip()
+        return [l.strip() for l in out.splitlines() if l.strip()]
+    except Exception:
+        return []
+
+
+def slurm_deadline_epoch() -> float | None:
+    """EndTime of the surrounding SLURM job, or None outside a job."""
+    job = os.environ.get("SLURM_JOB_ID")
+    if not job:
+        return None
+    try:
+        out = subprocess.run(["scontrol", "show", "job", job],
+                             capture_output=True, text=True, timeout=15).stdout
+        for tok in out.split():
+            if tok.startswith("EndTime="):
+                val = tok.split("=", 1)[1]
+                if val in ("Unknown", "N/A"):
+                    return None
+                return datetime.strptime(val, "%Y-%m-%dT%H:%M:%S").timestamp()
+    except Exception:
+        pass
+    return None
+
+
+def kill_vllm_servers(wait_gpu_clear: bool = True) -> None:
+    """Kill our vLLM servers and wait for GPU memory to drain."""
+    user = os.environ.get("USER", "")
+    subprocess.run(["pkill", "-u", user, "-f", "vllm.entrypoints.openai.api_server"],
+                   capture_output=True)
+    # An api_server killed mid-startup can leave orphaned tensor-parallel
+    # workers (setproctitle "VLLM::Worker_TPn") holding the full KV-cache
+    # allocation (seen 2026-07-14: 4x93 GiB after a timed-out qwen_72b load).
+    subprocess.run(["pkill", "-u", user, "-f", "VLLM::"],
+                   capture_output=True)
+    time.sleep(10)
+    if not wait_gpu_clear:
+        return
+    for _ in range(60):
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=15).stdout
+            used = sum(float(x) for x in out.split() if x.strip())
+        except Exception:
+            used = 0
+        if used < 4096:
+            return
+        time.sleep(5)
+    log("WARNING: GPUs still busy after 300 s of waiting; continuing anyway.")
+
+
+def hermes_stack_available() -> str | None:
+    """Return None if the MegaMmap/Hermes stack is usable, else the reason."""
+    if not Path(MEGA_MODEL_PRELOAD).exists():
+        return f"mm_model_preload missing: {MEGA_MODEL_PRELOAD}"
+    if not Path(HERMES_INTERCEPTOR).exists():
+        return f"libhermes_posix.so missing: {HERMES_INTERCEPTOR}"
+    if not Path(f"{MEGA_STACK}/bin/hrun_start_runtime").exists():
+        return f"hrun_start_runtime missing: {MEGA_STACK}/bin"
+    if not Path(HERMES_CONF_EVAL).exists():
+        return f"Hermes config missing: {HERMES_CONF_EVAL}"
+    return None
+
+
+def start_hermes_daemon() -> subprocess.Popen | None:
+    """Start hrun_start_runtime for one trial; returns None on failure."""
+    stop_hermes_daemon(None)   # clear any stale daemon first
+    env = dict(os.environ)
+    env["HERMES_CONF"] = HERMES_CONF_EVAL
+    env["LD_LIBRARY_PATH"] = (f"{MEGA_STACK}/lib:"
+                              + env.get("LD_LIBRARY_PATH", ""))
+    logf = open(EVAL_ROOT / "hermes_daemon.log", "a")
+    logf.write(f"\n==== daemon start {datetime.now().isoformat()} "
+               f"conf={HERMES_CONF_EVAL} ====\n")
+    try:
+        proc = subprocess.Popen([f"{MEGA_STACK}/bin/hrun_start_runtime"],
+                                env=env, stdout=logf, stderr=subprocess.STDOUT)
+    except OSError as exc:
+        log(f"Hermes daemon failed to launch: {exc}")
+        return None
+    time.sleep(8)
+    if proc.poll() is not None:
+        log(f"Hermes daemon exited immediately (rc={proc.returncode}); "
+            f"see {EVAL_ROOT / 'hermes_daemon.log'}")
+        return None
+    log("Hermes daemon running.")
+    return proc
+
+
+def stop_hermes_daemon(proc: subprocess.Popen | None) -> None:
+    env = dict(os.environ)
+    env["LD_LIBRARY_PATH"] = (f"{MEGA_STACK}/lib:"
+                              + env.get("LD_LIBRARY_PATH", ""))
+    stopper = Path(f"{MEGA_STACK}/bin/hrun_stop_runtime")
+    if stopper.exists():
+        try:
+            subprocess.run([str(stopper)], env=env, capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            log("hrun_stop_runtime hung >30 s; falling back to pkill.")
+    subprocess.run(["pkill", "-f", "hrun_start_runtime"], capture_output=True)
+    if proc is not None:
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def build_env(workload: str, needs_hermes: bool = False) -> dict[str, str]:
+    env = dict(os.environ)
+    ld_parts = [f"{_AA_NVIDIA}/cudnn/lib", f"{_AA_NVIDIA}/cusparselt/lib",
+                f"{_AA_NVIDIA}/nccl/lib", _TORCH_LIB, "/usr/local/cuda/lib64"]
+    if env.get("LD_LIBRARY_PATH"):
+        ld_parts.append(env["LD_LIBRARY_PATH"])
+    env["LD_LIBRARY_PATH"] = ":".join(ld_parts)
+    py_parts = [str(PROJECT_ROOT / "workloads" / "AtomAgents"),
+                str(PROJECT_ROOT.parent / "ChemGraph" / "src")]
+    if env.get("PYTHONPATH"):
+        py_parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = ":".join(py_parts)
+    env.setdefault("HF_HOME", os.path.expanduser("~/scratch/hf_home"))
+    env.setdefault("OPENAI_API_KEY", "dummy")
+    if needs_hermes:
+        env["PATH"] = f"{MEGA_STACK}/bin:{MEGA_MPI_BIN}:" + env.get("PATH", "")
+        env["HERMES_INTERCEPTOR"] = HERMES_INTERCEPTOR
+        env["HERMES_CONF"] = HERMES_CONF_EVAL
+        env["MEGA_MODEL_PRELOAD"] = MEGA_MODEL_PRELOAD
+    # Both ChemGraph workloads run the split planner/worker topology; without
+    # this the planner client falls back to the worker port (8001) and dies
+    # with connection-refused before the worker exists.
+    if workload.startswith("chemgraph"):
+        env.setdefault("VLLM_PLANNER_BASE_URL", "http://localhost:8002/v1")
+    # The ensemble workload runs Option D (distinct aggregator on port 8004,
+    # GPUs 4-5); the aggregator ChatOpenAI client reads this env var.
+    if workload == "chemgraph_ensemble":
+        env.setdefault("VLLM_AGGREGATOR_BASE_URL", "http://localhost:8004/v1")
+    return env
+
+
+def resolve_oracle_trace(workload: str) -> str | None:
+    """Newest trace from a completed baseline/full_system trial of this workload."""
+    candidates: list[Path] = []
+    for cfg in ("baseline", "full_system"):
+        for trial_dir in sorted((RUNS_ROOT / workload / cfg).glob("t*__*")):
+            trace = trial_dir / "trace.jsonl"
+            meta = trial_dir / "meta.json"
+            if trace.exists() and meta.exists():
+                try:
+                    if json.loads(meta.read_text()).get("status") == "completed":
+                        candidates.append(trace)
+                except Exception:
+                    pass
+    if candidates:
+        return str(sorted(candidates, key=lambda p: p.stat().st_mtime)[-1])
+    if workload == "chemgraph_swap" and Path(_FALLBACK_ORACLE_TRACE).exists():
+        return _FALLBACK_ORACLE_TRACE
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Trial bookkeeping
+# ---------------------------------------------------------------------------
+
+def completed_trials(workload: str, config: str) -> int:
+    n = 0
+    for meta_path in (RUNS_ROOT / workload / config).glob("t*__*/meta.json"):
+        try:
+            if json.loads(meta_path.read_text()).get("status") == "completed":
+                n += 1
+        except Exception:
+            pass
+    return n
+
+
+def trial_status_table() -> str:
+    lines = [f"{'workload':<18} {'config':<22} {'completed':>9}  {'failed':>6}"]
+    for wl_dir in sorted(RUNS_ROOT.glob("*")):
+        for cfg_dir in sorted(wl_dir.glob("*")):
+            done = fail = 0
+            for meta_path in cfg_dir.glob("t*__*/meta.json"):
+                try:
+                    st = json.loads(meta_path.read_text()).get("status")
+                except Exception:
+                    st = "unreadable"
+                if st == "completed":
+                    done += 1
+                elif st != "running":
+                    fail += 1
+            lines.append(f"{wl_dir.name:<18} {cfg_dir.name:<22} {done:>9}  {fail:>6}")
+    return "\n".join(lines)
+
+
+def run_one_trial(
+    workload: str,
+    config: str,
+    trial_idx: int,
+    dry_run: bool = False,
+) -> bool:
+    """Launch one trial; returns True if it completed successfully."""
+    wl = WORKLOADS[workload]
+    cfg = wl["configs"][config]
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    commit = git_commit()
+    run_id = f"eval_{workload}_{config}_t{trial_idx:02d}_{ts}_{commit}"
+    trial_dir = RUNS_ROOT / workload / config / f"t{trial_idx:02d}__{ts}__{commit}"
+
+    flags = list(wl["base_flags"]) + list(cfg["flags"])
+    flags += ["--runtime-mode", cfg["mode"], "--predictor", cfg["predictor"],
+              "--condition", config, "--run-id", run_id]
+    if cfg.get("needs_oracle_trace"):
+        oracle_trace = resolve_oracle_trace(workload)
+        if not oracle_trace:
+            log(f"SKIP {workload}/{config}: no completed reference trace for the "
+                "oracle yet (run baseline/full_system first).")
+            return False
+        flags += ["--oracle-trace", oracle_trace]
+
+    cmd = [wl["python"], "-u", str(PROJECT_ROOT / wl["script"])] + flags
+    # Source fix_tmp.sh first: PACE job-private /tmp may be a dangling mount,
+    # which breaks vLLM engine-core init (see setup/fix_tmp.sh).
+    shell_cmd = ["bash", "-c",
+                 'source "$1"/setup/fix_tmp.sh; shift; exec "$@"',
+                 "eval_run", str(PROJECT_ROOT)] + cmd
+
+    if dry_run:
+        log(f"DRY-RUN {workload}/{config} t{trial_idx:02d}: {' '.join(cmd)}")
+        return True
+
+    hermes_proc = None
+    if cfg.get("needs_hermes"):
+        reason = hermes_stack_available()
+        if reason:
+            log(f"SKIP {workload}/{config}: MegaMmap/Hermes stack unavailable "
+                f"({reason}) — config skipped, not faked.")
+            return False
+        hermes_proc = start_hermes_daemon()
+        if hermes_proc is None:
+            log(f"SKIP {workload}/{config}: Hermes daemon failed to start.")
+            return False
+
+    trial_dir.mkdir(parents=True, exist_ok=False)
+    env = build_env(workload, needs_hermes=bool(cfg.get("needs_hermes")))
+    meta = {
+        "workload": workload,
+        "config": config,
+        "trial_index": trial_idx,
+        "run_id": run_id,
+        "command": " ".join(cmd),
+        "runtime_mode": cfg["mode"],
+        "predictor": cfg["predictor"],
+        "extra_flags": cfg["flags"],
+        "git_commit": commit,
+        "node": socket.gethostname(),
+        "gpus": gpu_info(),
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        "conda_python": wl["python"],
+        "start_time": datetime.now().astimezone().isoformat(),
+        "status": "running",
+    }
+    (trial_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    with open(EVAL_ROOT / "commands.log", "a") as f:
+        f.write(f"{meta['start_time']}  {run_id}\n  {' '.join(cmd)}\n")
+
+    kill_vllm_servers()
+    log(f"START {workload}/{config} t{trial_idx:02d}  run_id={run_id}")
+
+    status = "failed"
+    rc: int | None = None
+    try:
+        with open(trial_dir / "stdout.log", "w") as logf:
+            try:
+                proc = subprocess.run(
+                    shell_cmd, env=env, cwd=str(PROJECT_ROOT),
+                    stdout=logf, stderr=subprocess.STDOUT,
+                    timeout=wl["timeout_s"],
+                )
+                rc = proc.returncode
+            except subprocess.TimeoutExpired:
+                status = "timeout"
+                log(f"TIMEOUT after {wl['timeout_s']} s")
+                kill_vllm_servers(wait_gpu_clear=False)
+    finally:
+        if hermes_proc is not None:
+            stop_hermes_daemon(hermes_proc)
+
+    # Collect artifacts by run_id
+    summary_src = PROJECT_ROOT / "results" / f"summary_{run_id}.json"
+    summary = None
+    if summary_src.exists():
+        shutil.copy2(summary_src, trial_dir / "summary.json")
+        try:
+            summary = json.loads(summary_src.read_text())
+        except Exception:
+            summary = None
+    # trace_path/system_profile_csv may be None or "" even when a summary
+    # exists (atomagents_exp2/3 write trace_path=None): Path("") is '.', which
+    # passes .exists() and made copy2 raise IsADirectoryError, killing the
+    # driver mid-campaign (2026-07-09).  Guard the raw strings and fall back to
+    # a run_id search whenever the summary doesn't yield a usable path.
+    try:
+        trace_p = (summary or {}).get("trace_path")
+        if trace_p and Path(trace_p).is_file():
+            shutil.copy2(trace_p, trial_dir / "trace.jsonl")
+        else:
+            # Runtime trace filenames embed the run_id — match by name first,
+            # since a content grep can never match AtomAgents baseline traces
+            # (they are empty by design).
+            by_name = sorted(
+                (PROJECT_ROOT / "logs/workflow_traces").glob(f"*{run_id}*.jsonl"))
+            if by_name:
+                shutil.copy2(by_name[-1], trial_dir / "trace.jsonl")
+            else:
+                for trace in sorted(
+                        (PROJECT_ROOT / "logs/workflow_traces").glob("*.jsonl"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)[:5]:
+                    try:
+                        head = trace.read_text(errors="ignore")[:200000]
+                    except Exception:
+                        continue
+                    if run_id in head:
+                        shutil.copy2(trace, trial_dir / "trace.jsonl")
+                        break
+        prof_p = (summary or {}).get("system_profile_csv")
+        if not (prof_p and Path(prof_p).is_file()):
+            cand = PROJECT_ROOT / "results" / f"system_profile_{run_id}.csv"
+            prof_p = str(cand) if cand.is_file() else None
+        if prof_p:
+            shutil.copy2(prof_p, trial_dir / "system_profile.csv")
+        # AtomAgents runners put their per-phase timing in a metrics CSV (the
+        # only structured source of the Q2 breakdown there — baseline trials
+        # write an empty trace.jsonl).
+        mcsv = PROJECT_ROOT / "results" / f"atomagents_metrics_{run_id}.csv"
+        if mcsv.is_file():
+            shutil.copy2(mcsv, trial_dir / "metrics.csv")
+    except Exception as exc:  # never let artifact copying kill the campaign
+        log(f"WARN: artifact collection failed for {run_id}: {exc!r}")
+
+    if status != "timeout":
+        wall = (summary or {}).get("wall_time_s", 0)
+        wf_ok = (summary or {}).get("workflow_completed")
+        # workflow_completed is only written by runners that carry the new field;
+        # for older runners fall back to exit code + plausible wall time.
+        if rc == 0 and summary is not None and wall > 60 and wf_ok is not False:
+            status = "completed"
+        else:
+            status = "failed"
+
+    meta.update({
+        "status": status,
+        "exit_code": rc,
+        "end_time": datetime.now().astimezone().isoformat(),
+        "wall_time_s": (summary or {}).get("wall_time_s"),
+    })
+    (trial_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    log(f"END   {workload}/{config} t{trial_idx:02d}  status={status} "
+        f"rc={rc} wall={(summary or {}).get('wall_time_s')}")
+    return status == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Q1–Q4 evaluation driver (resumable, never overwrites)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--workload", default="chemgraph_swap",
+                        choices=sorted(WORKLOADS.keys()))
+    parser.add_argument("--configs", default="",
+                        help="Comma-separated config subset (default: all for workload)")
+    parser.add_argument("--trials", type=int, default=10,
+                        help="Target completed trials per (workload, config)")
+    parser.add_argument("--order", default="roundrobin",
+                        choices=["roundrobin", "sequential"],
+                        help="roundrobin keeps trial counts balanced if interrupted")
+    parser.add_argument("--deadline-margin-s", type=int, default=900,
+                        help="Stop launching runs this close to the SLURM job end")
+    parser.add_argument("--max-failures", type=int, default=3,
+                        help="Give up on a config after this many consecutive failures")
+    parser.add_argument("--list", action="store_true", help="Show status and exit")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    RUNS_ROOT.mkdir(parents=True, exist_ok=True)
+
+    if args.list:
+        print(trial_status_table())
+        return
+
+    wl = WORKLOADS[args.workload]
+    if wl.get("not_runnable"):
+        print(f"ERROR: workload '{args.workload}' is not runnable: {wl['not_runnable']}")
+        sys.exit(2)
+
+    config_names = ([c.strip() for c in args.configs.split(",") if c.strip()]
+                    or list(wl["configs"].keys()))
+    unknown = [c for c in config_names if c not in wl["configs"]]
+    if unknown:
+        print(f"ERROR: unknown configs for {args.workload}: {unknown}\n"
+              f"Available: {sorted(wl['configs'].keys())}")
+        sys.exit(2)
+
+    deadline = slurm_deadline_epoch()
+    if deadline:
+        log(f"SLURM deadline: {datetime.fromtimestamp(deadline)} "
+            f"(margin {args.deadline_margin_s} s + est. run length)")
+
+    # Build worklist: (config, trial_index) for missing trials only
+    todo: dict[str, list[int]] = {}
+    for cfg in config_names:
+        have = completed_trials(args.workload, cfg)
+        todo[cfg] = list(range(have + 1, args.trials + 1))
+        log(f"{args.workload}/{cfg}: {have}/{args.trials} completed, "
+            f"{len(todo[cfg])} to run")
+
+    consecutive_failures = {c: 0 for c in config_names}
+
+    def out_of_time() -> bool:
+        if not deadline:
+            return False
+        return time.time() + wl["est_run_s"] + args.deadline_margin_s > deadline
+
+    def eligible(cfg: str) -> bool:
+        return bool(todo[cfg]) and consecutive_failures[cfg] < args.max_failures
+
+    stopped_for_time = False
+    if args.order == "roundrobin":
+        while any(eligible(c) for c in config_names):
+            progressed = False
+            for cfg in config_names:
+                if not eligible(cfg):
+                    continue
+                if out_of_time():
+                    stopped_for_time = True
+                    break
+                idx = todo[cfg].pop(0)
+                ok = run_one_trial(args.workload, cfg, idx, dry_run=args.dry_run)
+                consecutive_failures[cfg] = 0 if ok else consecutive_failures[cfg] + 1
+                if not ok and not args.dry_run:
+                    # Failed trial dirs stay on disk; schedule a replacement index
+                    todo[cfg].append(todo[cfg][-1] + 1 if todo[cfg] else idx + 1)
+                progressed = True
+            if stopped_for_time or not progressed:
+                break
+    else:
+        for cfg in config_names:
+            while eligible(cfg):
+                if out_of_time():
+                    stopped_for_time = True
+                    break
+                idx = todo[cfg].pop(0)
+                ok = run_one_trial(args.workload, cfg, idx, dry_run=args.dry_run)
+                consecutive_failures[cfg] = 0 if ok else consecutive_failures[cfg] + 1
+                if not ok and not args.dry_run:
+                    todo[cfg].append(todo[cfg][-1] + 1 if todo[cfg] else idx + 1)
+            if stopped_for_time:
+                break
+
+    if stopped_for_time:
+        log("Stopped before SLURM deadline; rerun the same command on the next "
+            "allocation to resume.")
+    kill_vllm_servers(wait_gpu_clear=False)
+    log("Driver finished.\n")
+    print(trial_status_table())
+
+
+if __name__ == "__main__":
+    main()

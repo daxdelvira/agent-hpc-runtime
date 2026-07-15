@@ -195,13 +195,25 @@ def make_prefetch_completed_event(
     step: int,
     task_id: str,
     elapsed_s: float,
+    status: str = "",
+    extras: dict | None = None,
 ) -> HpcEvent:
+    # `extras` carries executor-specific result fields (e.g. bytes_staged,
+    # gb_per_s, n_shards from ModelCacheStagingExecutor) so byte-level
+    # speculation-cost accounting is possible from the trace alone.
+    payload: dict[str, Any] = {"task_id": task_id, "elapsed_s": elapsed_s}
+    if status:
+        payload["status"] = status
+    if extras:
+        for k, v in extras.items():
+            if k not in payload and isinstance(v, (int, float, str, bool)):
+                payload[k] = v
     return HpcEvent(
         run_id=run_id,
         step=step,
         epoch_time=time.time(),
         event_type="prefetch_completed",
-        payload={"task_id": task_id, "elapsed_s": elapsed_s},
+        payload=payload,
     )
 
 

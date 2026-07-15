@@ -58,3 +58,24 @@ class RuntimeConfig:
 
     # Human-readable label stored in summary JSON for ablation bookkeeping.
     condition: str = "full_system"
+
+    # Swap mode: if non-empty, the adapter schedules a vllm_model prefetch for
+    # this model name immediately after plan extraction (before WorkerAgent runs).
+    vllm_worker_model: str = ""
+
+    # Swap mode, Option A: warm the worker model's weight shards into the OS page
+    # cache during the planner phase (pure host I/O, concurrent with GPU-bound
+    # planner inference).  Scheduled at the first chain start as a "model_cache"
+    # resource; disable per-ablation via skip_resource_types=["model_cache"].
+    stage_worker_cache: bool = False
+
+    # HF snapshot dir of the worker model (swap mode).  Used only to compute
+    # estimated_size_bytes for staged/prefetched model resources so the trace
+    # carries byte-level speculation-cost data.
+    worker_model_path: str = ""
+
+    # Option D: if non-empty, the adapter starts this (distinct, co-resident)
+    # aggregator model on the ensemble tool's tool_start — during the long
+    # GPU-idle MACE compute window — so it is hot when control reaches
+    # AggregatorAgent.  Lives on its own GPUs, so no worker stop/swap is needed.
+    vllm_aggregator_model: str = ""

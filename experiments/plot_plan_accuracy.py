@@ -200,7 +200,7 @@ def plot_plan_accuracy(
     aa_n_runs = aa_matrix.shape[0] if aa_matrix.ndim == 2 else 0
     cg_n_runs = cg_matrix.shape[0] if cg_matrix.ndim == 2 else 0
 
-    fig = plt.figure(figsize=(11, 4.2))
+    fig = plt.figure(figsize=(13, 5.6))
     gs = GridSpec(1, 2, figure=fig, width_ratios=[1.5, 1.0], wspace=0.38)
     ax_aa = fig.add_subplot(gs[0])
     ax_cg = fig.add_subplot(gs[1])
@@ -232,12 +232,13 @@ def plot_plan_accuracy(
         # "N/M" count label above each bar
         for i, (n_m, n_v, pct) in enumerate(stats):
             label_y = pct + 1.5
-            ax.text(i, min(label_y, 97), f"{n_m}/{n_v}",
+            ax.text(i, min(label_y, 103), f"{n_m}/{n_v}",
                     ha="center", va="bottom",
                     fontsize=FS["small"], color=text_color)
 
         ax.axhline(100, color=grid_color, linewidth=0.8, linestyle="--", zorder=2)
-        ax.set_ylim(0, 108)
+        ax.set_ylim(0, 130)
+        ax.set_yticks(range(0, 101, 20))
         ax.set_xticks(xs)
         ax.set_xticklabels(col_labels, fontsize=FS["tick"], rotation=25, ha="right")
         ax.set_ylabel("% runs compliant", fontsize=FS["label"])

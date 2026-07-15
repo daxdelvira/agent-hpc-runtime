@@ -48,11 +48,11 @@ GRV: dict[str, str] = {
 }
 
 FS: dict[str, int | float] = {
-    "title": 11,
-    "label": 10,
-    "tick":   9,
-    "annot":  8.5,
-    "small":  7.5,
+    "title": 27,
+    "label": 24,
+    "tick":  21,
+    "annot": 21,
+    "small": 18,
 }
 
 

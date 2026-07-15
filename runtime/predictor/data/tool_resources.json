@@ -125,17 +125,8 @@
     "consumer_step_offset": 2
   },
   {
-    "_comment": "mace_mp:medium matches MaceCalc(calculator_type='mace_mp', model='medium') — ChemGraph's default.",
+    "_comment": "mace_mp:medium matches MaceCalc(calculator_type='mace_mp', model='medium') — ChemGraph's default. run_ase is the ONLY real consumer: smiles_to_coordinate_file was wrongly listed here too (it never constructs a calculator), which made every MACE prefetch validate/consume at the wrong tool — classified 'late' despite completing before run_ase — and double-counted missed opportunities (halving recall).",
     "consumer_tool": "run_ase",
-    "resource_type": "mace_model",
-    "name": "mace_mp:medium",
-    "path": null,
-    "estimated_load_s": 40.0,
-    "cancellation_safe": true,
-    "consumer_step_offset": 1
-  },
-  {
-    "consumer_tool": "smiles_to_coordinate_file",
     "resource_type": "mace_model",
     "name": "mace_mp:medium",
     "path": null,

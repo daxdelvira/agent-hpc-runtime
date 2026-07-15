@@ -55,7 +55,10 @@ class LearnedPredictor(Predictor):
         transitions_path: str | Path | None = None,
         registry: ResourceRegistry | None = None,
         min_confidence: float = 0.30,   # discard very weak learned transitions
+        signals: str = "full",          # "full" | "plan_only" | "transition_only"
     ) -> None:
+        if signals not in ("full", "plan_only", "transition_only"):
+            raise ValueError(f"signals must be full|plan_only|transition_only, got {signals!r}")
         transitions_path = Path(transitions_path) if transitions_path else _DEFAULT_TRANSITIONS_PATH
         self._table = TransitionTable.load(transitions_path)
         self._registry = registry or ResourceRegistry.merged(
@@ -63,6 +66,11 @@ class LearnedPredictor(Predictor):
             ResourceRegistry.from_mock_predictor(),
         )
         self._min_confidence = min_confidence
+        # Predictor-mode ablation: plan_only uses only Signal 1 (plan context);
+        # transition_only uses only Signal 2 (learned table).  The mock fallback
+        # (Signal 3) is disabled in both restricted modes so measured prediction
+        # quality reflects the isolated signal.
+        self._signals = signals
         self._has_learned_data = bool(
             self._table.tool_transitions or self._table.model_transitions
         )
@@ -72,7 +80,7 @@ class LearnedPredictor(Predictor):
 
     @property
     def predictor_id(self) -> str:
-        return "learned"
+        return "learned" if self._signals == "full" else f"learned_{self._signals}"
 
     def predict(
         self,
@@ -85,12 +93,16 @@ class LearnedPredictor(Predictor):
         current_tool = _latest_tool(current_tool_calls, recent_events)
         resources: list[ResourceSpec] = []
         reasoning_parts: list[str] = []
-        predictor_tag = "learned"
+        predictor_tag = self.predictor_id
 
         # ------------------------------------------------------------------
         # Signal 1: Plan context — highest priority
         # ------------------------------------------------------------------
-        if isinstance(plan_context, PlanContext) and plan_context.tool_sequence:
+        if (
+            self._signals in ("full", "plan_only")
+            and isinstance(plan_context, PlanContext)
+            and plan_context.tool_sequence
+        ):
             plan_resources, plan_reasoning = self._predict_from_plan(
                 plan_context, current_tool, step,
             )
@@ -102,7 +114,10 @@ class LearnedPredictor(Predictor):
         # ------------------------------------------------------------------
         # Signal 2: Learned transitions (fill gaps not covered by plan)
         # ------------------------------------------------------------------
-        if not resources and current_tool and self._has_learned_data:
+        if (
+            self._signals in ("full", "transition_only")
+            and not resources and current_tool and self._has_learned_data
+        ):
             learned_resources, learned_reasoning = self._predict_from_table(
                 current_tool, step, recent_events,
             )
@@ -111,9 +126,9 @@ class LearnedPredictor(Predictor):
                 reasoning_parts.append(learned_reasoning)
 
         # ------------------------------------------------------------------
-        # Signal 3: MockPredictor fallback
+        # Signal 3: MockPredictor fallback (full mode only)
         # ------------------------------------------------------------------
-        if not resources:
+        if not resources and self._signals == "full":
             mock = self._get_mock()
             result = mock.predict(
                 step=step,
@@ -133,6 +148,16 @@ class LearnedPredictor(Predictor):
                     context_events_used=result.context_events_used,
                 )
             return result
+
+        if not resources:
+            # Restricted-signal mode with no prediction: return empty result.
+            return PredictionResult(
+                step=step,
+                resources=[],
+                confidence=0.0,
+                predictor_id=predictor_tag,
+                context_events_used=len(recent_events),
+            )
 
         overall_confidence = max(r.confidence for r in resources)
         return PredictionResult(

@@ -235,6 +235,14 @@ class AtomAgentsRuntimeAdapter:
         if not tool_calls:
             return
 
+        # Stamp consumption BEFORE scheduling: the dedup in schedule() skips a
+        # resource whose previous task is still COMPLETED, so a repeatable
+        # proactive-swap resource (e.g. reload qwen_72b every LAMMPS window)
+        # must be marked USED here — the tool_call hook fires only after
+        # scheduling and is too late to re-arm this window's prefetch.
+        for tc in tool_calls:
+            self._stamp_consumed(tc.get("name", ""), step)
+
         if self._detector.is_conservative(step):
             return
 
@@ -284,6 +292,7 @@ class AtomAgentsRuntimeAdapter:
             self._tool_call_count += 1
         self._bus.set_step(step)
         self._bus.emit("tool_call", {"tool": tool_name}, step=step)
+        self._stamp_consumed(tool_name, step)
         hit, action, ckpt_out = self._detector.on_tool_about_to_execute(
             tool_name, step=step,
         )
@@ -310,6 +319,43 @@ class AtomAgentsRuntimeAdapter:
                 self._config.run_id, step, "divergence",
                 self._config.conservative_mode_steps,
             ))
+
+    def _stamp_consumed(self, tool_name: str, step: int) -> None:
+        """Mark prefetched resources whose consumer tool is firing as consumed.
+
+        The chemgraph adapter stamps consumption at its WorkerAgent gate;
+        AtomAgents had no stamping at all (added 2026-07-10), so every
+        completed prefetch was scored WASTED and — because the scheduler's
+        dedup only re-arms on USED — a proactive-swap resource could fire at
+        most once per run (observed: exp3 full_system t02 hid the first
+        LAMMPS-window reload, then skipped the second window's).
+
+        Consumption = the consumer tool is about to run.  For proactive-swap
+        resources the consumer IS the compute tool that opens the window, so
+        stamping here both credits the previous window's reload and re-arms
+        the resource for this window's.
+        """
+        if self._scheduler is None:
+            return
+        try:
+            from runtime.prefetch.base import PrefetchStatus
+            for task in self._scheduler.all_tasks():
+                res = task.resource
+                if res is None or res.consumer_tool != tool_name:
+                    continue
+                # COMPLETED only: an IN_PROGRESS task here is usually the one
+                # admitted moments ago by the prediction hook for THIS tool
+                # firing — stamping it would score a load as consumed before
+                # it finished.  A load still in flight when its consumer fires
+                # is late; it stays unconsumed (honest) until a later firing.
+                if task.status is PrefetchStatus.COMPLETED:
+                    self._scheduler.on_resource_consumed(
+                        res.resource_id,
+                        consumed_at=time.perf_counter(),
+                        current_step=step,
+                    )
+        except Exception:
+            pass  # consumption accounting must never break the workflow
 
     # ------------------------------------------------------------------
     # Internal: patching + handler installation

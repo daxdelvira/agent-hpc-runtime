@@ -153,6 +153,7 @@ def _draw_heatmap(
     dark_bg: bool,
     annot: bool = True,
     fmt: str = ".2f",
+    title_fs: float | None = None,
 ) -> None:
     short_labels = [shorten(t) for t in labels]
 
@@ -166,7 +167,7 @@ def _draw_heatmap(
             vmax=1,
             annot=annot and len(labels) <= 12,
             fmt=fmt,
-            annot_kws={"size": max(5, FS["small"] - len(labels) * 0.3)},
+            annot_kws={"size": max(10, FS["small"] - len(labels) * 0.2)},
             xticklabels=short_labels,
             yticklabels=short_labels,
             linewidths=0.3,
@@ -178,16 +179,17 @@ def _draw_heatmap(
         ax.set_xticks(range(len(labels)))
         ax.set_yticks(range(len(labels)))
         ax.set_xticklabels(short_labels, rotation=45, ha="right",
-                           fontsize=max(5, FS["small"] - len(labels) * 0.2))
+                           fontsize=max(11, FS["small"] - len(labels) * 0.15))
         ax.set_yticklabels(short_labels,
-                           fontsize=max(5, FS["small"] - len(labels) * 0.2))
+                           fontsize=max(11, FS["small"] - len(labels) * 0.15))
         plt.colorbar(im, ax=ax, shrink=0.8)
 
-    ax.set_title(title, fontsize=FS["annot"], fontweight="bold", pad=4)
-    ax.set_xlabel("Destination tool (step j+i)", fontsize=FS["small"])
+    ax.set_title(title, fontsize=title_fs if title_fs is not None else FS["annot"],
+                 fontweight="bold", pad=6)
+    ax.set_xlabel("Destination tool (step j+k)", fontsize=FS["small"])
     ax.set_ylabel("Source tool (step j)", fontsize=FS["small"])
-    ax.tick_params(axis="x", rotation=45, labelsize=max(5, FS["small"] - len(labels) * 0.2))
-    ax.tick_params(axis="y", rotation=0,  labelsize=max(5, FS["small"] - len(labels) * 0.2))
+    ax.tick_params(axis="x", rotation=45, labelsize=max(11, FS["small"] - len(labels) * 0.15))
+    ax.tick_params(axis="y", rotation=0,  labelsize=max(11, FS["small"] - len(labels) * 0.15))
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +234,9 @@ def plot_transitions(
         fig, ax = plt.subplots(figsize=(max(5, len(labels) * 0.7 + 1),
                                         max(4, len(labels) * 0.6 + 1)))
         _draw_heatmap(ax, M, labels,
-                      title=f"Tool Transitions — {workflow.capitalize()} (offset i={i})",
-                      dark_bg=dark_bg)
+                      title=f"Tool Transitions — {workflow.capitalize()} (offset k={i})",
+                      dark_bg=dark_bg,
+                      title_fs=FS["title"])
         fig.tight_layout()
         save_figure(fig, outdir, f"transitions_{workflow}_i{i:02d}")
         plt.close(fig)
@@ -250,8 +253,8 @@ def plot_transitions(
         matrices.append((i, M, labels))
 
     max_n = max((len(lbl) for _, _, lbl in matrices), default=1)
-    cell_w = max(3.0, max_n * 0.5)
-    cell_h = max(2.5, max_n * 0.45)
+    cell_w = max(4.2, max_n * 0.55)
+    cell_h = max(3.6, max_n * 0.5)
 
     fig, axes = plt.subplots(
         nrows, ncols,
@@ -265,13 +268,17 @@ def plot_transitions(
         y=1.01,
     )
 
+    # Offset label a little larger than the rest of the panel text.
+    offset_fs = FS["title"] + 4
+
     ax_flat = axes.flatten()
     for idx, (i, M, labels) in enumerate(matrices):
         _draw_heatmap(
             ax_flat[idx], M, labels,
-            title=f"offset i={i}",
+            title=f"offset k={i}",
             dark_bg=dark_bg,
             annot=len(labels) <= 10,
+            title_fs=offset_fs,
         )
 
     # Hide unused axes

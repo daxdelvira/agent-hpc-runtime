@@ -320,8 +320,8 @@ def run_exp2(args: argparse.Namespace) -> None:
         run_id=run_id,
         results_dir=str(results_dir),
         interval_s=3.0,
-        port_72b=8001,
-        port_32b=8002,
+        port_72b=8007,
+        port_32b=8012,
     )
     profiler.start()
 
@@ -371,6 +371,23 @@ def run_exp2(args: argparse.Namespace) -> None:
             "naive_prefetch": args.naive_prefetch,
             "skip_resource_types": skip_types,
         }
+        # Guard against zero-compute runs being counted as completed: a
+        # crashed first tool call ends the chat in ~90 s with rc=0 (seen
+        # 2026-07-09).  Only a run with an actual LAMMPS/compute phase in
+        # the metrics counts as a completed workflow.
+        wf_done = False
+        try:
+            import csv as _csv
+            with open(metrics_csv) as _f:
+                for _row in _csv.DictReader(_f):
+                    _ph = _row.get("phase", "")
+                    if (_ph.startswith("lammps") or _ph.startswith("agent:compute")) \
+                            and float(_row.get("duration_s") or 0) > 0:
+                        wf_done = True
+                        break
+        except Exception:
+            wf_done = None
+        out["workflow_completed"] = wf_done
         with open(summary_path, "w") as f:
             json.dump(out, f, indent=2)
         print(f"[cluster] Summary written to: {summary_path}")

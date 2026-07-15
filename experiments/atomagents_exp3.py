@@ -343,6 +343,18 @@ def run_exp3(args: argparse.Namespace) -> None:
     )
     print(f"[runtime] Metrics CSV     : {metrics_csv}")
 
+    # Hand the metrics logger to the router so agent-blocking model swaps are
+    # recorded as model_swap_wait:<name> phases (the exposed-stall number the
+    # Q2 breakdown needs; before 2026-07-09 swap time was only in stdout prose).
+    if orchestrator is not None:
+        try:
+            from atomagents.runtime.model_router import get_router
+            _r = get_router()
+            if _r is not None:
+                _r.set_metrics(ml)
+        except Exception as e:
+            print(f"[cluster] WARNING: could not attach metrics to router: {e}")
+
     if args.predictor == "learned":
         from runtime.predictor.learned_predictor import LearnedPredictor
         predictor = LearnedPredictor()

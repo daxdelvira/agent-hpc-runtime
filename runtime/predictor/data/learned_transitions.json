@@ -1,9 +1,275 @@
 {
   "version": "1",
-  "n_traces": 21,
-  "n_tool_events": 4887,
-  "generated_at": "2026-06-02T16:27:27.644882+00:00",
+  "n_traces": 165,
+  "n_tool_events": 5911,
+  "generated_at": "2026-07-07T20:16:33.128406+00:00",
   "tool_transitions": {
+    "smiles_to_coordinate_file": {
+      "1": [
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 0.9538,
+          "count": 62,
+          "offset": 1
+        },
+        {
+          "target": "extract_output_json",
+          "target_type": "tool",
+          "probability": 0.0462,
+          "count": 3,
+          "offset": 1
+        }
+      ],
+      "2": [
+        {
+          "target": "extract_output_json",
+          "target_type": "tool",
+          "probability": 0.5273,
+          "count": 29,
+          "offset": 2
+        },
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 0.2909,
+          "count": 16,
+          "offset": 2
+        },
+        {
+          "target": "file_to_atomsdata",
+          "target_type": "tool",
+          "probability": 0.1091,
+          "count": 6,
+          "offset": 2
+        },
+        {
+          "target": "smiles_to_coordinate_file",
+          "target_type": "tool",
+          "probability": 0.0364,
+          "count": 2,
+          "offset": 2
+        },
+        {
+          "target": "molecule_name_to_smiles",
+          "target_type": "tool",
+          "probability": 0.0364,
+          "count": 2,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 0.6316,
+          "count": 12,
+          "offset": 3
+        },
+        {
+          "target": "smiles_to_coordinate_file",
+          "target_type": "tool",
+          "probability": 0.1579,
+          "count": 3,
+          "offset": 3
+        },
+        {
+          "target": "calculator",
+          "target_type": "tool",
+          "probability": 0.1579,
+          "count": 3,
+          "offset": 3
+        }
+      ]
+    },
+    "molecule_name_to_smiles": {
+      "1": [
+        {
+          "target": "smiles_to_coordinate_file",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 60,
+          "offset": 1
+        }
+      ],
+      "2": [
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 60,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "extract_output_json",
+          "target_type": "tool",
+          "probability": 0.5472,
+          "count": 29,
+          "offset": 3
+        },
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 0.3019,
+          "count": 16,
+          "offset": 3
+        },
+        {
+          "target": "file_to_atomsdata",
+          "target_type": "tool",
+          "probability": 0.1132,
+          "count": 6,
+          "offset": 3
+        },
+        {
+          "target": "smiles_to_coordinate_file",
+          "target_type": "tool",
+          "probability": 0.0377,
+          "count": 2,
+          "offset": 3
+        }
+      ]
+    },
+    "run_ase": {
+      "1": [
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 0.5056,
+          "count": 45,
+          "offset": 1
+        },
+        {
+          "target": "extract_output_json",
+          "target_type": "tool",
+          "probability": 0.4045,
+          "count": 36,
+          "offset": 1
+        },
+        {
+          "target": "file_to_atomsdata",
+          "target_type": "tool",
+          "probability": 0.0674,
+          "count": 6,
+          "offset": 1
+        },
+        {
+          "target": "smiles_to_coordinate_file",
+          "target_type": "tool",
+          "probability": 0.0225,
+          "count": 2,
+          "offset": 1
+        }
+      ],
+      "2": [
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 0.7073,
+          "count": 29,
+          "offset": 2
+        },
+        {
+          "target": "extract_output_json",
+          "target_type": "tool",
+          "probability": 0.1951,
+          "count": 8,
+          "offset": 2
+        },
+        {
+          "target": "calculator",
+          "target_type": "tool",
+          "probability": 0.0732,
+          "count": 3,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 0.5714,
+          "count": 16,
+          "offset": 3
+        },
+        {
+          "target": "extract_output_json",
+          "target_type": "tool",
+          "probability": 0.2857,
+          "count": 8,
+          "offset": 3
+        },
+        {
+          "target": "calculator",
+          "target_type": "tool",
+          "probability": 0.1071,
+          "count": 3,
+          "offset": 3
+        }
+      ]
+    },
+    "extract_output_json": {
+      "1": [
+        {
+          "target": "molecule_name_to_smiles",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 2,
+          "offset": 1
+        }
+      ],
+      "2": [
+        {
+          "target": "smiles_to_coordinate_file",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 2,
+          "offset": 2
+        }
+      ],
+      "3": [
+        {
+          "target": "run_ase",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 2,
+          "offset": 3
+        }
+      ]
+    },
+    "file_to_atomsdata": {
+      "1": [
+        {
+          "target": "calculator",
+          "target_type": "tool",
+          "probability": 0.75,
+          "count": 3,
+          "offset": 1
+        }
+      ],
+      "2": [
+        {
+          "target": "calculator",
+          "target_type": "tool",
+          "probability": 0.75,
+          "count": 3,
+          "offset": 2
+        }
+      ]
+    },
+    "calculator": {
+      "1": [
+        {
+          "target": "calculator",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 3,
+          "offset": 1
+        }
+      ]
+    },
     "computation_task": {
       "2": [
         {
@@ -83,7 +349,7 @@
           "target": "create_potential_file",
           "target_type": "tool",
           "probability": 1.0,
-          "count": 69,
+          "count": 116,
           "offset": 2
         }
       ]
@@ -93,28 +359,28 @@
         {
           "target": "create_potential_file",
           "target_type": "tool",
-          "probability": 0.9948,
-          "count": 4420,
+          "probability": 0.9847,
+          "count": 4512,
           "offset": 2
         },
         {
           "target": "suggest_orientation",
           "target_type": "tool",
-          "probability": 0.0029,
-          "count": 13,
+          "probability": 0.0131,
+          "count": 60,
           "offset": 2
         },
         {
           "target": "create_screw_dislocation",
           "target_type": "tool",
-          "probability": 0.0018,
+          "probability": 0.0017,
           "count": 8,
           "offset": 2
         },
         {
           "target": "computation_task",
           "target_type": "tool",
-          "probability": 0.0005,
+          "probability": 0.0004,
           "count": 2,
           "offset": 2
         }
@@ -145,35 +411,49 @@
         {
           "target": "create_screw_dislocation",
           "target_type": "tool",
-          "probability": 0.7973,
-          "count": 59,
+          "probability": 0.574,
+          "count": 128,
           "offset": 2
         },
         {
           "target": "run_simulation",
           "target_type": "tool",
-          "probability": 0.0946,
-          "count": 7,
+          "probability": 0.2197,
+          "count": 49,
+          "offset": 2
+        },
+        {
+          "target": "compute_dislocation_distribution_map",
+          "target_type": "tool",
+          "probability": 0.0852,
+          "count": 19,
+          "offset": 2
+        },
+        {
+          "target": "get_DD_map_path",
+          "target_type": "tool",
+          "probability": 0.0807,
+          "count": 18,
           "offset": 2
         },
         {
           "target": "create_working_folder",
           "target_type": "tool",
-          "probability": 0.0405,
-          "count": 3,
+          "probability": 0.0179,
+          "count": 4,
           "offset": 2
         },
         {
           "target": "NEB_screw_simulation",
           "target_type": "tool",
-          "probability": 0.027,
+          "probability": 0.009,
           "count": 2,
           "offset": 2
         },
         {
           "target": "run_neb_calculation",
           "target_type": "tool",
-          "probability": 0.027,
+          "probability": 0.009,
           "count": 2,
           "offset": 2
         }
@@ -182,8 +462,22 @@
         {
           "target": "computation_task_screw_dislocation",
           "target_type": "tool",
-          "probability": 0.4286,
-          "count": 3,
+          "probability": 0.7667,
+          "count": 23,
+          "offset": 3
+        },
+        {
+          "target": "analyze_screw_core",
+          "target_type": "tool",
+          "probability": 0.0667,
+          "count": 2,
+          "offset": 3
+        },
+        {
+          "target": "plan_task",
+          "target_type": "tool",
+          "probability": 0.0667,
+          "count": 2,
           "offset": 3
         }
       ]
@@ -193,8 +487,22 @@
         {
           "target": "create_working_folder",
           "target_type": "tool",
-          "probability": 1.0,
-          "count": 12,
+          "probability": 0.8056,
+          "count": 58,
+          "offset": 2
+        },
+        {
+          "target": "computation_task_screw_dislocation",
+          "target_type": "tool",
+          "probability": 0.1111,
+          "count": 8,
+          "offset": 2
+        },
+        {
+          "target": "code_task",
+          "target_type": "tool",
+          "probability": 0.0833,
+          "count": 6,
           "offset": 2
         }
       ]
@@ -205,7 +513,7 @@
           "target": "NEB_screw_simulation",
           "target_type": "tool",
           "probability": 1.0,
-          "count": 7,
+          "count": 49,
           "offset": 2
         }
       ]
@@ -213,23 +521,23 @@
     "NEB_screw_simulation": {
       "2": [
         {
-          "target": "NEB_screw_simulation",
+          "target": "create_screw_dislocation",
           "target_type": "tool",
-          "probability": 0.5789,
-          "count": 11,
+          "probability": 0.7377,
+          "count": 45,
           "offset": 2
         },
         {
-          "target": "create_screw_dislocation",
+          "target": "NEB_screw_simulation",
           "target_type": "tool",
-          "probability": 0.2632,
-          "count": 5,
+          "probability": 0.1803,
+          "count": 11,
           "offset": 2
         },
         {
           "target": "create_working_folder",
           "target_type": "tool",
-          "probability": 0.1579,
+          "probability": 0.0492,
           "count": 3,
           "offset": 2
         }
@@ -251,15 +559,15 @@
         {
           "target": "suggest_orientation",
           "target_type": "tool",
-          "probability": 0.8788,
-          "count": 29,
+          "probability": 0.9241,
+          "count": 73,
           "offset": 2
         },
         {
           "target": "create_screw_dislocation",
           "target_type": "tool",
-          "probability": 0.1212,
-          "count": 4,
+          "probability": 0.0759,
+          "count": 6,
           "offset": 2
         }
       ],
@@ -278,8 +586,8 @@
         {
           "target": "create_crystal",
           "target_type": "tool",
-          "probability": 1.0,
-          "count": 12,
+          "probability": 0.9286,
+          "count": 13,
           "offset": 2
         }
       ]
@@ -305,23 +613,68 @@
           "offset": 2
         }
       ]
+    },
+    "code_task": {
+      "2": [
+        {
+          "target": "computation_task_screw_dislocation",
+          "target_type": "tool",
+          "probability": 0.5625,
+          "count": 18,
+          "offset": 2
+        },
+        {
+          "target": "code_task",
+          "target_type": "tool",
+          "probability": 0.4375,
+          "count": 14,
+          "offset": 2
+        }
+      ]
+    },
+    "plan_task": {
+      "2": [
+        {
+          "target": "plan_task",
+          "target_type": "tool",
+          "probability": 1.0,
+          "count": 14,
+          "offset": 2
+        }
+      ]
     }
   },
   "model_transitions": {
     "Qwen/Qwen2.5-VL-72B-Instruct": {
+      "1": [
+        {
+          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
+          "target_type": "model",
+          "probability": 0.9973,
+          "count": 5460,
+          "offset": 1
+        },
+        {
+          "target": "Qwen/Qwen2.5-VL-32B-Instruct",
+          "target_type": "model",
+          "probability": 0.0027,
+          "count": 15,
+          "offset": 1
+        }
+      ],
       "2": [
         {
           "target": "Qwen/Qwen2.5-VL-72B-Instruct",
           "target_type": "model",
-          "probability": 0.9959,
-          "count": 5057,
+          "probability": 0.9952,
+          "count": 10786,
           "offset": 2
         },
         {
           "target": "Qwen/Qwen2.5-VL-32B-Instruct",
           "target_type": "model",
-          "probability": 0.0041,
-          "count": 21,
+          "probability": 0.0048,
+          "count": 52,
           "offset": 2
         }
       ],
@@ -329,25 +682,16 @@
         {
           "target": "Qwen/Qwen2.5-VL-72B-Instruct",
           "target_type": "model",
-          "probability": 0.9346,
-          "count": 300,
+          "probability": 0.9902,
+          "count": 5462,
           "offset": 3
         },
         {
           "target": "Qwen/Qwen2.5-VL-32B-Instruct",
           "target_type": "model",
-          "probability": 0.0654,
-          "count": 21,
+          "probability": 0.0098,
+          "count": 54,
           "offset": 3
-        }
-      ],
-      "1": [
-        {
-          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
-          "target_type": "model",
-          "probability": 0.9967,
-          "count": 298,
-          "offset": 1
         }
       ]
     },
@@ -356,31 +700,31 @@
         {
           "target": "Qwen/Qwen2.5-VL-32B-Instruct",
           "target_type": "model",
-          "probability": 0.6866,
-          "count": 46,
+          "probability": 0.6867,
+          "count": 114,
           "offset": 1
         },
         {
           "target": "Qwen/Qwen2.5-VL-72B-Instruct",
           "target_type": "model",
-          "probability": 0.3134,
-          "count": 21,
+          "probability": 0.3133,
+          "count": 52,
           "offset": 1
         }
       ],
       "2": [
         {
-          "target": "Qwen/Qwen2.5-VL-32B-Instruct",
+          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
           "target_type": "model",
-          "probability": 0.5319,
-          "count": 25,
+          "probability": 0.5079,
+          "count": 64,
           "offset": 2
         },
         {
-          "target": "Qwen/Qwen2.5-VL-72B-Instruct",
+          "target": "Qwen/Qwen2.5-VL-32B-Instruct",
           "target_type": "model",
-          "probability": 0.4681,
-          "count": 22,
+          "probability": 0.4921,
+          "count": 62,
           "offset": 2
         }
       ],
@@ -388,15 +732,15 @@
         {
           "target": "Qwen/Qwen2.5-VL-72B-Instruct",
           "target_type": "model",
-          "probability": 0.9091,
-          "count": 40,
+          "probability": 0.9145,
+          "count": 107,
           "offset": 3
         },
         {
           "target": "Qwen/Qwen2.5-VL-32B-Instruct",
           "target_type": "model",
-          "probability": 0.0909,
-          "count": 4,
+          "probability": 0.0855,
+          "count": 10,
           "offset": 3
         }
       ]

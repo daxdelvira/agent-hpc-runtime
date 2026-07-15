@@ -90,7 +90,7 @@ WORKFLOW_STYLE: dict[str, dict] = {
         "label":    "AtomAgents",
         "color":    GRV["orange"],
         "pattern":  "runtime_trace_*.jsonl",
-        "linestyle": "--",
+        "linestyle": "-",
         "marker":   "s",
     },
 }
@@ -104,11 +104,9 @@ def plot_consistency(
     max_offset: int = 20,
     dark_bg: bool = False,
 ) -> None:
+    """Produce one figure per workflow, each with a single solid line."""
     apply_gruvbox_rc(dark_bg=dark_bg)
 
-    fig, ax = plt.subplots(figsize=(7, 4))
-
-    plotted_any = False
     for wf in workflows:
         style = WORKFLOW_STYLE[wf]
         traces = load_traces(trace_dir, style["pattern"])
@@ -128,18 +126,18 @@ def plot_consistency(
         pcts = [consistency[i][0] for i in steps]
         n_runs = [consistency[i][2] for i in steps]
 
+        fig, ax = plt.subplots(figsize=(10, 5.6))
         ax.plot(
             steps,
             pcts,
             color=style["color"],
-            linestyle=style["linestyle"],
+            linestyle="-",
             marker=style["marker"],
-            markersize=5,
-            linewidth=1.8,
+            markersize=6,
+            linewidth=2.2,
             label=f"{style['label']} (n≤{max(n_runs)} runs)",
             zorder=3,
         )
-        plotted_any = True
 
         print(f"[{wf}] {len(seqs)} runs, {len(steps)} plotted steps")
         print(f"       mean consistency: {np.mean(pcts):.1f}%  "
@@ -148,39 +146,35 @@ def plot_consistency(
             pct, tool, n = consistency[i]
             print(f"       step {i:2d}: {pct:5.1f}%  modal='{tool}'  n={n}")
 
-    if not plotted_any:
-        print("Nothing to plot.")
-        return
+        # ── Reference line ────────────────────────────────────────────────────
+        ax.axhline(100, color=GRV["gray"], linewidth=0.8, linestyle=":", alpha=0.7, zorder=1)
 
-    # ── Reference line ────────────────────────────────────────────────────────
-    ax.axhline(100, color=GRV["gray"], linewidth=0.8, linestyle=":", alpha=0.7, zorder=1)
+        # ── Axis labels ───────────────────────────────────────────────────────
+        ax.set_xlabel("Step index", fontsize=FS["label"])
+        ax.set_ylabel("% runs sharing\nmost-common tool", fontsize=FS["label"])
+        ax.set_title(f"{style['label']}: Workflow Consistency",
+                     fontsize=FS["title"], fontweight="bold", loc="left")
 
-    # ── Axis labels ───────────────────────────────────────────────────────────
-    ax.set_xlabel("Step index", fontsize=FS["label"])
-    ax.set_ylabel("% runs sharing most-common tool", fontsize=FS["label"])
-    ax.set_title("Workflow Consistency Across Runs", fontsize=FS["title"],
-                 fontweight="bold", loc="left")
+        ax.set_ylim(0, 108)
+        ax.set_xlim(left=-0.3)
+        ax.yaxis.set_major_locator(plt.MultipleLocator(25))
+        ax.yaxis.set_minor_locator(plt.MultipleLocator(12.5))
 
-    ax.set_ylim(0, 108)
-    ax.set_xlim(left=-0.3)
-    ax.yaxis.set_major_locator(plt.MultipleLocator(25))
-    ax.yaxis.set_minor_locator(plt.MultipleLocator(12.5))
+        grid_color = GRV["bg2"] if dark_bg else "#e8e8e8"
+        ax.yaxis.grid(True, color=grid_color, linewidth=0.6, alpha=0.8, zorder=0)
+        ax.set_axisbelow(True)
 
-    grid_color = GRV["bg2"] if dark_bg else "#e8e8e8"
-    ax.yaxis.grid(True, color=grid_color, linewidth=0.6, alpha=0.8, zorder=0)
-    ax.set_axisbelow(True)
+        leg = ax.legend(
+            fontsize=FS["annot"],
+            framealpha=0.0,
+            loc="lower left",
+        )
+        for text in leg.get_texts():
+            text.set_color(GRV["fg"] if dark_bg else "#1d2021")
 
-    leg = ax.legend(
-        fontsize=FS["annot"],
-        framealpha=0.0,
-        loc="lower left",
-    )
-    for text in leg.get_texts():
-        text.set_color(GRV["fg"] if dark_bg else "#1d2021")
-
-    fig.tight_layout()
-    save_figure(fig, outdir, "step_variation")
-    plt.close(fig)
+        fig.tight_layout()
+        save_figure(fig, outdir, f"step_variation_{wf}")
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------

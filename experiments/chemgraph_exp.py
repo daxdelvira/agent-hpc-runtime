@@ -99,6 +99,24 @@ For each molecule:
 Then compare the two results and summarise key geometric differences.
 """
 
+# Out-of-core / high-compute task: run MACE over an entire directory of crystal
+# structures.  Produces a genuine multi-minute CPU compute window (GPU idle),
+# used to hide a model prefetch/swap.  {dataset} is filled from --ensemble-dataset.
+ENSEMBLE_TASK_PROMPT = """\
+Screen an entire dataset of crystal structures with the MACE-MP force field.
+The dataset is a DIRECTORY containing many (~200) .cif files: {dataset}
+
+You must process the WHOLE directory in ONE batch call. Do this in a single step:
+1. Call run_mace_ensemble with input_structure_directory="{dataset}",
+   driver="opt", model="medium", device="cpu"{limit_arg}. This relaxes every structure in
+   the directory and returns a summary (n_structures, energies, timing).
+2. Report how many structures were processed and the range of energies.
+
+Do NOT call any single-structure tool, do NOT loop over individual files, and do
+NOT invent file names. The only structure input is the directory path above, and
+run_mace_ensemble is the only calculation tool you have.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -116,31 +134,102 @@ def _infer_condition(args: argparse.Namespace, mode, skip_types: list[str]) -> s
         parts.append("naive_prefetch")
     for t in skip_types:
         parts.append(f"no_{t.replace('_', '')}")
-    return "_".join(parts) if parts else "full_system"
+    if getattr(args, "predictor", "") in ("plan_only", "transition_only", "oracle"):
+        parts.append(f"pred_{args.predictor}")
+    if not parts:
+        return mode.value if mode.value in ("observe_only", "simulated") else "full_system"
+    return "_".join(parts)
 
 
 # ---------------------------------------------------------------------------
 # Executor builder
 # ---------------------------------------------------------------------------
 
-def _build_executor(mode: RuntimeMode, mace_device: str):
+def _megammap_settings(args) -> dict:
+    """
+    Validate the MegaMmap/Hermes environment for --megammap-stage and return
+    {binary, interceptor, hermes_conf}.  Fails hard when anything is missing:
+    a silent fallback would produce data labelled "megammap" that measured
+    nothing of the sort.
+    """
+    binary = os.environ.get(
+        "MEGA_MODEL_PRELOAD",
+        "/storage/project/r-ag117-0/shared/agent_hpc/mega_mmap_integration/"
+        "megammap_tests/build/bin/mm_model_preload",
+    )
+    interceptor = os.environ.get("HERMES_INTERCEPTOR", "")
+    hermes_conf = os.environ.get("HERMES_CONF", "")
+    problems = []
+    if not Path(binary).exists():
+        problems.append(f"mm_model_preload not found: {binary!r} "
+                        "(set MEGA_MODEL_PRELOAD)")
+    if not interceptor or not Path(interceptor).exists():
+        problems.append(f"libhermes_posix.so not found: {interceptor!r} "
+                        "(set HERMES_INTERCEPTOR)")
+    if problems:
+        for p in problems:
+            print(f"[megammap] ERROR: {p}")
+        print("[megammap] --megammap-stage requires the Hermes/MegaMmap stack "
+              "(source ~/scratch/mega_stack/mega_env.sh) and a running daemon "
+              "(hrun_start_runtime). Aborting rather than faking the condition.")
+        sys.exit(2)
+    return {"binary": binary, "interceptor": interceptor,
+            "hermes_conf": hermes_conf}
+
+
+def _build_executor(mode: RuntimeMode, mace_device: str, orchestrator=None,
+                    model_paths=None, megammap: dict | None = None,
+                    megammap_window: str = "4g", megammap_tx: str = "seq"):
     """Return the appropriate PrefetchExecutor for the runtime mode."""
     if mode != RuntimeMode.REAL:
         return SimulatedPrefetchExecutor()
 
+    executors = {}
+
     try:
         from runtime.prefetch.mace_prefetch import MacePrefetchExecutor
-        from runtime.prefetch.data_prefetch import CompositeExecutor
-        executor = CompositeExecutor(
-            executors={"mace_model": MacePrefetchExecutor(device=mace_device)},
-            default=SimulatedPrefetchExecutor(),
-        )
+        executors["mace_model"] = MacePrefetchExecutor(device=mace_device)
         print(f"[runtime] Real executor: MacePrefetchExecutor(device={mace_device!r})")
-        return executor
     except Exception as exc:
         print(f"[runtime] WARNING: Could not build MacePrefetchExecutor ({exc}); "
-              "falling back to simulated.")
-        return SimulatedPrefetchExecutor()
+              "mace_model will use simulated executor.")
+
+    if orchestrator is not None:
+        try:
+            from runtime.prefetch.model_prefetch import ModelPrefetchExecutor
+            executors["vllm_model"] = ModelPrefetchExecutor(orchestrator, probes=None)
+            print("[runtime] Real executor: ModelPrefetchExecutor for vllm_model")
+        except Exception as exc:
+            print(f"[runtime] WARNING: Could not build ModelPrefetchExecutor ({exc}).")
+
+    # Option A: warm-cache staging for the worker weights during planning.
+    # Backend is either our page-cache read-ahead or, for the external-system
+    # comparison, MegaMmap/Hermes (mm_model_preload into the Hermes pool).
+    if model_paths and megammap:
+        from runtime.prefetch.megammap_stage import MegaMmapStagingExecutor
+        executors["model_cache"] = MegaMmapStagingExecutor(
+            model_paths=model_paths,
+            binary=megammap["binary"],
+            window=megammap_window,
+            tx_type=megammap_tx,
+        )
+        print(f"[runtime] Real executor: MegaMmapStagingExecutor "
+              f"(tx={megammap_tx}, window={megammap_window}, "
+              f"models={list(model_paths)})")
+    elif model_paths:
+        try:
+            from runtime.prefetch.model_cache_prefetch import ModelCacheStagingExecutor
+            executors["model_cache"] = ModelCacheStagingExecutor(model_paths=model_paths)
+            print(f"[runtime] Real executor: ModelCacheStagingExecutor "
+                  f"(models={list(model_paths)})")
+        except Exception as exc:
+            print(f"[runtime] WARNING: Could not build ModelCacheStagingExecutor ({exc}).")
+
+    if executors:
+        from runtime.prefetch.data_prefetch import CompositeExecutor
+        return CompositeExecutor(executors=executors, default=SimulatedPrefetchExecutor())
+
+    return SimulatedPrefetchExecutor()
 
 
 # ---------------------------------------------------------------------------
@@ -196,19 +285,100 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     skip_types = [s.strip() for s in getattr(args, "skip_resource_types", "").split(",") if s.strip()]
     condition = getattr(args, "condition", None) or _infer_condition(args, mode, skip_types)
 
+    # ------------------------------------------------------------------
+    # Model orchestration (swap mode only)
+    # ------------------------------------------------------------------
+    orchestrator = None
+    vllm_worker_model = ""
+    vllm_aggregator_model = ""  # Option D: orchestrator key of co-resident aggregator
+    model_paths = {}          # model key -> snapshot dir, for page-cache staging
+    stage_worker_cache = False
+    megammap = None
+    if getattr(args, "megammap_stage", False):
+        if getattr(args, "no_cache_stage", False):
+            print("[megammap] ERROR: --megammap-stage and --no-cache-stage "
+                  "are mutually exclusive.")
+            sys.exit(2)
+        megammap = _megammap_settings(args)   # exits if the stack is missing
+    if getattr(args, "swap_models", False):
+        try:
+            from atomagents.runtime.model_orchestrator import ModelOrchestrator
+            from experiments.model_configs import MODELS_CHEMGRAPH_SWAP
+            orchestrator = ModelOrchestrator(MODELS_CHEMGRAPH_SWAP)
+            vllm_worker_model = "qwen_72b_instruct"
+            planner_model = "qwen_32b_vl"
+            # Option D: orchestrator key of the distinct co-resident aggregator
+            # model.  Set only when --aggregator-model is requested; the adapter
+            # start_model()s this key on the ensemble tool_start.  NOT pre-started
+            # here — that is the whole point (it loads during the compute window).
+            vllm_aggregator_model = (
+                "qwen_32b_aggregator"
+                if getattr(args, "aggregator_model", None)
+                and "qwen_32b_aggregator" in MODELS_CHEMGRAPH_SWAP
+                else ""
+            )
+            if megammap:
+                # Worker server must read its weights through Hermes so the
+                # MegaMmap-staged cache is actually consumed.
+                from runtime.prefetch.megammap_stage import build_hermes_preload
+                worker_env = {
+                    "LD_PRELOAD": build_hermes_preload(megammap["interceptor"]),
+                }
+                if megammap["hermes_conf"]:
+                    worker_env["HERMES_CONF"] = megammap["hermes_conf"]
+                MODELS_CHEMGRAPH_SWAP[vllm_worker_model]["extra_env"] = worker_env
+                print(f"[megammap] Worker vLLM will run with "
+                      f"LD_PRELOAD={worker_env['LD_PRELOAD']}")
+            # Snapshot dirs for staging (model_name is the HF snapshot path).
+            model_paths = {
+                k: v["model_name"] for k, v in MODELS_CHEMGRAPH_SWAP.items()
+            }
+            # Option A: enable page-cache staging unless the ablation skips it.
+            stage_worker_cache = not getattr(args, "no_cache_stage", False)
+
+            # Controlled cache state: evict the worker weights so every run starts
+            # cold.  Otherwise a warm cache from the previous run makes both the
+            # cold baseline and the staging benefit meaningless.
+            if getattr(args, "evict_worker_cache", False):
+                try:
+                    from runtime.prefetch.model_cache_prefetch import evict_model_cache
+                    snap = model_paths.get(vllm_worker_model, "")
+                    if snap:
+                        n, nbytes = evict_model_cache(snap)
+                        print(f"[cluster] Evicted worker cache: {n} shards, "
+                              f"{nbytes/1e9:.1f} GB dropped from page cache.")
+                except Exception as exc:
+                    print(f"[cluster] WARNING: cache eviction failed: {exc}")
+
+            if mode == RuntimeMode.REAL or getattr(args, "no_start_models", False) is False:
+                print(f"[cluster] Starting planner model ({planner_model}) — "
+                      f"runtime will stage + prefetch worker during planning.")
+                orchestrator.start_model_measured(planner_model, metrics=None)
+        except Exception as exc:
+            print(f"[cluster] WARNING: Could not start model orchestrator: {exc}")
+            orchestrator = None
+            vllm_worker_model = ""
+            vllm_aggregator_model = ""
+
     cfg = RuntimeConfig(
         mode=mode,
         run_id=run_id,
         confidence_threshold=args.confidence,
         max_horizon=args.horizon,
         conservative_mode_steps=3,
-        plan_extraction_horizon=0 if getattr(args, "no_plan_extraction", False) else 3,
+        # -1 disables extraction entirely: it fires at _step==0 and the adapter
+        # gate is `_step > horizon`, so horizon=0 would still allow it.
+        plan_extraction_horizon=-1 if getattr(args, "no_plan_extraction", False) else 3,
         disable_divergence_cancellation=getattr(args, "no_divergence_guard", False),
         naive_prefetch=getattr(args, "naive_prefetch", False),
         skip_resource_types=skip_types,
         condition=condition,
         log_dir=str(log_dir),
         results_dir=str(results_dir),
+        vllm_worker_model=vllm_worker_model,
+        stage_worker_cache=stage_worker_cache,
+        worker_model_path=model_paths.get(vllm_worker_model, ""),
+        vllm_aggregator_model=vllm_aggregator_model,
     )
 
     # Share ChemGraph's WorkflowTracker file so runtime events and workflow
@@ -222,25 +392,52 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         print(f"[runtime] Could not share WorkflowTracker file ({_e}); using standalone log.")
         bus = EventBus(run_id=run_id, log_path=trace_path)
 
-    executor = _build_executor(mode, args.mace_device)
+    executor = _build_executor(mode, args.mace_device, orchestrator=orchestrator,
+                               model_paths=model_paths, megammap=megammap,
+                               megammap_window=args.megammap_window,
+                               megammap_tx=args.megammap_tx)
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
 
-    if args.predictor == "learned":
+    if args.predictor in ("learned", "plan_only", "transition_only"):
         try:
             from runtime.predictor.learned_predictor import LearnedPredictor
-            predictor = LearnedPredictor()
-            print(f"[chemgraph] Predictor: LearnedPredictor")
+            signals = "full" if args.predictor == "learned" else args.predictor
+            predictor = LearnedPredictor(signals=signals)
+            print(f"[chemgraph] Predictor: LearnedPredictor(signals={signals!r})")
         except Exception as exc:
             print(f"[chemgraph] WARNING: LearnedPredictor failed ({exc}); using mock.")
+            predictor = MockPredictor("chemgraph")
+    elif args.predictor == "oracle":
+        try:
+            from runtime.predictor.oracle_predictor import OraclePredictor
+            if not args.oracle_trace:
+                print("[chemgraph] ERROR: --predictor oracle requires --oracle-trace")
+                sys.exit(1)
+            predictor = OraclePredictor(args.oracle_trace, workflow="chemgraph")
+            print(f"[chemgraph] Predictor: OraclePredictor(trace={args.oracle_trace}, "
+                  f"{predictor.trace_length} reference tool steps)")
+        except Exception as exc:
+            print(f"[chemgraph] WARNING: OraclePredictor failed ({exc}); using mock.")
             predictor = MockPredictor("chemgraph")
     else:
         predictor = MockPredictor("chemgraph")
 
-    # Build the runtime callback (replaces ChemGraph's standard callback)
-    task_prompt = args.task_prompt or DEFAULT_TASK_PROMPT
+    # Build the runtime callback (replaces ChemGraph's standard callback).
+    # Also needed in BASELINE when swap mode is active: the adapter's
+    # on_chain_start gate performs the on-demand (sequential) worker swap.
+    # With mode=BASELINE all prediction/prefetch logic inside the callback
+    # is disabled, so this adds no runtime behaviour beyond the swap.
+    if getattr(args, "ensemble_dataset", None) and not args.task_prompt:
+        lim = getattr(args, "ensemble_limit", 0)
+        task_prompt = ENSEMBLE_TASK_PROMPT.format(
+            dataset=args.ensemble_dataset,
+            limit_arg=f", limit={lim}" if lim else "",
+        )
+    else:
+        task_prompt = args.task_prompt or DEFAULT_TASK_PROMPT
     callback = None
-    if mode != RuntimeMode.BASELINE:
+    if mode != RuntimeMode.BASELINE or orchestrator is not None:
         try:
             from runtime.adapters.chemgraph import make_runtime_callback
             callback = make_runtime_callback(
@@ -249,6 +446,7 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
                 config=cfg,
                 bus=bus,
                 task_description=task_prompt,
+                orchestrator=orchestrator,
             )
             print("[runtime] RuntimeChemGraphCallback installed.")
         except Exception as exc:
@@ -265,17 +463,43 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         cg_kwargs["planner_model_name"] = args.planner_model
         print(f"[chemgraph] Planner model: {args.planner_model!r}  "
               f"Worker model: {model_name!r}")
+    if getattr(args, "aggregator_model", None):
+        cg_kwargs["aggregator_model_name"] = args.aggregator_model
+        # The aggregator LLM client must point at the SEPARATE aggregator server
+        # (its own GPUs / port), not the worker's base_url.  llm_agent reads this
+        # env when building the aggregator ChatOpenAI client.
+        agg_url = args.aggregator_base_url or "http://localhost:8004/v1"
+        os.environ["VLLM_AGGREGATOR_BASE_URL"] = agg_url
+        print(f"[chemgraph] Aggregator model: {args.aggregator_model!r} @ {agg_url}  "
+              f"(prefetched during the ensemble compute window; NOT pre-started)")
 
     if workflow_type == "multi_agent":
         # Augment the planner prompt so it names ChemGraph tool functions
         # explicitly — this lets the runtime extract a structured plan sequence
         # from the planner's output via plan_extractor.py.
         from chemgraph.prompt.multi_agent_prompt import planner_prompt as _base_prompt
+        _tool_names = (
+            "  molecule_name_to_smiles, smiles_to_coordinate_file, smiles_to_atomsdata,\n"
+            "  file_to_atomsdata, run_ase, extract_output_json"
+        )
+        # Out-of-core ensemble: inject the directory-batch MACE tool into the
+        # worker toolset and advertise it to the planner.
+        if getattr(args, "ensemble_dataset", None):
+            from experiments.ensemble_tools import make_ensemble_tool
+            from chemgraph.tools.ase_tools import extract_output_json
+            # Give the worker ONLY the batch tool (+ json extractor).  Leaving the
+            # single-structure run_ase in the set makes the LLM default to the
+            # familiar per-file pattern and hallucinate filenames (structure_1.xyz)
+            # that aren't in the directory — so the ensemble/compute window never
+            # forms.  Dropping it forces the directory-batch path.
+            cg_kwargs["tools"] = [make_ensemble_tool(), extract_output_json]
+            _tool_names = "  run_mace_ensemble, extract_output_json"
+            print(f"[chemgraph] Injected run_mace_ensemble tool "
+                  f"(dataset={args.ensemble_dataset}); run_ase removed to force batch path")
         _tool_addendum = (
             "\n\nIMPORTANT: In each task prompt, explicitly name which Python "
             "tool function the worker should call. The available tool names are:\n"
-            "  molecule_name_to_smiles, smiles_to_coordinate_file, smiles_to_atomsdata,\n"
-            "  file_to_atomsdata, run_ase, extract_output_json\n"
+            f"{_tool_names}\n"
             "Always include the exact function name (e.g. 'call molecule_name_to_smiles "
             "to convert the molecule name to a SMILES string')."
         )
@@ -305,9 +529,24 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     if callback is not None:
         langgraph_config["callbacks"] = [callback]
 
+    # Optional continuous CPU/GPU profiler (results/system_profile_<run_id>.csv).
+    # Gives measured GPU idle time (Q1) and memory-occupancy overhead (Q4).
+    profiler = None
+    if getattr(args, "profile", False):
+        try:
+            from runtime.measurement.system_profiler import SystemProfiler
+            profiler = SystemProfiler(run_id=run_id, results_dir=str(results_dir))
+            profiler.start()
+        except Exception as exc:
+            print(f"[runtime] WARNING: SystemProfiler unavailable ({exc}).")
+            profiler = None
+
+    workflow_completed = False
+    start_iso = datetime.now().astimezone().isoformat()
     t_start = __import__("time").perf_counter()
     try:
         result = asyncio.run(agent.run(task_prompt, config=langgraph_config))
+        workflow_completed = True
         print("\n[chemgraph] Workflow completed.")
         if result:
             try:
@@ -323,7 +562,21 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         traceback.print_exc()
     finally:
         elapsed = __import__("time").perf_counter() - t_start
+        end_iso = datetime.now().astimezone().isoformat()
+        if profiler is not None:
+            try:
+                profiler.stop()
+            except Exception:
+                pass
         bus.close()
+        # Swap mode: stop any running model so the next run starts from a clean state.
+        if orchestrator is not None:
+            running = orchestrator.get_running_model()
+            if running:
+                try:
+                    orchestrator.stop_model(running)
+                except Exception as _e:
+                    print(f"[cluster] Warning: could not stop {running}: {_e}")
 
     # ------------------------------------------------------------------
     # Post-run analysis
@@ -340,20 +593,42 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
 
         summary_path = results_dir / f"summary_{run_id}.json"
         out = {k: v for k, v in summary.items() if k not in ("steps", "prefetch_tasks")}
+        if getattr(args, "swap_models", False):
+            workload_variant = "swap"
+        elif getattr(args, "ensemble_dataset", None):
+            workload_variant = "ensemble"
+        else:
+            workload_variant = "plain"
         out.update({
             "wall_time_s": elapsed,
+            "workflow_completed": workflow_completed,
+            "start_time": start_iso,
+            "end_time": end_iso,
             "run_id": run_id,
             "mode": mode.value,
             "predictor": args.predictor,
             "workflow": "chemgraph_mace",
+            "workload_variant": workload_variant,
             "model_name": model_name,
             "mace_device": args.mace_device,
             "condition": condition,
+            "node": __import__("socket").gethostname(),
+            "git_commit": _git_commit(),
+            "gpu_name": _gpu_name(),
+            "trace_path": str(trace_path),
+            "system_profile_csv": getattr(profiler, "csv_path", None),
             "ablation": {
                 "no_plan_extraction": getattr(args, "no_plan_extraction", False),
                 "no_divergence_guard": getattr(args, "no_divergence_guard", False),
                 "naive_prefetch": getattr(args, "naive_prefetch", False),
                 "skip_resource_types": skip_types,
+                "no_cache_stage": getattr(args, "no_cache_stage", False),
+                "stage_worker_cache": stage_worker_cache,
+                "evict_worker_cache": getattr(args, "evict_worker_cache", False),
+                "cache_stage_backend": ("megammap" if megammap else
+                                        "page_cache" if stage_worker_cache else "none"),
+                "megammap_tx": args.megammap_tx if megammap else None,
+                "megammap_window": args.megammap_window if megammap else None,
             },
             "total_benefit_s": overlap.get("total_benefit_s", 0.0),
             "total_waste_s": overlap.get("total_waste_s", 0.0),
@@ -374,6 +649,29 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _git_commit() -> str:
+    import subprocess
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=str(_PROJECT_ROOT),
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except Exception:
+        return ""
+
+
+def _gpu_name() -> str:
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip().splitlines()
+        return out[0].strip() if out else ""
+    except Exception:
+        return ""
+
 
 def _load_events(path: str) -> list[dict]:
     events = []
@@ -407,8 +705,24 @@ def main() -> None:
     )
     parser.add_argument(
         "--predictor",
-        choices=["mock", "learned"],
+        choices=["mock", "learned", "plan_only", "transition_only", "oracle"],
         default="mock",
+        help="mock = rule-based; learned = plan+transition-table+mock-fallback; "
+             "plan_only / transition_only = LearnedPredictor restricted to one "
+             "signal (predictor-mode ablation); oracle = perfect hindsight from "
+             "a reference trace (--oracle-trace)",
+    )
+    parser.add_argument(
+        "--oracle-trace",
+        default=None,
+        dest="oracle_trace",
+        help="Reference JSONL trace for --predictor oracle",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Run the continuous CPU/GPU SystemProfiler during the workflow "
+             "(writes results/system_profile_<run_id>.csv)",
     )
     parser.add_argument("--run-id", default=None)
     parser.add_argument(
@@ -430,6 +744,18 @@ def main() -> None:
         "--planner-model",
         default=None,
         help="Smaller LLM for the PlannerAgent in multi_agent mode (default: same as --model-name)",
+    )
+    parser.add_argument(
+        "--aggregator-model",
+        default=None,
+        help="Distinct LLM for the AggregatorAgent (Option D). Served on its own "
+             "GPUs (port 8004); the runtime prefetches it co-resident during the "
+             "ensemble MACE compute window so it is hot at aggregation time.",
+    )
+    parser.add_argument(
+        "--aggregator-base-url",
+        default=None,
+        help="Base URL for the aggregator vLLM server (default: http://localhost:8004/v1)",
     )
     parser.add_argument(
         "--workflow-type",
@@ -463,6 +789,81 @@ def main() -> None:
         help="Comma-separated resource types to never prefetch (e.g. mace_mp)")
     parser.add_argument("--condition", default=None,
         help="Override the auto-inferred ablation condition label in the summary JSON")
+    parser.add_argument(
+        "--hw-profile",
+        default="standard",
+        choices=["standard", "chemgraph_swap"],
+        dest="hw_profile",
+        help="Hardware profile: standard = separate GPU pools; "
+             "chemgraph_swap = shared GPU pool, forced model swaps (default: standard)",
+    )
+    parser.add_argument(
+        "--swap-models",
+        action="store_true",
+        dest="swap_models",
+        help="Enable model swapping via ModelOrchestrator (requires --hw-profile chemgraph_swap)",
+    )
+    parser.add_argument(
+        "--no-start-models",
+        action="store_true",
+        dest="no_start_models",
+        help="Skip initial model server startup (assume servers already running)",
+    )
+    parser.add_argument(
+        "--ensemble-dataset",
+        default=None,
+        dest="ensemble_dataset",
+        help="Directory of structure files (CIF/XYZ). Injects the run_mace_ensemble "
+             "tool and runs a directory-batch MACE job — a genuine multi-minute CPU "
+             "compute window (GPU idle) for hiding a model prefetch/swap.",
+    )
+    parser.add_argument(
+        "--ensemble-limit",
+        type=int,
+        default=0,
+        dest="ensemble_limit",
+        help="Process only the first N structures of --ensemble-dataset "
+             "(0 = all). Controls the CPU compute-window length for the "
+             "window-size sensitivity sweep.",
+    )
+    parser.add_argument(
+        "--no-cache-stage",
+        action="store_true",
+        dest="no_cache_stage",
+        help="Swap mode ablation: disable Option-A page-cache staging of the "
+             "worker weights during planning (cold swap on the critical path)",
+    )
+    parser.add_argument(
+        "--megammap-stage",
+        action="store_true",
+        dest="megammap_stage",
+        help="External-system comparison: replace page-cache staging with "
+             "MegaMmap/Hermes (mm_model_preload into the Hermes buffer pool "
+             "during planning; worker vLLM launched with libhermes_posix.so "
+             "LD_PRELOAD). Requires a running Hermes daemon and "
+             "HERMES_INTERCEPTOR/MEGA_MODEL_PRELOAD in the environment.",
+    )
+    parser.add_argument(
+        "--megammap-window",
+        default=os.environ.get("MEGA_WINDOW", "4g"),
+        dest="megammap_window",
+        help="MegaMmap DRAM window per shard for --megammap-stage (e.g. 4g)",
+    )
+    parser.add_argument(
+        "--megammap-tx",
+        default="seq",
+        choices=["seq", "rand"],
+        dest="megammap_tx",
+        help="MegaMmap transaction mode: seq = deterministic prefetch (known "
+             "model), rand = no prefetch signal (unknown model)",
+    )
+    parser.add_argument(
+        "--evict-worker-cache",
+        action="store_true",
+        dest="evict_worker_cache",
+        help="Swap mode: posix_fadvise(DONTNEED) the worker weight shards before "
+             "the run so every run starts from a cold page cache (fair comparison)",
+    )
 
     args = parser.parse_args()
 
