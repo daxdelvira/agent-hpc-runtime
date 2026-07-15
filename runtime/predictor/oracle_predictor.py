@@ -239,6 +239,16 @@ def _lookup_resource_for_consumer(
                 continue
             seen_ids.add(template.resource_id)
             r = _copy_resource(template, confidence=1.0, step=step)
+            # The oracle resolved the consumer to the very next step, so pin
+            # the validation window there.  Templates borrowed from the mock
+            # tables carry trigger-relative offsets (_MACE_MP0_2 has offset 2
+            # for a 2-step lookahead from molecule_name_to_smiles); reusing
+            # them verbatim stamps expected_at_step one step late, the
+            # adapter's `>=` gate then skips the real consumer, and the next
+            # tool registers a spurious divergence (oracle trials scored 0
+            # hits on structurally identical traces because of this).
+            r.consumer_step_offset = 1
+            r.expected_at_step = step + 1
             results.append(r)
 
     return results
