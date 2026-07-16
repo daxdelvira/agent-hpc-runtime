@@ -233,7 +233,13 @@ WORKLOADS: dict[str, dict] = {
     "atomagents_exp2": {
         "script": "experiments/atomagents_exp2.py",
         "python": ATOMS_PYTHON,
-        "base_flags": ["--hw-profile", "blackwell", "--swap-models"],
+        # --lammps-slowdown mirrors exp3: without it the two screw-dislocation
+        # relaxes finish in seconds (~700-atom EAM cells), the whole workflow
+        # walls at ~20 s, and the wall>60 completion rule rejects a run that
+        # actually completed (exp2 baseline/full_system t01 2026-07-16).
+        # est_run_s=5400 was always sized for the slowed-down workload.
+        "base_flags": ["--hw-profile", "blackwell", "--swap-models",
+                       "--lammps-slowdown", os.environ.get("LAMMPS_SLOWDOWN_S", "900")],
         "configs": ATOMAGENTS_CONFIGS,
         "timeout_s": 10800,
         "est_run_s": 5400,
