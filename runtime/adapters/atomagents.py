@@ -95,6 +95,7 @@ class AtomAgentsRuntimeAdapter:
         self._step = 0
         self._tool_call_count = 0
         self._plan_context: PlanContext | None = None
+        self._plan_window_open = True
         self._lock = threading.Lock()
         self._installed = False
 
@@ -209,10 +210,18 @@ class AtomAgentsRuntimeAdapter:
         tool_calls = _extract_tool_calls_from_response(response)
         model_name = getattr(response, "model", "") or ""
 
-        # Attempt plan extraction on the first few steps (before any tool has run).
-        # We look at the raw LLM response text — the model often writes a numbered
-        # plan before its first tool call, giving us the full future sequence at once.
-        if self._plan_context is None and step <= self._config.plan_extraction_horizon:
+        # Attempt plan extraction while the planning phase is still running,
+        # i.e. until the first real (non-plan_task) tool executes. The plan text
+        # is written by the planner inside the plan_task sub-chat, whose nested
+        # LLM calls also pass through this hook and inflate `step` — a small
+        # step horizon alone never reaches it (plan_extracted was False on every
+        # exp2/exp3 trial through 2026-07-16). The step-horizon check is kept as
+        # a fallback for workflows without a planning sub-chat; horizon == 0
+        # disables extraction entirely (the no_plan ablation).
+        if (self._plan_context is None
+                and self._config.plan_extraction_horizon > 0
+                and (self._plan_window_open
+                     or step <= self._config.plan_extraction_horizon)):
             content = _extract_response_content(response)
             if content:
                 ctx = extract_plan(content, KNOWN_TOOLS, step=step)
@@ -290,6 +299,9 @@ class AtomAgentsRuntimeAdapter:
         """
         with self._lock:
             self._tool_call_count += 1
+        if tool_name != "plan_task":
+            # A real tool is about to run: the planning phase is over.
+            self._plan_window_open = False
         self._bus.set_step(step)
         self._bus.emit("tool_call", {"tool": tool_name}, step=step)
         self._stamp_consumed(tool_name, step)

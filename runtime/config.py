@@ -33,7 +33,8 @@ class RuntimeConfig:
     min_remaining_compute_s: float = 5.0  # don't prefetch if less compute time expected
 
     # Plan extraction
-    plan_extraction_horizon: int = 3    # only attempt plan extraction on steps ≤ this
+    plan_extraction_horizon: int = 3    # step-horizon fallback for plan extraction; 0 disables it
+                                        # (AtomAgents also extracts until the first real tool runs)
 
     # Logging
     log_dir: str = "logs/workflow_traces"

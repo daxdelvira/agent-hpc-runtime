@@ -467,3 +467,71 @@ class TestReplyHandlerInstallation:
         messages = [{"content": "Here is the plan: ..."}]
         result = reply_fn(admin_mock, messages, None, {})
         assert result == (False, None)
+
+
+# ---------------------------------------------------------------------------
+# Plan extraction window
+# ---------------------------------------------------------------------------
+
+class MockChatCompletionText:
+    """LLM response whose message carries plain text content (no tool calls)."""
+    def __init__(self, content: str, model: str = "qwen-72b"):
+        self.choices = [_Choice([])]
+        self.choices[0].message.content = content
+        self.model = model
+        self.usage = None
+
+
+PLANNER_TEXT = """### Simulation Plan
+- **Step 2 Tools**: `computation_task_screw_dislocation` for both potentials.
+- **Step 4 Tools**: `analyze_screw_core` on each relaxed structure.
+- **Step 5 Tools**: `computation_task_surface_energy` for stability.
+"""
+
+
+class TestPlanExtractionWindow:
+    def test_extracts_from_late_planner_response(self, cfg, tmp_trace):
+        """Nested plan_task sub-chat calls push `step` past the horizon; the
+        planner's plan must still be extracted while no real tool has run."""
+        adapter, *_ = _make_components(cfg, tmp_trace)
+        for _ in range(6):  # inflate step well past plan_extraction_horizon=3
+            adapter._on_llm_response(MockChatCompletionNoTool(), [])
+        adapter._on_llm_response(MockChatCompletionText(PLANNER_TEXT), [])
+        events = _read_events(tmp_trace)
+        assert "plan_extracted" in _event_types(events)
+        assert adapter._plan_context is not None
+        assert "computation_task_screw_dislocation" in adapter._plan_context.tool_sequence
+        assert "analyze_screw_core" in adapter._plan_context.tool_sequence
+
+    def test_window_closes_after_real_tool(self, cfg, tmp_trace):
+        adapter, *_ = _make_components(cfg, tmp_trace)
+        for _ in range(6):
+            adapter._on_llm_response(MockChatCompletionNoTool(), [])
+        adapter._run_divergence_check("computation_task_screw_dislocation", step=6)
+        adapter._on_llm_response(MockChatCompletionText(PLANNER_TEXT), [])
+        events = _read_events(tmp_trace)
+        assert "plan_extracted" not in _event_types(events)
+        assert adapter._plan_context is None
+
+    def test_plan_task_execution_keeps_window_open(self, cfg, tmp_trace):
+        adapter, *_ = _make_components(cfg, tmp_trace)
+        for _ in range(6):
+            adapter._on_llm_response(MockChatCompletionNoTool(), [])
+        adapter._run_divergence_check("plan_task", step=6)
+        adapter._on_llm_response(MockChatCompletionText(PLANNER_TEXT), [])
+        events = _read_events(tmp_trace)
+        assert "plan_extracted" in _event_types(events)
+
+    def test_horizon_zero_disables_extraction(self, tmp_trace):
+        cfg = RuntimeConfig(
+            mode=RuntimeMode.SIMULATED,
+            run_id="test-aa-noplan",
+            confidence_threshold=0.85,
+            max_horizon=2,
+            plan_extraction_horizon=0,
+        )
+        adapter, *_ = _make_components(cfg, tmp_trace)
+        adapter._on_llm_response(MockChatCompletionText(PLANNER_TEXT), [])
+        events = _read_events(tmp_trace)
+        assert "plan_extracted" not in _event_types(events)
+        assert adapter._plan_context is None
