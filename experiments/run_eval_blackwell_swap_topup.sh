@@ -56,5 +56,21 @@ log "Phase 4 (stretch): baseline/full_system facet parity +1 each"
 $PY experiments/run_eval_q1_q4.py --workload chemgraph_swap \
     --configs baseline,full_system --trials 5
 
+log "Phase 5 (stretch): swap core to 6 completed"
+$PY experiments/run_eval_q1_q4.py --workload chemgraph_swap \
+    --configs baseline,full_system --trials 6
+
+log "Phase 6 (stretch): swap ablations to ~5-6 completed"
+$PY experiments/run_eval_q1_q4.py --workload chemgraph_swap \
+    --configs naive_prefetch,no_divergence_guard --trials 5
+$PY experiments/run_eval_q1_q4.py --workload chemgraph_swap \
+    --configs no_cache_stage,observe_only --trials 5
+$PY experiments/run_eval_q1_q4.py --workload chemgraph_swap \
+    --configs oracle,plan_only,transition_only --trials 6
+
+log "Phase 7 (deep stretch): core to 8"
+$PY experiments/run_eval_q1_q4.py --workload chemgraph_swap \
+    --configs baseline,full_system,naive_prefetch --trials 8
+
 log "Campaign done (or deadline reached). Status:"
 $PY experiments/run_eval_q1_q4.py --list
