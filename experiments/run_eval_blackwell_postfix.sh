@@ -21,6 +21,15 @@
 set -uo pipefail
 cd /storage/project/r-ag117-0/shared/agent_hpc/agent-hpc-runtime
 
+# When this script is launched via `srun --overlap` into a hold job, the step
+# exports PMIx vars that the atoms env's OpenMPI picks up; the MCA mismatch
+# ("find-available:not-valid") segfaults LAMMPS at MPI teardown AFTER a
+# successful run (rc=139), which the lattice tool reports as a list-JSON error
+# payload and every screw-dislocation leg dies (exp3 t05/t06 2026-07-17).
+# Stripping them is a no-op for plain batch/nohup launches.  Verified on
+# 11190655: rc 139 with vars, rc 0 without (~/scratch/latsim_test_20260717).
+unset $(env | grep -oE '^(PMIX_[A-Z0-9_]*|PMI_[A-Z0-9_]*|SLURM_PMI[A-Z0-9_]*)') 2>/dev/null || true
+
 log(){ echo "[$(date +'%F %T')] === $*"; }
 
 if [ -n "$(git status --porcelain --ignore-submodules=untracked -- experiments workloads runtime 2>/dev/null)" ]; then
