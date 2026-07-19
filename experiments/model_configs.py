@@ -234,6 +234,34 @@ MODELS_CHEMGRAPH_SWAP = {
             "--served-model-name", "Qwen/Qwen2.5-VL-32B-Instruct-Aggregator",
         ],
     },
+    # STANDARD specialist for the chemgraph_screen workload.  Deliberately on
+    # GPUs 0-3 (same pool as the 72B "advanced" specialist and the planner) so
+    # every advanced<->standard class alternation is a REAL swap on both the
+    # 4-GPU Blackwell and 6-GPU L40S facets — the per-transition load is the
+    # cost the plan-conditioned staging must hide.  tp=4 divides 64 heads.
+    # Same PORT and SERVED NAME as the 72B worker: the ChemGraph worker client
+    # is built once against one base_url/model-name, so specialists must be
+    # interchangeable behind it.  Which specialist answers is decided solely by
+    # which vLLM process the orchestrator has running (never both — same port,
+    # same GPUs).
+    "qwen_32b_standard": {
+        "python_bin": VLLM_PYTHON,
+        "model_name": _SNAPSHOT_32B_VL,
+        "port": 8001,
+        "gpus": [0, 1, 2, 3],
+        "tensor_parallel_size": 4,
+        "gpu_memory_utilization": 0.92,
+        "max_model_len": 8192,
+        "load_timeout": 1800,
+        "extra_args": [
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "hermes",
+            "--dtype", "float16",
+            "--disable-custom-all-reduce",
+            "--enforce-eager",
+            "--served-model-name", "Qwen/Qwen2.5-72B-Instruct",
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------

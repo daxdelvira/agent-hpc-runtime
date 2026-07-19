@@ -117,6 +117,35 @@ NOT invent file names. The only structure input is the directory path above, and
 run_mace_ensemble is the only calculation tool you have.
 """
 
+# Screen workload: heterogeneous molecule batch with per-molecule SPECIALIST
+# routing.  The planner tags every worker task with "[SPECIALIST: advanced]"
+# (complex organics — multi-ring, many heteroatoms, drug-like) or
+# "[SPECIALIST: standard]" (small/simple molecules).  The runtime reads those
+# tags from the extracted plan to decide which specialist model to stage next;
+# planner misjudgements on borderline molecules are genuine divergences.
+# {molecules} is filled from --molecules (default below).
+SCREEN_TASK_PROMPT = """\
+Screen the following molecules with the MACE-MP force field, one worker task
+per molecule, in the given order: {molecules}
+
+When you create the plan, tag EVERY worker task prompt with exactly one
+specialist marker based on the molecule's complexity:
+  [SPECIALIST: advanced]  — complex organics: multi-ring systems, drug-like
+                            molecules, or more than 12 heavy atoms.
+  [SPECIALIST: standard]  — small or simple molecules (12 heavy atoms or fewer).
+
+Each worker task must, for its molecule:
+1. Convert the molecule name to a SMILES string.
+2. Generate a 3D coordinate file from the SMILES.
+3. Run ASE geometry optimization with the mace_mp calculator (medium model),
+   fmax=0.005.
+4. Report the final optimized energy (in eV).
+"""
+
+SCREEN_DEFAULT_MOLECULES = (
+    "aspirin, water, caffeine, methane, ibuprofen, ammonia"
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -268,6 +297,16 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     else:
         os.environ.pop("RUNTIME_ENABLED", None)
 
+    # Toggleable calculator pin (screen workload defaults it ON via
+    # run_eval_q1_q4).  Applied in ChemGraph's ASEInputSchema validator —
+    # constrains EXECUTION only; the agent's decision-making is untouched and
+    # divergences from failed unpinned choices remain observable.
+    if getattr(args, "pin_calculator", ""):
+        os.environ["CHEMGRAPH_PIN_CALCULATOR"] = args.pin_calculator
+        print(f"[chemgraph] run_ase calculator pinned to {args.pin_calculator!r}")
+    else:
+        os.environ.pop("CHEMGRAPH_PIN_CALCULATOR", None)
+
     # ------------------------------------------------------------------
     # Import ChemGraph components (guarded)
     # ------------------------------------------------------------------
@@ -300,6 +339,7 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
                   "are mutually exclusive.")
             sys.exit(2)
         megammap = _megammap_settings(args)   # exits if the stack is missing
+    specialist_models: dict = {}
     if getattr(args, "swap_models", False):
         try:
             from atomagents.runtime.model_orchestrator import ModelOrchestrator
@@ -307,6 +347,13 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             orchestrator = ModelOrchestrator(MODELS_CHEMGRAPH_SWAP)
             vllm_worker_model = "qwen_72b_instruct"
             planner_model = "qwen_32b_vl"
+            # Screen workload: per-molecule specialist routing.  Marker ->
+            # orchestrator model key; the adapter swaps specialists per task.
+            if getattr(args, "screen", False):
+                specialist_models = {
+                    "advanced": "qwen_72b_instruct",
+                    "standard": "qwen_32b_standard",
+                }
             # Option D: orchestrator key of the distinct co-resident aggregator
             # model.  Set only when --aggregator-model is requested; the adapter
             # start_model()s this key on the ensemble tool_start.  NOT pre-started
@@ -342,11 +389,14 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             if getattr(args, "evict_worker_cache", False):
                 try:
                     from runtime.prefetch.model_cache_prefetch import evict_model_cache
-                    snap = model_paths.get(vllm_worker_model, "")
-                    if snap:
-                        n, nbytes = evict_model_cache(snap)
-                        print(f"[cluster] Evicted worker cache: {n} shards, "
-                              f"{nbytes/1e9:.1f} GB dropped from page cache.")
+                    evict_keys = ([vllm_worker_model] if not specialist_models
+                                  else sorted(set(specialist_models.values())))
+                    for key in evict_keys:
+                        snap = model_paths.get(key, "")
+                        if snap:
+                            n, nbytes = evict_model_cache(snap)
+                            print(f"[cluster] Evicted {key} cache: {n} shards, "
+                                  f"{nbytes/1e9:.1f} GB dropped from page cache.")
                 except Exception as exc:
                     print(f"[cluster] WARNING: cache eviction failed: {exc}")
 
@@ -379,6 +429,9 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         stage_worker_cache=stage_worker_cache,
         worker_model_path=model_paths.get(vllm_worker_model, ""),
         vllm_aggregator_model=vllm_aggregator_model,
+        specialist_models=specialist_models,
+        early_plan_conditioned_stage=getattr(args, "early_plan_stage", False),
+        model_paths=model_paths,
     )
 
     # Share ChemGraph's WorkflowTracker file so runtime events and workflow
@@ -433,6 +486,10 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         task_prompt = ENSEMBLE_TASK_PROMPT.format(
             dataset=args.ensemble_dataset,
             limit_arg=f", limit={lim}" if lim else "",
+        )
+    elif getattr(args, "screen", False) and not args.task_prompt:
+        task_prompt = SCREEN_TASK_PROMPT.format(
+            molecules=getattr(args, "molecules", "") or SCREEN_DEFAULT_MOLECULES,
         )
     else:
         task_prompt = args.task_prompt or DEFAULT_TASK_PROMPT
@@ -832,6 +889,35 @@ def main() -> None:
         dest="no_cache_stage",
         help="Swap mode ablation: disable Option-A page-cache staging of the "
              "worker weights during planning (cold swap on the critical path)",
+    )
+    parser.add_argument(
+        "--screen",
+        action="store_true",
+        help="Screen workload: heterogeneous molecule batch with per-molecule "
+             "specialist routing (advanced=72B, standard=32B; requires "
+             "--swap-models --workflow-type multi_agent)",
+    )
+    parser.add_argument(
+        "--molecules",
+        default="",
+        help="Screen workload: comma-separated molecule list (default: "
+             "aspirin, water, caffeine, methane, ibuprofen, ammonia)",
+    )
+    parser.add_argument(
+        "--early-plan-stage",
+        action="store_true",
+        dest="early_plan_stage",
+        help="Screen workload: stage the page cache at plan_extracted time, "
+             "choosing WHICH specialist from the plan (plan-conditioned early "
+             "trigger). Off = legacy blind staging at first chain start.",
+    )
+    parser.add_argument(
+        "--pin-calculator",
+        default="",
+        dest="pin_calculator",
+        help="Pin run_ase to one calculator family (e.g. mace_mp) via "
+             "CHEMGRAPH_PIN_CALCULATOR; empty = agent free choice (may pick "
+             "TBLite, which fails ~90%% of the time).",
     )
     parser.add_argument(
         "--megammap-stage",

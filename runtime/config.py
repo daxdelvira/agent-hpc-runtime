@@ -80,3 +80,21 @@ class RuntimeConfig:
     # GPU-idle MACE compute window — so it is hot when control reaches
     # AggregatorAgent.  Lives on its own GPUs, so no worker stop/swap is needed.
     vllm_aggregator_model: str = ""
+
+    # Screen workload: marker -> vLLM model name for per-molecule specialist
+    # routing (e.g. {"advanced": "qwen_72b_instruct",
+    # "standard": "qwen_32b_standard"}).  Empty = legacy single-worker path.
+    # The planner tags each worker task "[SPECIALIST: <marker>]"; the adapter
+    # routes each WorkerAgent execution to the tagged model and prefetches the
+    # NEXT task's specialist during the current task's compute window.
+    specialist_models: dict = field(default_factory=dict)
+
+    # Screen workload: choose WHICH specialist to stage from the extracted
+    # plan's specialist sequence (plan-conditioned early trigger), instead of
+    # the legacy blind staging of vllm_worker_model at first chain start.
+    early_plan_conditioned_stage: bool = False
+
+    # Screen workload: vLLM model key -> HF snapshot dir, for staging/size
+    # estimation of specialist models (worker_model_path covers only the
+    # legacy single worker).
+    model_paths: dict = field(default_factory=dict)

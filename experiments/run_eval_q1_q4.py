@@ -186,6 +186,63 @@ CHEMGRAPH_SWAP_CONFIGS: dict[str, dict] = {
     },
 }
 
+# chemgraph_screen: heterogeneous molecule batch with per-molecule specialist
+# routing (advanced=72B / standard=32B, same port+GPUs — every class
+# alternation is a real swap).  Designed 2026-07-19 so every runtime component
+# has a falsifiable job: plan analysis names each task's specialist,
+# transitions sharpen timing, the guard cancels wrongly-staged specialists.
+# Calculator pinned to mace_mp by default (the TBLite draw fails ~90%);
+# the "unpinned" config re-frees the agent to study guard behavior on failures.
+CHEMGRAPH_SCREEN_CONFIGS: dict[str, dict] = {
+    "baseline": {
+        "mode": "baseline", "predictor": "mock", "flags": [],
+        "desc": "vanilla batch; on-demand sequential specialist swaps",
+    },
+    "full_system": {
+        "mode": "real", "predictor": "learned", "flags": ["--early-plan-stage"],
+        "desc": "plan-conditioned specialist staging at plan_extracted + "
+                "per-transition staging + confidence/divergence gates",
+    },
+    "blind_stage": {
+        "mode": "real", "predictor": "learned", "flags": [],
+        "desc": "trigger ablation: legacy blind staging of the default worker "
+                "at first chain start (plan does not choose the model)",
+    },
+    "no_cache_stage": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--early-plan-stage", "--no-cache-stage"],
+        "desc": "full system minus page-cache staging",
+    },
+    "naive_prefetch": {
+        "mode": "real", "predictor": "learned", "flags": ["--naive-prefetch"],
+        "desc": "prefetch every prediction immediately; no gates, no plan choice",
+    },
+    "no_divergence_guard": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--early-plan-stage", "--no-divergence-guard"],
+        "desc": "wrongly-staged specialists are never cancelled",
+    },
+    "no_plan": {
+        "mode": "real", "predictor": "learned", "flags": ["--no-plan-extraction"],
+        "desc": "no plan extraction: no specialist sequence, routing on-demand",
+    },
+    "plan_only": {
+        "mode": "real", "predictor": "plan_only", "flags": ["--early-plan-stage"],
+        "desc": "predictor ablation: plan signal only",
+    },
+    "transition_only": {
+        "mode": "real", "predictor": "transition_only",
+        "flags": ["--early-plan-stage"],
+        "desc": "predictor ablation: transition table only",
+    },
+    "unpinned": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--early-plan-stage", "--pin-calculator", ""],
+        "desc": "agent free calculator choice (TBLite failures become live "
+                "divergence-guard case studies)",
+    },
+}
+
 # AtomAgents conditions mirror experiments/run_blackwell.sh.
 ATOMAGENTS_CONFIGS: dict[str, dict] = {
     "baseline":            {"mode": "baseline", "predictor": "mock", "flags": []},
@@ -229,6 +286,19 @@ WORKLOADS: dict[str, dict] = {
         "configs": CHEMGRAPH_SWAP_CONFIGS,
         "timeout_s": 10800,
         "est_run_s": 2400,
+    },
+    # Screening batch with specialist routing — see CHEMGRAPH_SCREEN_CONFIGS.
+    # ~6 molecules x (MACE opt window + specialist analysis) ≈ 20-30 min.
+    "chemgraph_screen": {
+        "script": "experiments/chemgraph_exp.py",
+        "python": CG_PYTHON,
+        "base_flags": CHEMGRAPH_SWAP_BASE + [
+            "--screen",
+            "--pin-calculator", "mace_mp",
+        ],
+        "configs": CHEMGRAPH_SCREEN_CONFIGS,
+        "timeout_s": 7200,
+        "est_run_s": 1800,
     },
     "atomagents_exp2": {
         "script": "experiments/atomagents_exp2.py",
