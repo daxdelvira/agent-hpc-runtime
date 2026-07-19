@@ -516,6 +516,10 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     model_name = args.model_name or os.environ.get("CHEMGRAPH_MODEL", "gpt-4o-mini")
     workflow_type = args.workflow_type
     cg_kwargs: dict = {"model_name": model_name, "workflow_type": workflow_type}
+    # Screen workload: 6 worker tasks x ~8 graph supersteps blows through
+    # LangGraph's default recursion_limit=50 (t01 died at molecule 6).
+    if getattr(args, "screen", False):
+        cg_kwargs["recursion_limit"] = 200
     if args.planner_model:
         cg_kwargs["planner_model_name"] = args.planner_model
         print(f"[chemgraph] Planner model: {args.planner_model!r}  "
