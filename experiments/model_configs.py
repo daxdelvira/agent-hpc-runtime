@@ -251,7 +251,10 @@ MODELS_CHEMGRAPH_SWAP = {
         "gpus": [0, 1, 2, 3],
         "tensor_parallel_size": 4,
         "gpu_memory_utilization": 0.92,
-        "max_model_len": 8192,
+        # 16384 to match the 72B worker it stands in for: late-batch worker
+        # contexts (accumulated tool outputs) overflow 8192 (baseline t02,
+        # 2026-07-19).  tp=4 leaves ample KV room.
+        "max_model_len": 16384,
         "load_timeout": 1800,
         "extra_args": [
             "--enable-auto-tool-choice",
