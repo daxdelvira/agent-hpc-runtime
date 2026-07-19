@@ -120,6 +120,7 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         # Screen workload: per-task specialist routing state.
         self._specialist_plan: list[str] = []  # planned marker per worker task
         self._worker_task_idx = -1             # current WorkerAgent task index
+        self._current_specialist_marker = ""   # routing established for current task
         self._transition_staged_for = -1       # task idx whose successor is staged
         self._transition_ckpt_id = ""          # checkpoint of in-flight transition stage
         self._staged_models: set[str] = set()  # models already cache-staged this run
@@ -200,14 +201,36 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
             worker_model = self._config.vllm_worker_model
             if self._config.specialist_models:
                 # Screen workload: route this task to its tagged specialist.
-                self._worker_task_idx += 1
-                k = self._worker_task_idx
+                # WorkerAgent fires once per LLM TURN, not per task — the
+                # authoritative task index is state["current_task_index"], and
+                # the current task's prompt (with its [SPECIALIST: x] marker)
+                # is the last worker_messages entry on the task's FIRST turn.
+                idx = None
+                content = ""
+                if isinstance(inputs, dict):
+                    idx = inputs.get("current_task_index")
+                    wm = inputs.get("worker_messages") or []
+                    if wm:
+                        last = wm[-1]
+                        content = (last.get("content", "")
+                                   if isinstance(last, dict)
+                                   else getattr(last, "content", "") or "")
+                if idx is None:
+                    idx = max(self._worker_task_idx, 0)
+                new_task = idx != self._worker_task_idx
+                self._worker_task_idx = idx
+                k = idx
                 planned = (self._specialist_plan[k]
                            if k < len(self._specialist_plan) else "")
-                actual = self._marker_in_text(str(inputs)) or planned
+                if new_task:
+                    # Marker read from the CURRENT task prompt only; later
+                    # turns of the same task keep the established routing.
+                    self._current_specialist_marker = (
+                        self._marker_in_text(content) or planned)
+                    self._worker_consumed_recorded = False
+                actual = getattr(self, "_current_specialist_marker", "") or planned
                 worker_model = self._specialist_model_for(actual)
-                self._worker_consumed_recorded = False  # per-task consumption
-                if planned and actual != planned:
+                if new_task and planned and actual != planned:
                     # Routing divergence: the specialist staged from the plan
                     # is not the one this task actually requires.
                     if self._bus:
