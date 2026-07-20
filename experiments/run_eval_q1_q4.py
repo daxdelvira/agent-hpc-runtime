@@ -241,6 +241,13 @@ CHEMGRAPH_SCREEN_CONFIGS: dict[str, dict] = {
         "desc": "agent free calculator choice (TBLite failures become live "
                 "divergence-guard case studies)",
     },
+    "oracle": {
+        "mode": "real", "predictor": "oracle",
+        "flags": ["--early-plan-stage"],
+        "needs_oracle_trace": True,
+        "desc": "upper bound: perfect-hindsight predictor replaying a "
+                "reference screen trace",
+    },
 }
 
 # AtomAgents conditions mirror experiments/run_blackwell.sh.
