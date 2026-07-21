@@ -79,3 +79,61 @@ plan_only / transition_only / no_cache_stage / oracle.
 - Same facet rules (never blend GPU types); first_in_allocation flagged.
 - Molecule batch fixed per trial index (deterministic task list, sampled agent
   behavior) so arms see identical work.
+
+---
+
+# v2 (2026-07-20): chemgraph_screen_pool — disjoint specialist GPU pools
+
+## Why v1 failed its criterion
+
+21 valid v1 trials: no full_system-vs-baseline win on exposed_swap_s (the
+only sizable gap, −811 s on Blackwell, rests on baseline n=1; L40S matched
+git is +40 s to −215 s, inside noise).  Decisive mechanism finding:
+**oracle ≈ full_system** (1723/1497 vs 1693/1426 same git/facet) — perfect
+prediction buys nothing.  On a SHARED pool only 1 of 6 swaps converts to
+prefetched, and even that one's residual engine spin-up (130–450 s) stays on
+the critical path.  overlap_s (182–577 s) is absorbed, not recovered; no_plan
+collapses overlap 182→35 s with wall unchanged.  The bottleneck is vLLM
+engine spin-up, which no shared-pool trigger timing can hide.
+
+## v2 mechanism
+
+Specialists on disjoint GPU pools: advanced=72B on GPUs 0-3 (:8001),
+standard=32B on GPUs 4-5 (:8005), SpecialistProxy (:8006) as the single
+worker-client endpoint (client is built once; adapter flips the target after
+wait_until_ready).  The NEXT task's engine boots on its own pool while the
+current task is being served — spin-up itself overlaps the serving window.
+
+Residency policy, identical in every arm: idle engines are evicted
+(background, off the critical path).  What differs is boot timing only:
+
+- baseline: on-demand boot at task start (spin-up exposed per alternation)
+- full_system: plan-conditioned per transition — the other engine is KEPT
+  resident when the plan names it next, or pre-booted (cache-stage + engine
+  boot on its own pool) during the current task
+- blind_stage: pre-boot the other specialist every task (no plan) — wasted
+  boots whenever consecutive tasks share a specialist
+- naive_prefetch: keep-all-resident (time-optimal, residency-maximal bound;
+  feasible only because 2 specialists fit 6 GPUs — the residency ledger is
+  the honest comparison axis)
+- guard: cancels/evicts wrongly kept or pre-booted engines (resource
+  hygiene; with 2 specialists the time cost of misprediction is small)
+
+Molecule order is non-alternating (aspirin, caffeine, water, ibuprofen,
+methane, ammonia → adv,adv,std,adv,std,std: transitions keep,swap,swap,
+swap,keep) so plan-conditioning is falsifiable against blind alternation.
+
+## Benefit envelope
+
+Baseline pays ~4 exposed boots (first + 3 swaps) ≈ 480–600 s; full_system
+should expose only the first boot's residual + any window shortfall
+(per-task windows ~30–200 s vs ~100–140 s spin-up) ≈ 150–350 s.  Expected
+win 20–40 % of wall on L40S-d26cc46-era walls — comfortably above the
+carried-over pre-registered criterion (>10 % on wall AND exposed_swap_s vs
+baseline, same facet, matched git), or the design gets revisited again.
+
+## Validity
+
+- L40S 6-GPU facet ONLY (Blackwell nodes have 4 GPUs).
+- Distinct workload dir (chemgraph_screen_pool); never pooled with v1.
+- Valid from commit 5b85ed7.
