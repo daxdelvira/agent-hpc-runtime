@@ -107,9 +107,22 @@ class ModelPrefetchExecutor(PrefetchExecutor):
         orchestrator,   # ModelOrchestrator | FakeModelOrchestrator
         max_concurrent: int = 1,
         probes=None,    # ClusterProbes | None — if set, snapshots before/after load
+        stop_wasted_models: bool = False,
+        evict_conflicting: bool = False,
     ) -> None:
         self._orchestrator = orchestrator
         self._probes = probes
+        # Disjoint-pool mode: before booting the target engine, stop (and VRAM-
+        # drain) any running engine whose GPU set overlaps the target's pool —
+        # e.g. the planner still holds GPUs 0-3 when the first advanced
+        # specialist pre-boots.  All of it happens in this executor's
+        # background thread, off the workflow's critical path.
+        self._evict_conflicting = evict_conflicting
+        # Disjoint-pool mode: a cancelled pre-boot finishes loading on its own
+        # pool (interrupting vLLM mid-load is unsafe), but the engine serves
+        # nobody — stop it as soon as the load completes so the wasted
+        # residency window is bounded and visible in the trace.
+        self._stop_wasted = stop_wasted_models
         self._pool = ThreadPoolExecutor(
             max_workers=max_concurrent,
             thread_name_prefix="model_prefetch",
@@ -211,6 +224,23 @@ class ModelPrefetchExecutor(PrefetchExecutor):
                     flush=True,
                 )
 
+            if self._evict_conflicting:
+                target_gpus = set(
+                    self._orchestrator.models.get(task.resource.name, {})
+                    .get("gpus", []))
+                for other, proc in list(
+                        getattr(self._orchestrator, "processes", {}).items()):
+                    if other == task.resource.name:
+                        continue
+                    alive = proc.poll() is None if hasattr(proc, "poll") else True
+                    other_gpus = set(
+                        self._orchestrator.models.get(other, {}).get("gpus", []))
+                    if alive and target_gpus & other_gpus:
+                        print(f"[model_prefetch] Evicting {other} "
+                              f"(GPUs {sorted(target_gpus & other_gpus)} needed "
+                              f"for {task.resource.name} pre-boot).", flush=True)
+                        self._orchestrator.stop_model(other)
+
             elapsed = self._orchestrator.start_model_measured(
                 task.resource.name,
                 metrics=None,
@@ -229,6 +259,15 @@ class ModelPrefetchExecutor(PrefetchExecutor):
 
             if was_cancelled:
                 task.status = PrefetchStatus.WASTED
+                if self._stop_wasted:
+                    try:
+                        self._orchestrator.stop_model(task.resource.name)
+                        print(f"[model_prefetch] Stopped wasted pre-boot "
+                              f"{task.resource.name} (cancelled mid-load).",
+                              flush=True)
+                    except Exception as _exc:
+                        print(f"[model_prefetch] WARNING: could not stop wasted "
+                              f"{task.resource.name}: {_exc}", flush=True)
             elif task.status == PrefetchStatus.IN_PROGRESS:
                 task.status = PrefetchStatus.COMPLETED
 

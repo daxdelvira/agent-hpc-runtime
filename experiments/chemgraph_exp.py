@@ -208,7 +208,8 @@ def _megammap_settings(args) -> dict:
 
 def _build_executor(mode: RuntimeMode, mace_device: str, orchestrator=None,
                     model_paths=None, megammap: dict | None = None,
-                    megammap_window: str = "4g", megammap_tx: str = "seq"):
+                    megammap_window: str = "4g", megammap_tx: str = "seq",
+                    disjoint_pools: bool = False):
     """Return the appropriate PrefetchExecutor for the runtime mode."""
     if mode != RuntimeMode.REAL:
         return SimulatedPrefetchExecutor()
@@ -226,7 +227,10 @@ def _build_executor(mode: RuntimeMode, mace_device: str, orchestrator=None,
     if orchestrator is not None:
         try:
             from runtime.prefetch.model_prefetch import ModelPrefetchExecutor
-            executors["vllm_model"] = ModelPrefetchExecutor(orchestrator, probes=None)
+            executors["vllm_model"] = ModelPrefetchExecutor(
+                orchestrator, probes=None,
+                stop_wasted_models=disjoint_pools,
+                evict_conflicting=disjoint_pools)
             print("[runtime] Real executor: ModelPrefetchExecutor for vllm_model")
         except Exception as exc:
             print(f"[runtime] WARNING: Could not build ModelPrefetchExecutor ({exc}).")
@@ -349,10 +353,15 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             planner_model = "qwen_32b_vl"
             # Screen workload: per-molecule specialist routing.  Marker ->
             # orchestrator model key; the adapter swaps specialists per task.
+            # Disjoint pools (Option D): the standard specialist lives on its
+            # own GPU pool (4-5) + port, behind the SpecialistProxy — the next
+            # engine can boot while the current one serves.
             if getattr(args, "screen", False):
                 specialist_models = {
                     "advanced": "qwen_72b_instruct",
-                    "standard": "qwen_32b_standard",
+                    "standard": ("qwen_32b_standard_pool"
+                                 if getattr(args, "disjoint_pools", False)
+                                 else "qwen_32b_standard"),
                 }
             # Option D: orchestrator key of the distinct co-resident aggregator
             # model.  Set only when --aggregator-model is requested; the adapter
@@ -410,6 +419,22 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             vllm_worker_model = ""
             vllm_aggregator_model = ""
 
+    # Disjoint-pool mode: single client endpoint -> per-specialist ports.
+    # The proxy is harness infrastructure and runs in EVERY arm (baseline
+    # included) — on-demand boots also land on per-pool ports.
+    proxy = None
+    if getattr(args, "disjoint_pools", False) and orchestrator is not None:
+        if not specialist_models:
+            print("[pool] ERROR: --disjoint-pools requires --screen.")
+            sys.exit(2)
+        from runtime.prefetch.specialist_proxy import SpecialistProxy
+        proxy_port = getattr(args, "pool_proxy_port", 8006)
+        proxy = SpecialistProxy(listen_port=proxy_port)
+        proxy.start()
+        args.base_url = f"http://localhost:{proxy_port}/v1"
+        print(f"[pool] Disjoint pools active: worker client -> proxy :{proxy_port}; "
+              f"specialists: { {m: MODELS_CHEMGRAPH_SWAP[k]['port'] for m, k in specialist_models.items()} }")
+
     cfg = RuntimeConfig(
         mode=mode,
         run_id=run_id,
@@ -432,6 +457,12 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         specialist_models=specialist_models,
         early_plan_conditioned_stage=getattr(args, "early_plan_stage", False),
         model_paths=model_paths,
+        disjoint_pools=proxy is not None,
+        pool_blind_preboot=getattr(args, "blind_preboot", False),
+        # Pool-mode naive: --naive-prefetch means "keep every specialist
+        # resident" (time-optimal, resource-maximal upper bound).
+        pool_keep_all_resident=(proxy is not None
+                                and getattr(args, "naive_prefetch", False)),
     )
 
     # Share ChemGraph's WorkflowTracker file so runtime events and workflow
@@ -448,7 +479,8 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     executor = _build_executor(mode, args.mace_device, orchestrator=orchestrator,
                                model_paths=model_paths, megammap=megammap,
                                megammap_window=args.megammap_window,
-                               megammap_tx=args.megammap_tx)
+                               megammap_tx=args.megammap_tx,
+                               disjoint_pools=proxy is not None)
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
 
@@ -504,6 +536,7 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
                 bus=bus,
                 task_description=task_prompt,
                 orchestrator=orchestrator,
+                specialist_proxy=proxy,
             )
             print("[runtime] RuntimeChemGraphCallback installed.")
         except Exception as exc:
@@ -630,14 +663,15 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             except Exception:
                 pass
         bus.close()
-        # Swap mode: stop any running model so the next run starts from a clean state.
+        if proxy is not None:
+            proxy.stop()
+        # Swap mode: stop ALL running models so the next run starts from a
+        # clean state (disjoint pools can have two engines resident).
         if orchestrator is not None:
-            running = orchestrator.get_running_model()
-            if running:
-                try:
-                    orchestrator.stop_model(running)
-                except Exception as _e:
-                    print(f"[cluster] Warning: could not stop {running}: {_e}")
+            try:
+                orchestrator.shutdown()
+            except Exception as _e:
+                print(f"[cluster] Warning: orchestrator shutdown failed: {_e}")
 
     # ------------------------------------------------------------------
     # Post-run analysis
@@ -914,6 +948,30 @@ def main() -> None:
         help="Screen workload: stage the page cache at plan_extracted time, "
              "choosing WHICH specialist from the plan (plan-conditioned early "
              "trigger). Off = legacy blind staging at first chain start.",
+    )
+    parser.add_argument(
+        "--disjoint-pools",
+        action="store_true",
+        dest="disjoint_pools",
+        help="Screen v2 (Option D): specialists on DISJOINT GPU pools (72B on "
+             "GPUs 0-3, 32B on GPUs 4-5, own ports, SpecialistProxy in front) "
+             "so the next task's engine boots while the current one serves — "
+             "hides vLLM spin-up.  Requires --screen and a 6-GPU node (L40S).",
+    )
+    parser.add_argument(
+        "--pool-proxy-port",
+        type=int,
+        default=8006,
+        dest="pool_proxy_port",
+        help="Listen port of the SpecialistProxy (worker client endpoint) in "
+             "--disjoint-pools mode.",
+    )
+    parser.add_argument(
+        "--blind-preboot",
+        action="store_true",
+        dest="blind_preboot",
+        help="Pool trigger ablation: pre-boot the OTHER specialist at every "
+             "task start regardless of the plan (blind alternation heuristic).",
     )
     parser.add_argument(
         "--pin-calculator",

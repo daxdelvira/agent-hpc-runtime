@@ -96,6 +96,7 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         bus: EventBus | None = None,
         task_description: str = "",
         orchestrator=None,
+        specialist_proxy=None,
     ) -> None:
         super().__init__(metrics_logger, workflow_tracker, gpu_index)
         self._predictor = predictor
@@ -104,6 +105,7 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         self._bus = bus
         self._task_description = task_description
         self._orchestrator = orchestrator  # ModelOrchestrator | None — set in swap mode
+        self._proxy = specialist_proxy    # SpecialistProxy | None — disjoint-pool mode
         self._step = 0
         self._checkpoint_store = CheckpointStore(max_horizon=self._config.max_horizon)
         self._conservative_until_step = 0
@@ -124,6 +126,10 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         self._transition_staged_for = -1       # task idx whose successor is staged
         self._transition_ckpt_id = ""          # checkpoint of in-flight transition stage
         self._staged_models: set[str] = set()  # models already cache-staged this run
+        # Disjoint-pool mode: per-transition pre-boot bookkeeping.  Pre-boot
+        # resource ids are unique per transition (the scheduler dedupes on
+        # resource_id, and the same engine boots several times per run).
+        self._pool_pending_boot: dict[str, str] = {}  # model -> in-flight boot rid
 
     @property
     def _is_active(self) -> bool:
@@ -150,6 +156,155 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
     def _marker_in_text(text: str) -> str:
         m = _SPECIALIST_RE.search(text or "")
         return m.group(1).lower() if m else ""
+
+    # ------------------------------------------------------------------
+    # Disjoint-pool helpers (chemgraph_screen_pool / Option D)
+    # ------------------------------------------------------------------
+
+    def _pool_port(self, model: str) -> int:
+        return int(self._orchestrator.models[model]["port"])
+
+    def _pool_evict_async(self, models: list[str], reason: str) -> None:
+        """Stop engines in a background thread (VRAM drain blocks for tens of
+        seconds — never on the workflow's critical path)."""
+        import threading
+        for m in models:
+            self._pool_pending_boot.pop(m, None)
+        if self._bus:
+            for m in models:
+                self._bus.emit("pool_evict", {
+                    "model": m, "reason": reason,
+                }, step=self._step)
+
+        def _stop():
+            for m in models:
+                try:
+                    self._orchestrator.stop_model(m)
+                except Exception as exc:
+                    print(f"[pool] WARNING: evict {m} failed: {exc}", flush=True)
+
+        threading.Thread(target=_stop, name="pool_evict", daemon=True).start()
+
+    def _pool_maintain_after_flip(self, current_model: str) -> None:
+        """
+        Residency policy after routing task k to `current_model`:
+
+        - Every arm (baseline included): engines outside the keep set are
+          evicted — idle residency must be justified.
+        - REAL mode: the keep set is plan-conditioned.  If the plan names the
+          OTHER specialist for task k+1, that engine is kept resident (if up)
+          or cache-staged + pre-booted on its own pool (if down) — the boot
+          overlaps task k's serving window instead of blocking task k+1.
+        - pool_blind_preboot: the trigger ablation — always prepare the other
+          specialist, ignoring the plan (wrong on same-specialist runs).
+        - pool_keep_all_resident (naive): boot everything, evict nothing.
+        """
+        cfg = self._config
+        k = self._worker_task_idx
+        specialists = set(cfg.specialist_models.values())
+        running = self._running_model_set()
+
+        if cfg.pool_keep_all_resident and cfg.mode == RuntimeMode.REAL:
+            for m in sorted(specialists - running):
+                self._stage_model_cache(m, trigger=f"pool_naive_task{k}")
+                self._schedule_pool_preboot(m, trigger=f"pool_naive_task{k}",
+                                            source="keep_all_resident")
+            return
+
+        needed_next = ""
+        source = ""
+        if cfg.mode == RuntimeMode.REAL:
+            if cfg.pool_blind_preboot:
+                others = sorted(specialists - {current_model})
+                needed_next = others[0] if others else ""
+                source = "blind_alternation"
+            elif self._specialist_plan and k + 1 < len(self._specialist_plan):
+                needed_next = self._specialist_model_for(
+                    self._specialist_plan[k + 1])
+                source = "plan"
+
+        keep = {current_model} | ({needed_next} if needed_next else set())
+        # Engines on needed_next's pool are left for the pre-boot executor,
+        # which evicts them right before booting (keeps stop/start ordered).
+        needed_gpus: set[int] = set()
+        if needed_next and needed_next not in running:
+            needed_gpus = set(self._orchestrator.models.get(
+                needed_next, {}).get("gpus", []))
+        to_stop = []
+        for m in sorted(running - keep):
+            m_gpus = set(self._orchestrator.models.get(m, {}).get("gpus", []))
+            if needed_gpus and (m_gpus & needed_gpus):
+                continue
+            to_stop.append(m)
+        if to_stop:
+            self._pool_evict_async(to_stop, reason="idle_policy")
+
+        if not needed_next or needed_next == current_model:
+            return
+        if needed_next in running:
+            if self._bus:
+                self._bus.emit("pool_keep", {
+                    "model": needed_next, "task_index": k, "source": source,
+                }, step=self._step)
+            return
+        self._stage_model_cache(needed_next, trigger=f"pool_transition_task{k}")
+        self._schedule_pool_preboot(
+            needed_next, trigger=f"pool_transition_task{k}", source=source)
+
+    def _schedule_pool_preboot(self, model_name: str, trigger: str,
+                               source: str = "") -> None:
+        """
+        Schedule a vllm_model prefetch that BOOTS `model_name` on its own GPU
+        pool in the executor's background thread (evicting that pool's old
+        occupant first).  Resource id is unique per transition — the same
+        engine boots several times per run and the scheduler dedupes on id.
+        """
+        if (
+            self._scheduler is None
+            or self._config.mode != RuntimeMode.REAL
+            or "vllm_model" in self._config.skip_resource_types
+            or model_name in self._pool_pending_boot
+        ):
+            return
+
+        from runtime.events import PredictionResult, ResourceSpec
+        import hashlib
+
+        resource_id = (hashlib.md5(model_name.encode()).hexdigest()[:16]
+                       + f"_t{max(self._worker_task_idx, 0) + 1}")
+        resource = ResourceSpec(
+            resource_id=resource_id,
+            resource_type="vllm_model",
+            name=model_name,
+            estimated_size_bytes=_model_size_bytes(
+                self._config.model_paths.get(model_name), self._config),
+            estimated_load_s=120.0,
+            confidence=1.0,
+            cancellation_safe=False,
+            consumer_tool="",
+            consumer_step_offset=1,
+        )
+        result = PredictionResult(
+            step=self._step,
+            resources=[resource],
+            confidence=1.0,
+            predictor_id=(f"pool_preboot:{trigger}"
+                          + (f":{source}" if source else "")),
+        )
+        ckpt = CheckpointRecord(step=self._step, log_position=0,
+                                prediction=result)
+        self._checkpoint_store.add(ckpt)
+        if self._bus:
+            self._bus.emit_event(make_prediction_result_event(
+                self._config.run_id, self._step, result))
+        task = self._scheduler.schedule(
+            resource=resource,
+            current_step=self._step,
+            checkpoint_id=ckpt.checkpoint_id,
+        )
+        if task is not None:
+            self._pool_pending_boot[model_name] = resource_id
+            self._transition_ckpt_id = ckpt.checkpoint_id
 
     # ------------------------------------------------------------------
     # on_chain_start — guard against LangGraph passing None for serialized
@@ -250,28 +405,68 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                             current_step=self._step,
                         )
                         self._transition_ckpt_id = ""
+                    # Disjoint pools: a READY-but-wrong engine (kept or
+                    # pre-booted from the bad plan entry) serves nobody —
+                    # evict it in the background to reclaim its pool.  A boot
+                    # still in flight was cancelled above; the executor stops
+                    # it as soon as its load completes (stop_wasted_models).
+                    if (self._config.disjoint_pools
+                            and not self._config.disable_divergence_cancellation):
+                        wrong_model = self._specialist_model_for(planned)
+                        mid_boot = wrong_model in self._pool_pending_boot
+                        self._pool_pending_boot.pop(wrong_model, None)
+                        if (wrong_model != worker_model
+                                and not mid_boot
+                                and wrong_model in self._running_model_set()):
+                            self._pool_evict_async(
+                                [wrong_model], reason="specialist_divergence")
             t_wait0 = time.perf_counter()
             on_demand_swap = False
             import hashlib as _hashlib
             cache_rid = "cache_" + _hashlib.md5(worker_model.encode()).hexdigest()[:12]
             cache_known = (self._cache_resource_id == cache_rid
                            or worker_model in self._staged_models)
-            running = self._orchestrator.get_running_model()
-            if running != worker_model:
-                on_demand_swap = True
-                # The vLLM load is about to read the worker weights: this is the
-                # point the staged page cache gets consumed.  Record it so the
-                # overlap trace attributes the staging benefit to this swap.
-                if cache_known and self._scheduler is not None:
-                    self._scheduler.on_resource_consumed(
-                        cache_rid,
-                        consumed_at=time.perf_counter(),
-                        current_step=self._step,
-                    )
-                # Worker not yet loaded: swap now (stop planner, start worker).
-                if running:
-                    self._orchestrator.stop_model(running)
-                self._orchestrator.start_model(worker_model)
+            if self._config.disjoint_pools:
+                # Disjoint pools: the engine may already be resident on its own
+                # pool (kept, or pre-booted during the previous task).  On-demand
+                # boot only when it is not — after synchronously evicting any
+                # engine that overlaps its pool (the planner holds GPUs 0-3
+                # before the first advanced task).  This sync eviction+boot is
+                # the exposed cost the pre-boot path avoids.
+                running_set = self._running_model_set()
+                if worker_model not in running_set:
+                    on_demand_swap = True
+                    if cache_known and self._scheduler is not None:
+                        self._scheduler.on_resource_consumed(
+                            cache_rid,
+                            consumed_at=time.perf_counter(),
+                            current_step=self._step,
+                        )
+                    target_gpus = set(self._orchestrator.models.get(
+                        worker_model, {}).get("gpus", []))
+                    for other in sorted(running_set):
+                        other_gpus = set(self._orchestrator.models.get(
+                            other, {}).get("gpus", []))
+                        if target_gpus & other_gpus:
+                            self._orchestrator.stop_model(other)
+                    self._orchestrator.start_model(worker_model)
+            else:
+                running = self._orchestrator.get_running_model()
+                if running != worker_model:
+                    on_demand_swap = True
+                    # The vLLM load is about to read the worker weights: this is
+                    # the point the staged page cache gets consumed.  Record it so
+                    # the overlap trace attributes the staging benefit to this swap.
+                    if cache_known and self._scheduler is not None:
+                        self._scheduler.on_resource_consumed(
+                            cache_rid,
+                            consumed_at=time.perf_counter(),
+                            current_step=self._step,
+                        )
+                    # Worker not yet loaded: swap now (stop planner, start worker).
+                    if running:
+                        self._orchestrator.stop_model(running)
+                    self._orchestrator.start_model(worker_model)
             # Record consumption of the prefetched worker-LLM (and its staged
             # cache) at NEED time — i.e. now, before the readiness wait.  This
             # marks the prefetch tasks used instead of wasted, and lets the
@@ -282,6 +477,12 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                 worker_rid = _hashlib.md5(worker_model.encode()).hexdigest()[:16]
                 self._scheduler.on_resource_consumed(
                     worker_rid, consumed_at=t_wait0, current_step=self._step)
+                # Disjoint pools: pre-boot resource ids are per-transition —
+                # consume the in-flight boot for THIS engine, if any.
+                pool_rid = self._pool_pending_boot.pop(worker_model, "")
+                if pool_rid:
+                    self._scheduler.on_resource_consumed(
+                        pool_rid, consumed_at=t_wait0, current_step=self._step)
                 if cache_known and not on_demand_swap:
                     self._scheduler.on_resource_consumed(
                         cache_rid, consumed_at=t_wait0,
@@ -292,6 +493,11 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
             # orchestrator's load_timeout (5400) — a slow swap is valid data
             # (it IS the exposed stall); a timeout is a lost trial.
             self._orchestrator.wait_until_ready(worker_model, timeout=5400)
+            # Disjoint pools: route the (single-endpoint) worker client to this
+            # specialist's port.  Always after wait_until_ready — requests
+            # never race a booting engine.
+            if self._config.disjoint_pools and self._proxy is not None:
+                self._proxy.set_target(self._pool_port(worker_model))
             # Exposed staging time on the critical path: how long the workflow
             # sat blocked here waiting for the worker LLM to become ready.
             # ≈ full swap time in baseline (on-demand), ≈ residual in real mode
@@ -305,7 +511,14 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                     "prefetch_scheduled": self._worker_prefetch_scheduled,
                     "cache_stage_scheduled": self._cache_stage_scheduled,
                     "mode": self._config.mode.value,
+                    "pool": self._config.disjoint_pools,
                 }, step=self._step)
+            # Disjoint pools: post-flip residency maintenance — evict idle
+            # engines (policy, every arm) and, in REAL mode, decide from the
+            # plan whether the next task's engine is kept resident or
+            # pre-booted on its own pool (all off the critical path).
+            if self._config.disjoint_pools:
+                self._pool_maintain_after_flip(worker_model)
 
         # Option D: ensure the (co-resident) aggregator LLM is ready before the
         # AggregatorAgent runs.  In active/REAL mode the prefetch thread was
@@ -533,7 +746,10 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         # Shared GPU pool: the planner must be stopped before the worker can
         # load.  The planner LLM is only used by the PlannerAgent entry node,
         # which has just finished — safe to evict now.
-        if self._orchestrator is not None:
+        # Disjoint pools: skip the synchronous stop — the pre-boot executor
+        # evicts conflicting engines in its background thread instead, so the
+        # workflow never blocks on the planner's VRAM drain.
+        if self._orchestrator is not None and not self._config.disjoint_pools:
             running = self._orchestrator.get_running_model()
             if running and running != model_name:
                 self._orchestrator.stop_model(running)
@@ -864,6 +1080,7 @@ def make_runtime_callback(
     gpu_index: int = 0,
     task_description: str = "",
     orchestrator=None,            # ModelOrchestrator | None — set in swap mode
+    specialist_proxy=None,        # SpecialistProxy | None — disjoint-pool mode
 ) -> RuntimeChemGraphCallback:
     """
     Convenience factory for RuntimeChemGraphCallback.
@@ -903,4 +1120,5 @@ def make_runtime_callback(
         bus=bus,
         task_description=task_description,
         orchestrator=orchestrator,
+        specialist_proxy=specialist_proxy,
     )

@@ -250,6 +250,77 @@ CHEMGRAPH_SCREEN_CONFIGS: dict[str, dict] = {
     },
 }
 
+# chemgraph_screen_pool: Option D — specialists on DISJOINT GPU pools (72B on
+# GPUs 0-3 port 8001, 32B on GPUs 4-5 port 8005, SpecialistProxy on 8006 in
+# front of both).  Motivated by the 7/20 screen verdict: oracle ≈ full_system,
+# i.e. prediction was never the bottleneck — the ~100-140 s vLLM spin-up on a
+# SHARED pool is, and no shared-pool trigger can hide it.  With disjoint pools
+# the next engine boots while the current one serves; the residency policy
+# (evict idle engines) is identical in every arm, and the plan decides per
+# transition whether the other engine is kept resident or pre-booted.
+# Molecule order is deliberately NON-alternating (adv,adv,std,adv,std,std) so
+# plan-conditioning is distinguishable from a blind alternation heuristic.
+# L40S 6-GPU facet ONLY (Blackwell nodes have 4 GPUs).
+CHEMGRAPH_SCREEN_POOL_CONFIGS: dict[str, dict] = {
+    "baseline": {
+        "mode": "baseline", "predictor": "mock", "flags": [],
+        "desc": "evict-idle policy + on-demand engine boots (spin-up exposed "
+                "at every specialist alternation)",
+    },
+    "full_system": {
+        "mode": "real", "predictor": "learned", "flags": ["--early-plan-stage"],
+        "desc": "plan-conditioned keep/pre-boot per transition + cache staging "
+                "+ divergence guard (spin-up overlaps the serving window)",
+    },
+    "blind_stage": {
+        "mode": "real", "predictor": "learned", "flags": ["--blind-preboot"],
+        "desc": "trigger ablation: always prepare the OTHER specialist "
+                "(alternation heuristic; wastes boots on same-class runs)",
+    },
+    "naive_prefetch": {
+        "mode": "real", "predictor": "learned", "flags": ["--naive-prefetch"],
+        "desc": "resource upper bound: boot every specialist, never evict "
+                "(time-optimal, residency-maximal)",
+    },
+    "no_divergence_guard": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--early-plan-stage", "--no-divergence-guard"],
+        "desc": "wrongly kept/pre-booted engines are never cancelled/evicted",
+    },
+    "no_plan": {
+        "mode": "real", "predictor": "learned", "flags": ["--no-plan-extraction"],
+        "desc": "no plan: no keep/pre-boot decisions — evict-idle + on-demand "
+                "boots plus generic prefetch machinery only",
+    },
+    "no_cache_stage": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--early-plan-stage", "--no-cache-stage"],
+        "desc": "full system minus page-cache staging (pre-boot reads cold "
+                "Lustre)",
+    },
+    "plan_only": {
+        "mode": "real", "predictor": "plan_only", "flags": ["--early-plan-stage"],
+        "desc": "predictor ablation: plan signal only",
+    },
+    "transition_only": {
+        "mode": "real", "predictor": "transition_only",
+        "flags": ["--early-plan-stage"],
+        "desc": "predictor ablation: transition table only",
+    },
+    "unpinned": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--early-plan-stage", "--pin-calculator", ""],
+        "desc": "agent free calculator choice (failure-path guard case study)",
+    },
+    "oracle": {
+        "mode": "real", "predictor": "oracle",
+        "flags": ["--early-plan-stage"],
+        "needs_oracle_trace": True,
+        "desc": "upper bound: perfect-hindsight predictor replaying a "
+                "reference pool trace",
+    },
+}
+
 # AtomAgents conditions mirror experiments/run_blackwell.sh.
 ATOMAGENTS_CONFIGS: dict[str, dict] = {
     "baseline":            {"mode": "baseline", "predictor": "mock", "flags": []},
@@ -304,6 +375,24 @@ WORKLOADS: dict[str, dict] = {
             "--pin-calculator", "mace_mp",
         ],
         "configs": CHEMGRAPH_SCREEN_CONFIGS,
+        "timeout_s": 7200,
+        "est_run_s": 1800,
+    },
+    # Option D disjoint-pool variant — see CHEMGRAPH_SCREEN_POOL_CONFIGS.
+    # L40S 6-GPU nodes only.  Non-alternating molecule order (adv,adv,std,
+    # adv,std,std) makes plan-conditioning falsifiable against blind
+    # alternation.  The worker client endpoint is forced to the
+    # SpecialistProxy inside chemgraph_exp.py (--base-url is overridden).
+    "chemgraph_screen_pool": {
+        "script": "experiments/chemgraph_exp.py",
+        "python": CG_PYTHON,
+        "base_flags": CHEMGRAPH_SWAP_BASE + [
+            "--screen",
+            "--pin-calculator", "mace_mp",
+            "--disjoint-pools",
+            "--molecules", "aspirin, caffeine, water, ibuprofen, methane, ammonia",
+        ],
+        "configs": CHEMGRAPH_SCREEN_POOL_CONFIGS,
         "timeout_s": 7200,
         "est_run_s": 1800,
     },

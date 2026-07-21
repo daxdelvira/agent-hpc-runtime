@@ -98,3 +98,21 @@ class RuntimeConfig:
     # estimation of specialist models (worker_model_path covers only the
     # legacy single worker).
     model_paths: dict = field(default_factory=dict)
+
+    # Screen v2 (Option D): specialists live on DISJOINT GPU pools (72B on
+    # GPUs 0-3, 32B on GPUs 4-5), each with its own port behind the
+    # SpecialistProxy.  The next task's engine can boot while the current one
+    # serves — hiding the vLLM spin-up that shared-pool swaps expose.  The
+    # residency policy is "evict idle engines" in every arm; in REAL mode the
+    # plan decides per transition whether the other engine is kept resident
+    # (plan says it is needed next) or evicted + pre-booted later.
+    disjoint_pools: bool = False
+
+    # Pool trigger ablation: pre-boot the OTHER specialist at every task
+    # start regardless of what the plan says (blind alternation heuristic).
+    pool_blind_preboot: bool = False
+
+    # Pool resource ablation (naive): boot every specialist engine and keep
+    # all of them resident for the whole run — never evict.  Time-optimal,
+    # resource-maximal; the residency ledger quantifies the difference.
+    pool_keep_all_resident: bool = False
