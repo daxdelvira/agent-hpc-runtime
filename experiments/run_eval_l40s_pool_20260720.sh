@@ -29,6 +29,24 @@ nvidia-smi -L | grep -qi "l40s" || { log "ABORT: not an L40S node — facet mism
 
 PY=python3
 
+# Preflight (opportunistic, once per L40S facet): vLLM sleep/wake latency
+# microbenchmark — the decision input for the sleep_wake config arm (does a
+# level-1 wake really turn the 185 s no-window boot into ~15 s on this
+# hardware?).  Standalone: no eval-tree artifacts, its own server on :8001,
+# cleans up after itself.  Skipped when ANY prior result file exists (the
+# campaign relaunches verbatim after preemption — never re-pay the ~30 min);
+# time-capped and non-fatal so it can only delay, never sink, the campaign.
+if ! ls results/bench_sleep_wake_qwen_72b_instruct_*.json >/dev/null 2>&1; then
+  log "Preflight: vLLM sleep/wake microbenchmark (72B, levels 1+2, cap 40 min)"
+  timeout 2400 $PY experiments/bench_sleep_wake.py --model qwen_72b_instruct \
+    || log "sleep/wake bench failed or timed out (non-fatal, continuing)"
+  pkill -u "$USER" -f "vllm.entrypoints.openai.api_server" 2>/dev/null || true
+  pkill -u "$USER" -f "VLLM::" 2>/dev/null || true
+  sleep 10
+else
+  log "Preflight: sleep/wake bench result already present — skipping"
+fi
+
 log "Phase 0a: full_system smoke x1 (proxy + pre-boot + keep + eviction)"
 $PY experiments/run_eval_q1_q4.py --workload chemgraph_screen_pool \
     --configs full_system --trials 1
