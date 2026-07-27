@@ -276,6 +276,15 @@ class ModelPrefetchExecutor(PrefetchExecutor):
                 "success": True,
                 "wasted": was_cancelled,
             }
+            # A successful boot read the full weight snapshot: report it as
+            # measured bytes so Q4/lifecycle byte provenance is not "estimated"
+            # for vllm_model tasks (size itself comes from the snapshot dir's
+            # st_size sum — see _model_size_bytes in the chemgraph adapter).
+            size_b = getattr(task.resource, "estimated_size_bytes", None)
+            if size_b:
+                result["bytes_staged"] = int(size_b)
+                if elapsed and elapsed > 0:
+                    result["gb_per_s"] = round(size_b / elapsed / 1e9, 3)
             if probe_delta:
                 result["probe_delta"] = probe_delta
             return result
