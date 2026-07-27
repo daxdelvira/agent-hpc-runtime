@@ -191,7 +191,8 @@ def parse_trace(events: list[dict], consumer_of: dict[str, set] | None = None) -
             tid = p.get("task_id", "")
             rid = p.get("resource_id", "")
             tasks[tid] = {"task_id": tid, "resource_id": rid, "started_t": t,
-                          "started_step": step}
+                          "started_step": step,
+                          "executor": p.get("executor", "")}
             resource_to_task[rid] = tid
         elif et == "prefetch_completed":
             tid = p.get("task_id", "")
@@ -203,6 +204,9 @@ def parse_trace(events: list[dict], consumer_of: dict[str, set] | None = None) -
             rec["completion_status"] = p.get("status", "")
             if "bytes_staged" in p:
                 rec["bytes_measured"] = p.get("bytes_staged")
+            for extra in ("gb_per_s", "n_shards", "backend"):
+                if extra in p:
+                    rec[extra] = p.get(extra)
         elif et == "prefetch_cancelled":
             tid = p.get("task_id", "")
             rec = tasks.setdefault(tid, {"task_id": tid})
