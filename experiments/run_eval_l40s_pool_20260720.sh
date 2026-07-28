@@ -36,8 +36,8 @@ PY=python3
 # cleans up after itself.  Skipped when ANY prior result file exists (the
 # campaign relaunches verbatim after preemption — never re-pay the ~30 min);
 # time-capped and non-fatal so it can only delay, never sink, the campaign.
-if ! ls results/bench_sleep_wake_qwen_72b_instruct_*.json \
-       results/bench_sleep_wake_l40s.attempted >/dev/null 2>&1; then
+if [ ! -e results/bench_sleep_wake_l40s.attempted ] \
+   && ! compgen -G "results/bench_sleep_wake_qwen_72b_instruct_*.json" >/dev/null; then
   touch results/bench_sleep_wake_l40s.attempted
   log "Preflight: vLLM sleep/wake microbenchmark (72B, levels 1+2, cap 40 min)"
   timeout 2400 $PY experiments/bench_sleep_wake.py --model qwen_72b_instruct \
