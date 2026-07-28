@@ -29,6 +29,11 @@ nvidia-smi -L | grep -qi "l40s" || { log "ABORT: not an L40S node — facet mism
 
 PY=python3
 
+# Node health canaries (added 2026-07-28 after job 11523454: shared-node
+# pathology made boots crawl 3 min -> >3600 s and burned the whole hold).
+# Abort early so the watcher's attempt limit moves on instead.
+bash experiments/node_preflight.sh || { log "ABORT: node preflight failed"; exit 1; }
+
 # Preflight (opportunistic, once per L40S facet): vLLM sleep/wake latency
 # microbenchmark — the decision input for the sleep_wake config arm (does a
 # level-1 wake really turn the 185 s no-window boot into ~15 s on this

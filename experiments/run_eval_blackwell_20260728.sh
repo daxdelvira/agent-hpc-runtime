@@ -23,6 +23,9 @@ ngpu=$(nvidia-smi -L 2>/dev/null | wc -l)
 nvidia-smi -L | grep -qiE "rtx pro 6000|blackwell" \
   || { log "ABORT: not a Blackwell node — facet mismatch."; exit 1; }
 
+# Node health canaries (see node_preflight.sh header; 07-28 lesson).
+bash experiments/node_preflight.sh || { log "ABORT: node preflight failed"; exit 1; }
+
 MARKER=results/bench_sleep_wake_blackwell.done
 if [ ! -f "$MARKER" ]; then
   log "Phase 0: sleep/wake microbench, Blackwell facet (72B, cap 40 min)"
