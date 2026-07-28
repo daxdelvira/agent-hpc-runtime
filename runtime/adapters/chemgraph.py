@@ -434,7 +434,17 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                 # before the first advanced task).  This sync eviction+boot is
                 # the exposed cost the pre-boot path avoids.
                 running_set = self._running_model_set()
-                if worker_model not in running_set:
+                # A pre-boot may be IN FLIGHT but not yet visible in the
+                # running set (its executor thread is still draining the old
+                # occupant's VRAM — with the ~0 s planner->worker transition
+                # this is the common case, not the exception).  Booting again
+                # here races two engines onto the same GPUs/port and kills
+                # both (observed 2026-07-28, pool smoke t01-t03: two :8001
+                # APIServers in the same second, rc=1).  If a pre-boot is
+                # pending, fall through to wait_until_ready — its fail-fast
+                # still catches a genuinely crashed pre-boot.
+                preboot_in_flight = worker_model in self._pool_pending_boot
+                if worker_model not in running_set and not preboot_in_flight:
                     on_demand_swap = True
                     if cache_known and self._scheduler is not None:
                         self._scheduler.on_resource_consumed(
