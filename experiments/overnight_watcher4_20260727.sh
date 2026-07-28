@@ -11,9 +11,12 @@ WLOG=$REPO/logs/overnight_watcher4_20260727.log
 mkdir -p "$REPO/logs"
 
 # ---- assignments -----------------------------------------------------------
-L40S_JOBS="11518011 11518012 11518013 11518014 11518015"
+L40S_JOBS="11523454 11518011 11518012 11518013 11518014 11518015"
 L40S_SCRIPT="run_eval_l40s_pool_20260720.sh"
 L40S_GRES="gpu:6";  L40S_TYPED="gres/gpu:l40s=6"
+BW_JOBS="11518016 11518017 11518018 11518019 11518020"
+BW_SCRIPT="run_eval_blackwell_20260728.sh"
+BW_GRES="gpu:4";    BW_TYPED="Partition=gpu-rtxpro"
 # ---------------------------------------------------------------------------
 
 log(){ echo "[$(date +'%F %T')] $*" >> "$WLOG"; }
@@ -52,7 +55,7 @@ launch(){ # $1=jobid $2=script $3=gres
   sleep 45   # let the step register before the next has_step poll
 }
 
-log "watcher4 started: L40S=[$L40S_JOBS -> $L40S_SCRIPT]"
+log "watcher4 started: L40S=[$L40S_JOBS -> $L40S_SCRIPT] BW=[$BW_JOBS -> $BW_SCRIPT]"
 
 while true; do
   primary_running=0
@@ -67,8 +70,20 @@ while true; do
     fi
   done
 
+  bw_running=0
+  for j in $BW_JOBS; do
+    [ "$(job_state "$j")" = "RUNNING" ] && has_step "$j" && bw_running=1
+  done
+  for j in $BW_JOBS; do
+    usable "$j" "$BW_TYPED" || continue
+    has_step "$j" && continue
+    if [ "$bw_running" = 0 ]; then
+      launch "$j" "$BW_SCRIPT" "$BW_GRES"; bw_running=1
+    fi
+  done
+
   alive=0
-  for j in $L40S_JOBS; do
+  for j in $L40S_JOBS $BW_JOBS; do
     [ -n "$(job_state "$j")" ] && alive=1 && break
   done
   if [ "$alive" = 0 ]; then
