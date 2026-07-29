@@ -11,13 +11,24 @@ Output: figures/lifecycle/
           per-trial prefetch lifecycle Gantt: one lane per prefetch object,
           bar = transfer (t_started..t_completed) colored by outcome, red
           hatched overlay = exposed stall on the critical path, ▼ = first
-          need, ○ = prediction time.
+          need, ○ = prediction time, ▶/| = prefetch start/done ticks.
+          Long-running tool calls (from the trial's trace.jsonl, when
+          present) are shown as a gray "tool phase" lane so containment of
+          prefetches inside tool windows is visible.  direct_prefetch rows
+          (aggregator proactive boot) have a measured t_started but no
+          instrumented t_completed: rendered as a fading open-ended span —
+          never an invented end time.
         size_vs_window_<workload>.{pdf,png}
           object size vs prediction window on log-log axes with the
           pure-I/O and engine-adjusted hideability frontiers.
         stall_taxonomy.{pdf,png}
           stacked "where does the time go" bars (stall seconds per trial by
-          stall_class) for the headline workloads.
+          stall_class) for the headline workloads, plus (a) a dashed
+          outline bracket above each full_system stack showing the stall
+          prevented vs baseline (baseline total − full_system total, when
+          positive) with a mechanism note under the panel title, and (b) a
+          dashed per-panel "projected floor" line = mean distinct exposed
+          vLLM gates per full_system trial × 15 s engine wake.
 
 Style: matplotlib only (no seaborn), white background, serif fonts sized
 for ACM column widths.  Colorblind-safe palette (validated categorical
@@ -99,6 +110,16 @@ STALL_STYLE = {k: (lab, col, hat) for k, lab, col, hat in
 STAGING_GBPS = 2.78          # measured staging bandwidth, GB/s
 ENGINE_SPINUP_S = 120.0      # vLLM engine bring-up floor, seconds
 EPS_WINDOW = 0.012           # log-scale bucket for null/nonpositive windows
+ENGINE_WAKE_S = 15.0         # projected wake latency of a slept engine, s
+PHASE_MIN_S = 30.0           # tool spans at least this long become a phase lane
+PHASE_MAX = 6                # at most this many phase bars (longest kept)
+
+# Mechanism behind the prevented-stall bracket, per workload (paper captions).
+PREVENTED_MECHANISM = {
+    "chemgraph_ensemble": "aggregator boot hidden in MACE window",
+    "chemgraph_screen":   "first-boot prefetch + cache staging",
+    "atomagents_exp3":    "proactive 72B reload in LAMMPS windows",
+}
 
 TYPE_ABBREV = {
     "model_cache": "cache",
@@ -196,6 +217,48 @@ def lane_label(r: dict) -> str:
     return f"{name} [{TYPE_ABBREV.get(r['resource_type'], r['resource_type'])}]"
 
 
+def load_tool_spans(eval_root: Path, workload: str, config: str,
+                    trial_dir: str) -> list[tuple[str, float, float]]:
+    """(tool, t_start, t_end) spans from the trial's trace.jsonl, seconds
+    relative to the trace's first event (same base as the lifecycle CSV).
+    Empty list when the trace is missing/unreadable."""
+    import json
+    path = eval_root / "runs" / workload / config / trial_dir / "trace.jsonl"
+    if not path.exists():
+        return []
+    events = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+    except OSError:
+        return []
+    epochs = [e.get("epoch_time") for e in events
+              if isinstance(e.get("epoch_time"), (int, float))]
+    if not epochs:
+        return []
+    t0 = min(epochs)
+    pending: dict[str, list[float]] = defaultdict(list)
+    spans: list[tuple[str, float, float]] = []
+    for e in events:
+        et, pl = e.get("event_type"), e.get("payload") or {}
+        t = e.get("epoch_time")
+        if not isinstance(t, (int, float)):
+            continue
+        t -= t0
+        tool = pl.get("tool")
+        if et == "tool_call" and tool:
+            pending[tool].append(t)
+        elif et == "tool_end" and tool and pending[tool]:
+            spans.append((tool, pending[tool].pop(0), t))
+    return spans
+
+
 # ---------------------------------------------------------------------------
 # Trial selection
 # ---------------------------------------------------------------------------
@@ -250,7 +313,8 @@ def gantt_lanes(trial_rows: list[dict]) -> list[dict]:
     return lanes
 
 
-def plot_gantt(trial_rows: list[dict], fig_dir: Path) -> None:
+def plot_gantt(trial_rows: list[dict], fig_dir: Path,
+               eval_root: Path | None = None) -> None:
     r0 = trial_rows[0]
     workload, config, trial_dir = r0["workload"], r0["config"], r0["trial_dir"]
     lanes = gantt_lanes(trial_rows)
@@ -258,10 +322,21 @@ def plot_gantt(trial_rows: list[dict], fig_dir: Path) -> None:
         print(f"  [skip] no drawable lanes for {workload}/{config}/{trial_dir}")
         return
 
+    # long-running tool calls → one "tool phase" context lane on top
+    phases: list[tuple[str, float, float]] = []
+    if eval_root is not None:
+        phases = [s for s in load_tool_spans(eval_root, workload, config,
+                                             trial_dir)
+                  if s[2] - s[1] >= PHASE_MIN_S]
+        phases = sorted(phases, key=lambda s: s[1] - s[2])[:PHASE_MAX]
+        phases.sort(key=lambda s: s[1])
+
     n = len(lanes)
-    fig_h = max(1.6, 0.42 * n + 1.15)
+    n_rows = n + (1 if phases else 0)
+    fig_h = max(1.7, 0.48 * n_rows + 1.15)
     fig, ax = plt.subplots(figsize=(DOUBLE_COL_W, fig_h))
     half = 0.30
+    micro = n <= 5        # tiny start/done text labels on sparse charts
 
     xs = [0.0]
     # pre-scan the horizontal extent so bar annotations can adapt to it
@@ -273,8 +348,11 @@ def plot_gantt(trial_rows: list[dict], fig_dir: Path) -> None:
         t_need, expo = fnum(r["t_first_needed"]), fnum(r["exposure_s"], 0.0)
         if t_need is not None and expo:
             xs.append(t_need + expo)
+    for _, p0, p1 in phases:
+        xs += [p0, p1]
     span = max(xs) - min(xs) + 1e-9
     seen_outcomes, any_expo, any_nopred, any_direct = set(), False, False, False
+    any_ticks = False
     ylabels: list[str] = []
 
     for i, r in enumerate(lanes):
@@ -303,14 +381,49 @@ def plot_gantt(trial_rows: list[dict], fig_dir: Path) -> None:
                                 color="white", zorder=6)
                 else:   # bar too narrow for an inside label
                     ylab = f"{ylab}\n{fmt_bytes(b)}"
+            # explicit prefetch start / done ticks below the bar
+            ax.plot(t_start, y - half - 0.14, marker=">", ms=4,
+                    color="#222222", zorder=6)
+            ax.plot(t_done, y - half - 0.14, marker="|", ms=5.5, mew=1.2,
+                    color="#222222", zorder=6)
+            any_ticks = True
+            if micro and (t_done - t_start) >= 0.04 * span:
+                ax.annotate("start", (t_start + 0.006 * span, y - half - 0.14),
+                            ha="left", va="center", fontsize=5.5,
+                            color="#444444")
+                ax.annotate("done", (t_done + 0.006 * span, y - half - 0.14),
+                            ha="left", va="center", fontsize=5.5,
+                            color="#444444")
         elif outcome in NO_BAR_OUTCOMES and t_need is not None:
             any_nopred = True
         elif outcome == "direct_prefetch" and t_need is not None:
+            if t_start is not None:
+                # measured start; end genuinely not instrumented → draw an
+                # open-ended fading span toward the need, never an end time
+                nseg = 48
+                for k in range(nseg):
+                    x0 = t_start + (t_need - t_start) * k / nseg
+                    ax.add_patch(Rectangle(
+                        (x0, y - half), (t_need - t_start) / nseg, 2 * half,
+                        facecolor=PAL["green"], edgecolor="none",
+                        alpha=0.38 * (1 - k / nseg) + 0.02, zorder=3))
+                ax.plot(t_start, y, marker=">", ms=5, color=PAL["green"],
+                        zorder=6)
+                ax.annotate(f"prefetch start {t_start:.0f} s",
+                            (t_start, y + half + 0.05), ha="left",
+                            va="bottom", fontsize=6, color=PAL["green"])
+                ax.annotate("boot completes inside window (end not "
+                            f"instrumented); gate wait {expo:.2f} s",
+                            ((t_start + t_need) / 2, y - half - 0.10),
+                            ha="center", va="top", fontsize=6,
+                            color=PAL["green"])
+            else:
+                ax.annotate(f"gate wait {expo:.2f} s",
+                            (t_need, y - half - 0.05),
+                            ha="right", va="top", fontsize=6,
+                            color=PAL["green"])
             ax.plot(t_need, y, marker="D", ms=5, mfc="none",
                     mec=PAL["green"], mew=1.2, zorder=6)
-            ax.annotate(f"gate wait {expo:.2f} s", (t_need, y - half - 0.05),
-                        ha="right", va="top", fontsize=6,
-                        color=PAL["green"])
             any_direct = True
 
         # exposed stall overlay (critical-path stall from first need)
@@ -326,9 +439,9 @@ def plot_gantt(trial_rows: list[dict], fig_dir: Path) -> None:
                             ha="right", va="bottom", fontsize=6,
                             color=PAL["red"])
 
-        # first-need marker
+        # first-need marker (kept clear of the below-bar tick/label row)
         if t_need is not None:
-            ax.plot([t_need, t_need], [y - half - 0.06, y + half + 0.06],
+            ax.plot([t_need, t_need], [y - half, y + half + 0.06],
                     color="#222222", linewidth=1.0, zorder=5)
             ax.plot(t_need, y + half + 0.13, marker="v", ms=4.5,
                     color="#222222", zorder=5)
@@ -342,14 +455,30 @@ def plot_gantt(trial_rows: list[dict], fig_dir: Path) -> None:
             w = fnum(r["window_s"])
             if w is not None and (r["resource_type"] == "vllm_model"
                                   or (b and b >= 5e9)):
-                ax.annotate(f"window {w:g} s", (t_pred, y - half - 0.05),
+                ax.annotate(f"window {w:g} s",
+                            (t_pred + 0.010 * span, y - half - 0.28),
                             ha="left", va="top", fontsize=6,
                             color="#444444")
         ylabels.append(ylab)
 
-    ax.set_yticks(range(n))
-    ax.set_yticklabels(list(reversed(ylabels)), fontsize=7)
-    ax.set_ylim(-0.75, n - 1 + 0.75)
+    # tool-phase context lane (top): shows the windows prefetches hide in
+    if phases:
+        for tool, p0, p1 in phases:
+            ax.barh(n, p1 - p0, left=p0, height=0.44, color="#eceae4",
+                    edgecolor="#aaaaaa", linewidth=0.7, zorder=2)
+            if (p1 - p0) >= 0.10 * span:
+                ax.annotate(f"{tool}  ({p1 - p0:.0f} s)",
+                            ((p0 + p1) / 2, n), ha="center", va="center",
+                            fontsize=5.8, color="#555555", zorder=3)
+            else:
+                ax.annotate(tool, ((p0 + p1) / 2, n + 0.30), ha="center",
+                            va="bottom", fontsize=5.5, color="#777777",
+                            rotation=0, zorder=3)
+
+    ax.set_yticks(range(n_rows))
+    ax.set_yticklabels(list(reversed(ylabels))
+                       + (["tool phase"] if phases else []), fontsize=7)
+    ax.set_ylim(-0.75, n_rows - 1 + 0.75)
     x_lo, x_hi = min(xs), max(xs)
     pad = 0.03 * (x_hi - x_lo + 1)
     ax.set_xlim(min(x_lo - pad, -pad), x_hi + pad)
@@ -372,13 +501,19 @@ def plot_gantt(trial_rows: list[dict], fig_dir: Path) -> None:
                               linewidth=1.0, label="First need"))
     handles.append(Line2D([], [], color="none", marker="o", ms=3.5,
                           mfc="white", mec="#222222", label="Prediction"))
+    if any_ticks:
+        handles.append(Line2D([], [], color="none", marker=">", ms=4,
+                              mfc="#222222", mec="#222222",
+                              label="Prefetch start"))
+        handles.append(Line2D([], [], color="none", marker="|", ms=5.5,
+                              mec="#222222", mew=1.2, label="Prefetch done"))
     if any_direct:
         handles.append(Line2D([], [], color="none", marker="D", ms=5,
                               mfc="none", mec=PAL["green"],
-                              label="Proactive start (hidden)"))
+                              label="Proactive start (end n/a)"))
     ax.legend(handles=handles, loc="upper center",
               bbox_to_anchor=(0.5, -0.32 / fig_h * 1.6 - 0.10),
-              ncol=min(len(handles), 6), frameon=False,
+              ncol=min(len(handles), 5), frameon=False,
               handlelength=1.4, columnspacing=1.0)
 
     safe = trial_dir.replace("/", "_")
@@ -466,7 +601,35 @@ def merge_class(sc: str) -> str:
     return "policy_skip" if sc.startswith("policy_skip") else sc
 
 
-def plot_stall_taxonomy(tax_rows: list[dict], fig_dir: Path) -> None:
+def mean_exposed_vllm_gates(life_rows: list[dict], workload: str,
+                            config: str = "full_system") -> float:
+    """Mean distinct exposed vLLM gates per trial: rows with
+    resource_type=vllm_model and exposure_s>0, deduped by (run_id,
+    gate_group); rows without a gate_group count individually."""
+    gate_sets: dict[str, set] = defaultdict(set)
+    singles: dict[str, int] = defaultdict(int)
+    run_ids = set()
+    for r in life_rows:
+        if r["workload"] != workload or r["config"] != config:
+            continue
+        run_ids.add(r["run_id"])
+        if r["resource_type"] != "vllm_model":
+            continue
+        if (fnum(r["exposure_s"], 0.0) or 0.0) <= 0:
+            continue
+        g = r.get("gate_group") or ""
+        if g:
+            gate_sets[r["run_id"]].add(g)
+        else:
+            singles[r["run_id"]] += 1
+    if not run_ids:
+        return 0.0
+    total = sum(len(v) for v in gate_sets.values()) + sum(singles.values())
+    return total / len(run_ids)
+
+
+def plot_stall_taxonomy(tax_rows: list[dict], life_rows: list[dict],
+                        fig_dir: Path) -> None:
     data: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
     for r in tax_rows:
         key = (r["workload"], r["config"])
@@ -475,12 +638,14 @@ def plot_stall_taxonomy(tax_rows: list[dict], fig_dir: Path) -> None:
         data[key][sc] = data[key].get(sc, 0.0) + v
 
     fig, axes = plt.subplots(1, len(TAXONOMY_WORKLOADS),
-                             figsize=(DOUBLE_COL_W, 2.25))
+                             figsize=(DOUBLE_COL_W, 2.5))
     used_classes: list[str] = []
+    any_bracket = any_floor = False
 
     for ax, wl in zip(axes, TAXONOMY_WORKLOADS):
         configs = [c for c in TAXONOMY_CONFIGS if (wl, c) in data]
         xpos = range(len(configs))
+        totals = {c: sum(data[(wl, c)].values()) for c in configs}
         for xi, cfg in zip(xpos, configs):
             bottom = 0.0
             for sc, lab, col, hat in STALL_CLASSES:
@@ -495,13 +660,46 @@ def plot_stall_taxonomy(tax_rows: list[dict], fig_dir: Path) -> None:
             ax.annotate(f"{bottom:.0f}", (xi, bottom), ha="center",
                         va="bottom", fontsize=6.5, color="#222222",
                         xytext=(0, 1.5), textcoords="offset points")
+
+            # prevented-vs-baseline bracket above the full_system stack
+            if cfg == "full_system" and "baseline" in configs:
+                prevented = totals["baseline"] - bottom
+                if prevented > 5.0:
+                    hw = 0.31
+                    top = totals["baseline"]
+                    ax.plot([xi - hw, xi - hw, xi + hw, xi + hw],
+                            [bottom, top, top, bottom],
+                            color=PAL["green"], linewidth=0.9,
+                            linestyle=(0, (3, 1.8)), zorder=4)
+                    ax.annotate(f"−{prevented:.0f} s", (xi, top),
+                                ha="center", va="bottom", fontsize=6,
+                                color=PAL["green"], xytext=(0, 1.5),
+                                textcoords="offset points")
+                    any_bracket = True
+                    mech = PREVENTED_MECHANISM.get(wl)
+                    if mech:
+                        ax.text(0.5, 1.005, mech, transform=ax.transAxes,
+                                ha="center", va="bottom", fontsize=5.4,
+                                style="italic", color=PAL["green"])
+                else:
+                    ax.annotate("≈0 prevented", (xi, bottom),
+                                ha="center", va="bottom", fontsize=5.6,
+                                color="#666666",
+                                xytext=(0, 8), textcoords="offset points")
+
+        # projected floor: exposed engine gates reduced to a ~15 s wake each
+        floor = mean_exposed_vllm_gates(life_rows, wl) * ENGINE_WAKE_S
+        if floor > 0:
+            ax.axhline(floor, color="#333333", linewidth=0.8,
+                       linestyle=(0, (4, 2)), zorder=2)
+            any_floor = True
+
         ax.set_xticks(list(xpos))
         ax.set_xticklabels([CONFIG_SHORT.get(c, c) for c in configs],
                            fontsize=6.5, rotation=20, ha="right")
         ax.set_xlim(-0.65, len(configs) - 0.35)
-        ax.set_ylim(0, max((sum(data[(wl, c)].values()) for c in configs),
-                           default=1.0) * 1.18)
-        ax.set_title(WORKLOAD_LABEL.get(wl, wl), fontsize=8)
+        ax.set_ylim(0, max(totals.values(), default=1.0) * 1.18)
+        ax.set_title(WORKLOAD_LABEL.get(wl, wl), fontsize=8, pad=10)
         ax.grid(axis="y", color="#e5e5e5", linewidth=0.5)
         ax.set_axisbelow(True)
         ax.tick_params(axis="x", length=0)
@@ -510,10 +708,19 @@ def plot_stall_taxonomy(tax_rows: list[dict], fig_dir: Path) -> None:
     handles = [Patch(facecolor=STALL_STYLE[sc][1], hatch=STALL_STYLE[sc][2],
                      edgecolor="white", label=STALL_STYLE[sc][0])
                for sc, _, _, _ in STALL_CLASSES if sc in used_classes]
-    fig.legend(handles=handles, loc="lower center", ncol=len(handles),
-               bbox_to_anchor=(0.5, -0.06), frameon=False, fontsize=6.5,
-               handlelength=1.3, columnspacing=0.9)
-    fig.subplots_adjust(wspace=0.32, bottom=0.30)
+    if any_bracket:
+        handles.append(Line2D([], [], color=PAL["green"], linewidth=0.9,
+                              linestyle=(0, (3, 1.8)),
+                              label="Prevented vs baseline (hidden by prefetch)"))
+    if any_floor:
+        handles.append(Line2D([], [], color="#333333", linewidth=0.8,
+                              linestyle=(0, (4, 2)),
+                              label="floor: engine activation → ~15 s "
+                                    "wake (projected)"))
+    fig.legend(handles=handles, loc="lower center", ncol=4,
+               bbox_to_anchor=(0.5, -0.10), frameon=False, fontsize=6.5,
+               handlelength=1.6, columnspacing=0.9)
+    fig.subplots_adjust(wspace=0.32, bottom=0.34)
     save_fig(fig, fig_dir, "stall_taxonomy")
 
 
@@ -548,7 +755,7 @@ def main() -> int:
             return 1
         print(f"Gantt for {len(trials)} matching trial(s):")
         for trows in trials.values():
-            plot_gantt(trows, args.fig_dir)
+            plot_gantt(trows, args.fig_dir, eval_root=args.eval_root)
         return 0
 
     print("Default Gantt figures:")
@@ -558,7 +765,7 @@ def main() -> int:
             print(f"  [skip] no trials for {wl}/{cfg}")
             continue
         _, trows = sel
-        plot_gantt(trows, args.fig_dir)
+        plot_gantt(trows, args.fig_dir, eval_root=args.eval_root)
 
     if args.all_defaults:
         return 0
@@ -568,7 +775,7 @@ def main() -> int:
         plot_size_vs_window(rows, wl, args.fig_dir)
 
     print("Stall taxonomy figure:")
-    plot_stall_taxonomy(read_csv(tax_csv), args.fig_dir)
+    plot_stall_taxonomy(read_csv(tax_csv), rows, args.fig_dir)
     return 0
 
 

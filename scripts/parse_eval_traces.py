@@ -109,6 +109,9 @@ def parse_trace(events: list[dict], consumer_of: dict[str, set] | None = None) -
     # A SEPARATE gate from the worker swap (different wall interval), so it is
     # never deduped against worker_swap_wait.
     agg_waits: list[dict] = []
+    # Adapter-fired (non-scheduler) aggregator prefetch thread start stamps —
+    # the only start-time record a direct prefetch leaves in the trace.
+    agg_prefetch_starts: list[dict] = []
     # --- MACE calculator loads (emitted in ALL modes incl. baseline) --------
     mace_loads: list[dict] = []
     # --- predictions (join by step via checkpoint_created) ------------------
@@ -156,6 +159,8 @@ def parse_trace(events: list[dict], consumer_of: dict[str, set] | None = None) -
             swap_waits.append({**p, "t": t, "step": step})
         elif et == "aggregator_swap_wait":
             agg_waits.append({**p, "t": t, "step": step})
+        elif et == "aggregator_prefetch_start":
+            agg_prefetch_starts.append({**p, "t": t, "step": step})
         elif et == "mace_load":
             mace_loads.append({**p, "t": t})
         elif et == "plan_extracted":
@@ -244,6 +249,7 @@ def parse_trace(events: list[dict], consumer_of: dict[str, set] | None = None) -
         "tool_exec_s": tool_exec_s,
         "swap_waits": swap_waits,
         "agg_waits": agg_waits,
+        "agg_prefetch_starts": agg_prefetch_starts,
         "mace_loads": mace_loads,
         "predictions": predictions,
         "step_checkpoint": step_checkpoint,

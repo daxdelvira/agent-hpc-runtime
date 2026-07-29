@@ -334,9 +334,19 @@ def trial_rows(base: dict, trace: dict, config: str, mode: str) -> list[dict]:
             continue
         # Option D aggregator (and any adapter-fired prefetch thread) never
         # goes through the scheduler, so no task exists to match — the gate's
-        # own prefetch_started flag is the ground truth for those.
+        # own prefetch_started flag is the ground truth for those.  Its start
+        # time is the nearest preceding aggregator_prefetch_start stamp; the
+        # completion instant is NOT instrumented (the thread ends silently),
+        # so t_completed stays null — plots must render an open-ended span.
         direct = gate["prefetch_scheduled"] and not gate["on_demand"]
+        t_direct_start = None
+        if direct and gate["kind"] == "agg_wait":
+            need_epoch = gate["t_exit"] - gate["wait_s"]
+            starts = [s["t"] for s in trace.get("agg_prefetch_starts", [])
+                      if s.get("t") and s["t"] <= need_epoch]
+            t_direct_start = max(starts) if starts else None
         rows.append({
+            "t_started": rel(t_direct_start),
             **base,
             "resource_name": gate["model"],
             "resource_type": "vllm_model",
