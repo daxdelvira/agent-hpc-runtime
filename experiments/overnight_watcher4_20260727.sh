@@ -14,8 +14,8 @@ mkdir -p "$REPO/logs"
 L40S_JOBS="11523454 11518011 11518012 11518013 11518014 11518015"
 L40S_SCRIPT="run_eval_l40s_pool_20260720.sh"
 L40S_GRES="gpu:6";  L40S_TYPED="gres/gpu:l40s=6"
-BW_JOBS="11518016 11518017 11518018 11518019 11518020"
-BW_SCRIPT="run_eval_blackwell_20260728.sh"
+BW_JOBS="11571891 11571892 11571893 11571894 11571895"
+BW_SCRIPT="run_eval_blackwell_sleepwake.sh"
 BW_GRES="gpu:4";    BW_TYPED="Partition=gpu-rtxpro"
 # ---------------------------------------------------------------------------
 
