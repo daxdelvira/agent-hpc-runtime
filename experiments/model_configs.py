@@ -234,6 +234,64 @@ MODELS_CHEMGRAPH_SWAP = {
             "--served-model-name", "Qwen/Qwen2.5-VL-32B-Instruct-Aggregator",
         ],
     },
+    # STANDARD specialist for the chemgraph_screen workload.  Deliberately on
+    # GPUs 0-3 (same pool as the 72B "advanced" specialist and the planner) so
+    # every advanced<->standard class alternation is a REAL swap on both the
+    # 4-GPU Blackwell and 6-GPU L40S facets — the per-transition load is the
+    # cost the plan-conditioned staging must hide.  tp=4 divides 64 heads.
+    # Same PORT and SERVED NAME as the 72B worker: the ChemGraph worker client
+    # is built once against one base_url/model-name, so specialists must be
+    # interchangeable behind it.  Which specialist answers is decided solely by
+    # which vLLM process the orchestrator has running (never both — same port,
+    # same GPUs).
+    "qwen_32b_standard": {
+        "python_bin": VLLM_PYTHON,
+        "model_name": _SNAPSHOT_32B_VL,
+        "port": 8001,
+        "gpus": [0, 1, 2, 3],
+        "tensor_parallel_size": 4,
+        "gpu_memory_utilization": 0.92,
+        # 16384 to match the 72B worker it stands in for: late-batch worker
+        # contexts (accumulated tool outputs) overflow 8192 (baseline t02,
+        # 2026-07-19).  tp=4 leaves ample KV room.
+        "max_model_len": 16384,
+        "load_timeout": 1800,
+        "extra_args": [
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "hermes",
+            "--dtype", "float16",
+            "--disable-custom-all-reduce",
+            "--enforce-eager",
+            "--served-model-name", "Qwen/Qwen2.5-72B-Instruct",
+        ],
+    },
+    # STANDARD specialist, DISJOINT-POOL variant (chemgraph_screen_pool /
+    # Option D).  Lives on GPUs 4-5 with its own port so it can boot
+    # CO-RESIDENT with the 72B advanced specialist (GPUs 0-3) — the pre-boot
+    # overlaps the other pool's serving window, hiding the vLLM spin-up that
+    # the shared-pool swap exposes.  L40S 6-GPU facet only (Blackwell nodes
+    # have 4 GPUs).  Same served name as the 72B worker; the client reaches
+    # whichever specialist is current through the SpecialistProxy.
+    # 32B-VL fp16 ≈ 64 GB over 2 × 45 GB × 0.92 ≈ 83 GB; tp=2 divides
+    # 64 query / 8 KV heads.
+    "qwen_32b_standard_pool": {
+        "python_bin": VLLM_PYTHON,
+        "model_name": _SNAPSHOT_32B_VL,
+        "port": 8005,
+        "gpus": [4, 5],
+        "tensor_parallel_size": 2,
+        "gpu_memory_utilization": 0.92,
+        "max_model_len": 16384,
+        "load_timeout": 1800,
+        "extra_args": [
+            "--enable-auto-tool-choice",
+            "--tool-call-parser", "hermes",
+            "--dtype", "float16",
+            "--disable-custom-all-reduce",
+            "--enforce-eager",
+            "--served-model-name", "Qwen/Qwen2.5-72B-Instruct",
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------

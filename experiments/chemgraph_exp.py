@@ -117,6 +117,35 @@ NOT invent file names. The only structure input is the directory path above, and
 run_mace_ensemble is the only calculation tool you have.
 """
 
+# Screen workload: heterogeneous molecule batch with per-molecule SPECIALIST
+# routing.  The planner tags every worker task with "[SPECIALIST: advanced]"
+# (complex organics — multi-ring, many heteroatoms, drug-like) or
+# "[SPECIALIST: standard]" (small/simple molecules).  The runtime reads those
+# tags from the extracted plan to decide which specialist model to stage next;
+# planner misjudgements on borderline molecules are genuine divergences.
+# {molecules} is filled from --molecules (default below).
+SCREEN_TASK_PROMPT = """\
+Screen the following molecules with the MACE-MP force field, one worker task
+per molecule, in the given order: {molecules}
+
+When you create the plan, tag EVERY worker task prompt with exactly one
+specialist marker based on the molecule's complexity:
+  [SPECIALIST: advanced]  — complex organics: multi-ring systems, drug-like
+                            molecules, or more than 12 heavy atoms.
+  [SPECIALIST: standard]  — small or simple molecules (12 heavy atoms or fewer).
+
+Each worker task must, for its molecule:
+1. Convert the molecule name to a SMILES string.
+2. Generate a 3D coordinate file from the SMILES.
+3. Run ASE geometry optimization with the mace_mp calculator (medium model),
+   fmax=0.005.
+4. Report the final optimized energy (in eV).
+"""
+
+SCREEN_DEFAULT_MOLECULES = (
+    "aspirin, water, caffeine, methane, ibuprofen, ammonia"
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -132,6 +161,8 @@ def _infer_condition(args: argparse.Namespace, mode, skip_types: list[str]) -> s
         parts.append("no_diverg_guard")
     if getattr(args, "naive_prefetch", False):
         parts.append("naive_prefetch")
+    if getattr(args, "sleep_wake", False):
+        parts.append("sleep_wake")
     for t in skip_types:
         parts.append(f"no_{t.replace('_', '')}")
     if getattr(args, "predictor", "") in ("plan_only", "transition_only", "oracle"):
@@ -179,7 +210,8 @@ def _megammap_settings(args) -> dict:
 
 def _build_executor(mode: RuntimeMode, mace_device: str, orchestrator=None,
                     model_paths=None, megammap: dict | None = None,
-                    megammap_window: str = "4g", megammap_tx: str = "seq"):
+                    megammap_window: str = "4g", megammap_tx: str = "seq",
+                    disjoint_pools: bool = False, sleep_wake: bool = False):
     """Return the appropriate PrefetchExecutor for the runtime mode."""
     if mode != RuntimeMode.REAL:
         return SimulatedPrefetchExecutor()
@@ -197,7 +229,11 @@ def _build_executor(mode: RuntimeMode, mace_device: str, orchestrator=None,
     if orchestrator is not None:
         try:
             from runtime.prefetch.model_prefetch import ModelPrefetchExecutor
-            executors["vllm_model"] = ModelPrefetchExecutor(orchestrator, probes=None)
+            executors["vllm_model"] = ModelPrefetchExecutor(
+                orchestrator, probes=None,
+                stop_wasted_models=disjoint_pools,
+                evict_conflicting=disjoint_pools,
+                sleep_wake=sleep_wake)
             print("[runtime] Real executor: ModelPrefetchExecutor for vllm_model")
         except Exception as exc:
             print(f"[runtime] WARNING: Could not build ModelPrefetchExecutor ({exc}).")
@@ -268,6 +304,16 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     else:
         os.environ.pop("RUNTIME_ENABLED", None)
 
+    # Toggleable calculator pin (screen workload defaults it ON via
+    # run_eval_q1_q4).  Applied in ChemGraph's ASEInputSchema validator —
+    # constrains EXECUTION only; the agent's decision-making is untouched and
+    # divergences from failed unpinned choices remain observable.
+    if getattr(args, "pin_calculator", ""):
+        os.environ["CHEMGRAPH_PIN_CALCULATOR"] = args.pin_calculator
+        print(f"[chemgraph] run_ase calculator pinned to {args.pin_calculator!r}")
+    else:
+        os.environ.pop("CHEMGRAPH_PIN_CALCULATOR", None)
+
     # ------------------------------------------------------------------
     # Import ChemGraph components (guarded)
     # ------------------------------------------------------------------
@@ -300,6 +346,7 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
                   "are mutually exclusive.")
             sys.exit(2)
         megammap = _megammap_settings(args)   # exits if the stack is missing
+    specialist_models: dict = {}
     if getattr(args, "swap_models", False):
         try:
             from atomagents.runtime.model_orchestrator import ModelOrchestrator
@@ -307,6 +354,18 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             orchestrator = ModelOrchestrator(MODELS_CHEMGRAPH_SWAP)
             vllm_worker_model = "qwen_72b_instruct"
             planner_model = "qwen_32b_vl"
+            # Screen workload: per-molecule specialist routing.  Marker ->
+            # orchestrator model key; the adapter swaps specialists per task.
+            # Disjoint pools (Option D): the standard specialist lives on its
+            # own GPU pool (4-5) + port, behind the SpecialistProxy — the next
+            # engine can boot while the current one serves.
+            if getattr(args, "screen", False):
+                specialist_models = {
+                    "advanced": "qwen_72b_instruct",
+                    "standard": ("qwen_32b_standard_pool"
+                                 if getattr(args, "disjoint_pools", False)
+                                 else "qwen_32b_standard"),
+                }
             # Option D: orchestrator key of the distinct co-resident aggregator
             # model.  Set only when --aggregator-model is requested; the adapter
             # start_model()s this key on the ensemble tool_start.  NOT pre-started
@@ -336,17 +395,48 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             # Option A: enable page-cache staging unless the ablation skips it.
             stage_worker_cache = not getattr(args, "no_cache_stage", False)
 
+            # Sleep/wake arm (--sleep-wake): every engine this run may launch
+            # boots with vLLM sleep mode enabled and the dev endpoints exposed
+            # (vLLM 0.17.x gates /sleep, /wake_up, /is_sleeping behind
+            # VLLM_SERVER_DEV_MODE=1).  Swaps then SLEEP the outgoing engine
+            # (level 1: weights offloaded to CPU RAM, VRAM freed) and WAKE the
+            # incoming one instead of kill + cold boot.
+            # RAM budget: level-1 sleep keeps both models' weights in CPU RAM
+            # simultaneously — 32B planner (~65 GB) + 72B worker (~145 GB) ≈
+            # 210 GB under the 256G hold cgroup.  If a node is RAM-constrained,
+            # switch the sleep calls to level=2 (weights discarded; wake
+            # re-reads the page cache) — see runtime/prefetch/sleep_wake.py.
+            if getattr(args, "sleep_wake", False):
+                sleep_keys = {planner_model, vllm_worker_model} | set(
+                    specialist_models.values())
+                for key in sorted(sleep_keys):
+                    mc = MODELS_CHEMGRAPH_SWAP.get(key)
+                    if not mc:
+                        continue
+                    extra = list(mc.get("extra_args") or [])
+                    if "--enable-sleep-mode" not in extra:
+                        extra.append("--enable-sleep-mode")
+                    mc["extra_args"] = extra
+                    env = dict(mc.get("extra_env") or {})
+                    env["VLLM_SERVER_DEV_MODE"] = "1"
+                    mc["extra_env"] = env
+                print(f"[cluster] Sleep/wake swaps enabled for {sorted(sleep_keys)} "
+                      f"(--enable-sleep-mode + VLLM_SERVER_DEV_MODE=1).")
+
             # Controlled cache state: evict the worker weights so every run starts
             # cold.  Otherwise a warm cache from the previous run makes both the
             # cold baseline and the staging benefit meaningless.
             if getattr(args, "evict_worker_cache", False):
                 try:
                     from runtime.prefetch.model_cache_prefetch import evict_model_cache
-                    snap = model_paths.get(vllm_worker_model, "")
-                    if snap:
-                        n, nbytes = evict_model_cache(snap)
-                        print(f"[cluster] Evicted worker cache: {n} shards, "
-                              f"{nbytes/1e9:.1f} GB dropped from page cache.")
+                    evict_keys = ([vllm_worker_model] if not specialist_models
+                                  else sorted(set(specialist_models.values())))
+                    for key in evict_keys:
+                        snap = model_paths.get(key, "")
+                        if snap:
+                            n, nbytes = evict_model_cache(snap)
+                            print(f"[cluster] Evicted {key} cache: {n} shards, "
+                                  f"{nbytes/1e9:.1f} GB dropped from page cache.")
                 except Exception as exc:
                     print(f"[cluster] WARNING: cache eviction failed: {exc}")
 
@@ -359,6 +449,22 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             orchestrator = None
             vllm_worker_model = ""
             vllm_aggregator_model = ""
+
+    # Disjoint-pool mode: single client endpoint -> per-specialist ports.
+    # The proxy is harness infrastructure and runs in EVERY arm (baseline
+    # included) — on-demand boots also land on per-pool ports.
+    proxy = None
+    if getattr(args, "disjoint_pools", False) and orchestrator is not None:
+        if not specialist_models:
+            print("[pool] ERROR: --disjoint-pools requires --screen.")
+            sys.exit(2)
+        from runtime.prefetch.specialist_proxy import SpecialistProxy
+        proxy_port = getattr(args, "pool_proxy_port", 8006)
+        proxy = SpecialistProxy(listen_port=proxy_port)
+        proxy.start()
+        args.base_url = f"http://localhost:{proxy_port}/v1"
+        print(f"[pool] Disjoint pools active: worker client -> proxy :{proxy_port}; "
+              f"specialists: { {m: MODELS_CHEMGRAPH_SWAP[k]['port'] for m, k in specialist_models.items()} }")
 
     cfg = RuntimeConfig(
         mode=mode,
@@ -379,6 +485,16 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         stage_worker_cache=stage_worker_cache,
         worker_model_path=model_paths.get(vllm_worker_model, ""),
         vllm_aggregator_model=vllm_aggregator_model,
+        sleep_wake_swaps=getattr(args, "sleep_wake", False),
+        specialist_models=specialist_models,
+        early_plan_conditioned_stage=getattr(args, "early_plan_stage", False),
+        model_paths=model_paths,
+        disjoint_pools=proxy is not None,
+        pool_blind_preboot=getattr(args, "blind_preboot", False),
+        # Pool-mode naive: --naive-prefetch means "keep every specialist
+        # resident" (time-optimal, resource-maximal upper bound).
+        pool_keep_all_resident=(proxy is not None
+                                and getattr(args, "naive_prefetch", False)),
     )
 
     # Share ChemGraph's WorkflowTracker file so runtime events and workflow
@@ -395,7 +511,9 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     executor = _build_executor(mode, args.mace_device, orchestrator=orchestrator,
                                model_paths=model_paths, megammap=megammap,
                                megammap_window=args.megammap_window,
-                               megammap_tx=args.megammap_tx)
+                               megammap_tx=args.megammap_tx,
+                               disjoint_pools=proxy is not None,
+                               sleep_wake=getattr(args, "sleep_wake", False))
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
 
@@ -434,6 +552,10 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             dataset=args.ensemble_dataset,
             limit_arg=f", limit={lim}" if lim else "",
         )
+    elif getattr(args, "screen", False) and not args.task_prompt:
+        task_prompt = SCREEN_TASK_PROMPT.format(
+            molecules=getattr(args, "molecules", "") or SCREEN_DEFAULT_MOLECULES,
+        )
     else:
         task_prompt = args.task_prompt or DEFAULT_TASK_PROMPT
     callback = None
@@ -447,6 +569,7 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
                 bus=bus,
                 task_description=task_prompt,
                 orchestrator=orchestrator,
+                specialist_proxy=proxy,
             )
             print("[runtime] RuntimeChemGraphCallback installed.")
         except Exception as exc:
@@ -459,6 +582,10 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
     model_name = args.model_name or os.environ.get("CHEMGRAPH_MODEL", "gpt-4o-mini")
     workflow_type = args.workflow_type
     cg_kwargs: dict = {"model_name": model_name, "workflow_type": workflow_type}
+    # Screen workload: 6 worker tasks x ~8 graph supersteps blows through
+    # LangGraph's default recursion_limit=50 (t01 died at molecule 6).
+    if getattr(args, "screen", False):
+        cg_kwargs["recursion_limit"] = 200
     if args.planner_model:
         cg_kwargs["planner_model_name"] = args.planner_model
         print(f"[chemgraph] Planner model: {args.planner_model!r}  "
@@ -569,14 +696,15 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             except Exception:
                 pass
         bus.close()
-        # Swap mode: stop any running model so the next run starts from a clean state.
+        if proxy is not None:
+            proxy.stop()
+        # Swap mode: stop ALL running models so the next run starts from a
+        # clean state (disjoint pools can have two engines resident).
         if orchestrator is not None:
-            running = orchestrator.get_running_model()
-            if running:
-                try:
-                    orchestrator.stop_model(running)
-                except Exception as _e:
-                    print(f"[cluster] Warning: could not stop {running}: {_e}")
+            try:
+                orchestrator.shutdown()
+            except Exception as _e:
+                print(f"[cluster] Warning: orchestrator shutdown failed: {_e}")
 
     # ------------------------------------------------------------------
     # Post-run analysis
@@ -629,6 +757,10 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
                                         "page_cache" if stage_worker_cache else "none"),
                 "megammap_tx": args.megammap_tx if megammap else None,
                 "megammap_window": args.megammap_window if megammap else None,
+                # Key added only in the sleep_wake arm so pre-existing
+                # configs' summary JSON stays byte-identical.
+                **({"sleep_wake_swaps": True}
+                   if getattr(args, "sleep_wake", False) else {}),
             },
             "total_benefit_s": overlap.get("total_benefit_s", 0.0),
             "total_waste_s": overlap.get("total_waste_s", 0.0),
@@ -834,6 +966,59 @@ def main() -> None:
              "worker weights during planning (cold swap on the critical path)",
     )
     parser.add_argument(
+        "--screen",
+        action="store_true",
+        help="Screen workload: heterogeneous molecule batch with per-molecule "
+             "specialist routing (advanced=72B, standard=32B; requires "
+             "--swap-models --workflow-type multi_agent)",
+    )
+    parser.add_argument(
+        "--molecules",
+        default="",
+        help="Screen workload: comma-separated molecule list (default: "
+             "aspirin, water, caffeine, methane, ibuprofen, ammonia)",
+    )
+    parser.add_argument(
+        "--early-plan-stage",
+        action="store_true",
+        dest="early_plan_stage",
+        help="Screen workload: stage the page cache at plan_extracted time, "
+             "choosing WHICH specialist from the plan (plan-conditioned early "
+             "trigger). Off = legacy blind staging at first chain start.",
+    )
+    parser.add_argument(
+        "--disjoint-pools",
+        action="store_true",
+        dest="disjoint_pools",
+        help="Screen v2 (Option D): specialists on DISJOINT GPU pools (72B on "
+             "GPUs 0-3, 32B on GPUs 4-5, own ports, SpecialistProxy in front) "
+             "so the next task's engine boots while the current one serves — "
+             "hides vLLM spin-up.  Requires --screen and a 6-GPU node (L40S).",
+    )
+    parser.add_argument(
+        "--pool-proxy-port",
+        type=int,
+        default=8006,
+        dest="pool_proxy_port",
+        help="Listen port of the SpecialistProxy (worker client endpoint) in "
+             "--disjoint-pools mode.",
+    )
+    parser.add_argument(
+        "--blind-preboot",
+        action="store_true",
+        dest="blind_preboot",
+        help="Pool trigger ablation: pre-boot the OTHER specialist at every "
+             "task start regardless of the plan (blind alternation heuristic).",
+    )
+    parser.add_argument(
+        "--pin-calculator",
+        default="",
+        dest="pin_calculator",
+        help="Pin run_ase to one calculator family (e.g. mace_mp) via "
+             "CHEMGRAPH_PIN_CALCULATOR; empty = agent free choice (may pick "
+             "TBLite, which fails ~90%% of the time).",
+    )
+    parser.add_argument(
         "--megammap-stage",
         action="store_true",
         dest="megammap_stage",
@@ -863,6 +1048,18 @@ def main() -> None:
         dest="evict_worker_cache",
         help="Swap mode: posix_fadvise(DONTNEED) the worker weight shards before "
              "the run so every run starts from a cold page cache (fair comparison)",
+    )
+    parser.add_argument(
+        "--sleep-wake",
+        action="store_true",
+        dest="sleep_wake",
+        help="Swap-mechanism arm: boot each vLLM engine once with "
+             "--enable-sleep-mode (+ VLLM_SERVER_DEV_MODE=1 for the dev "
+             "endpoints); swaps sleep the outgoing engine (weights -> CPU RAM, "
+             "VRAM freed) and wake the incoming one instead of kill + cold "
+             "boot. RAM: planner+worker weights ≈ 210 GB in CPU RAM under the "
+             "256G hold cgroup; see runtime/prefetch/sleep_wake.py for the "
+             "level-2 fallback when RAM-constrained.",
     )
 
     args = parser.parse_args()
