@@ -139,6 +139,10 @@ CHEMGRAPH_SWAP_CONFIGS: dict[str, dict] = {
     },
     "sleep_wake": {
         "mode": "real", "predictor": "learned", "flags": ["--sleep-wake"],
+        # Behavior-changing arm (different vLLM launch args + swap mechanism):
+        # opt-in only — excluded from the implicit "all configs" set so
+        # campaigns run without --configs never pick it up by accident.
+        "explicit_only": True,
         "desc": "full system with vLLM sleep-mode swaps: engines boot once "
                 "(--enable-sleep-mode); swaps sleep the planner (weights -> "
                 "CPU RAM, VRAM freed) and wake the worker (H2D copy) instead "
@@ -857,8 +861,12 @@ def main() -> None:
         print(f"ERROR: workload '{args.workload}' is not runnable: {wl['not_runnable']}")
         sys.exit(2)
 
+    # Default (no --configs): every config EXCEPT explicit_only ones —
+    # behavior-changing arms (e.g. sleep_wake: different vLLM launch args and
+    # swap mechanism) must be opted into by name, never picked up implicitly.
     config_names = ([c.strip() for c in args.configs.split(",") if c.strip()]
-                    or list(wl["configs"].keys()))
+                    or [c for c, spec in wl["configs"].items()
+                        if not spec.get("explicit_only")])
     unknown = [c for c in config_names if c not in wl["configs"]]
     if unknown:
         print(f"ERROR: unknown configs for {args.workload}: {unknown}\n"
