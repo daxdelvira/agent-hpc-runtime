@@ -161,6 +161,8 @@ def _infer_condition(args: argparse.Namespace, mode, skip_types: list[str]) -> s
         parts.append("no_diverg_guard")
     if getattr(args, "naive_prefetch", False):
         parts.append("naive_prefetch")
+    if getattr(args, "sleep_wake", False):
+        parts.append("sleep_wake")
     for t in skip_types:
         parts.append(f"no_{t.replace('_', '')}")
     if getattr(args, "predictor", "") in ("plan_only", "transition_only", "oracle"):
@@ -209,7 +211,7 @@ def _megammap_settings(args) -> dict:
 def _build_executor(mode: RuntimeMode, mace_device: str, orchestrator=None,
                     model_paths=None, megammap: dict | None = None,
                     megammap_window: str = "4g", megammap_tx: str = "seq",
-                    disjoint_pools: bool = False):
+                    disjoint_pools: bool = False, sleep_wake: bool = False):
     """Return the appropriate PrefetchExecutor for the runtime mode."""
     if mode != RuntimeMode.REAL:
         return SimulatedPrefetchExecutor()
@@ -230,7 +232,8 @@ def _build_executor(mode: RuntimeMode, mace_device: str, orchestrator=None,
             executors["vllm_model"] = ModelPrefetchExecutor(
                 orchestrator, probes=None,
                 stop_wasted_models=disjoint_pools,
-                evict_conflicting=disjoint_pools)
+                evict_conflicting=disjoint_pools,
+                sleep_wake=sleep_wake)
             print("[runtime] Real executor: ModelPrefetchExecutor for vllm_model")
         except Exception as exc:
             print(f"[runtime] WARNING: Could not build ModelPrefetchExecutor ({exc}).")
@@ -392,6 +395,34 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
             # Option A: enable page-cache staging unless the ablation skips it.
             stage_worker_cache = not getattr(args, "no_cache_stage", False)
 
+            # Sleep/wake arm (--sleep-wake): every engine this run may launch
+            # boots with vLLM sleep mode enabled and the dev endpoints exposed
+            # (vLLM 0.17.x gates /sleep, /wake_up, /is_sleeping behind
+            # VLLM_SERVER_DEV_MODE=1).  Swaps then SLEEP the outgoing engine
+            # (level 1: weights offloaded to CPU RAM, VRAM freed) and WAKE the
+            # incoming one instead of kill + cold boot.
+            # RAM budget: level-1 sleep keeps both models' weights in CPU RAM
+            # simultaneously — 32B planner (~65 GB) + 72B worker (~145 GB) ≈
+            # 210 GB under the 256G hold cgroup.  If a node is RAM-constrained,
+            # switch the sleep calls to level=2 (weights discarded; wake
+            # re-reads the page cache) — see runtime/prefetch/sleep_wake.py.
+            if getattr(args, "sleep_wake", False):
+                sleep_keys = {planner_model, vllm_worker_model} | set(
+                    specialist_models.values())
+                for key in sorted(sleep_keys):
+                    mc = MODELS_CHEMGRAPH_SWAP.get(key)
+                    if not mc:
+                        continue
+                    extra = list(mc.get("extra_args") or [])
+                    if "--enable-sleep-mode" not in extra:
+                        extra.append("--enable-sleep-mode")
+                    mc["extra_args"] = extra
+                    env = dict(mc.get("extra_env") or {})
+                    env["VLLM_SERVER_DEV_MODE"] = "1"
+                    mc["extra_env"] = env
+                print(f"[cluster] Sleep/wake swaps enabled for {sorted(sleep_keys)} "
+                      f"(--enable-sleep-mode + VLLM_SERVER_DEV_MODE=1).")
+
             # Controlled cache state: evict the worker weights so every run starts
             # cold.  Otherwise a warm cache from the previous run makes both the
             # cold baseline and the staging benefit meaningless.
@@ -454,6 +485,7 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
         stage_worker_cache=stage_worker_cache,
         worker_model_path=model_paths.get(vllm_worker_model, ""),
         vllm_aggregator_model=vllm_aggregator_model,
+        sleep_wake_swaps=getattr(args, "sleep_wake", False),
         specialist_models=specialist_models,
         early_plan_conditioned_stage=getattr(args, "early_plan_stage", False),
         model_paths=model_paths,
@@ -480,7 +512,8 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
                                model_paths=model_paths, megammap=megammap,
                                megammap_window=args.megammap_window,
                                megammap_tx=args.megammap_tx,
-                               disjoint_pools=proxy is not None)
+                               disjoint_pools=proxy is not None,
+                               sleep_wake=getattr(args, "sleep_wake", False))
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
 
@@ -724,6 +757,10 @@ def run_chemgraph_exp(args: argparse.Namespace) -> None:
                                         "page_cache" if stage_worker_cache else "none"),
                 "megammap_tx": args.megammap_tx if megammap else None,
                 "megammap_window": args.megammap_window if megammap else None,
+                # Key added only in the sleep_wake arm so pre-existing
+                # configs' summary JSON stays byte-identical.
+                **({"sleep_wake_swaps": True}
+                   if getattr(args, "sleep_wake", False) else {}),
             },
             "total_benefit_s": overlap.get("total_benefit_s", 0.0),
             "total_waste_s": overlap.get("total_waste_s", 0.0),
@@ -1011,6 +1048,18 @@ def main() -> None:
         dest="evict_worker_cache",
         help="Swap mode: posix_fadvise(DONTNEED) the worker weight shards before "
              "the run so every run starts from a cold page cache (fair comparison)",
+    )
+    parser.add_argument(
+        "--sleep-wake",
+        action="store_true",
+        dest="sleep_wake",
+        help="Swap-mechanism arm: boot each vLLM engine once with "
+             "--enable-sleep-mode (+ VLLM_SERVER_DEV_MODE=1 for the dev "
+             "endpoints); swaps sleep the outgoing engine (weights -> CPU RAM, "
+             "VRAM freed) and wake the incoming one instead of kill + cold "
+             "boot. RAM: planner+worker weights ≈ 210 GB in CPU RAM under the "
+             "256G hold cgroup; see runtime/prefetch/sleep_wake.py for the "
+             "level-2 fallback when RAM-constrained.",
     )
 
     args = parser.parse_args()

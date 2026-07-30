@@ -75,6 +75,18 @@ class RuntimeConfig:
     # carries byte-level speculation-cost data.
     worker_model_path: str = ""
 
+    # Sleep/wake swap arm (chemgraph_swap "sleep_wake" config): engines are
+    # booted once with --enable-sleep-mode (+ VLLM_SERVER_DEV_MODE=1, which
+    # vLLM 0.17.x requires for the /sleep, /wake_up, /is_sleeping endpoints).
+    # On a swap the outgoing model is SLEPT (level 1: weights offloaded to CPU
+    # RAM, VRAM freed) instead of killed, and the incoming model is WOKEN
+    # (H2D copy, ~6-15 s) instead of cold-booted (~185 s no-window stall).
+    # RAM: 32B planner (~65 GB) + 72B worker (~145 GB) ≈ 210 GB of CPU RAM
+    # under the 256G hold cgroup; use sleep level 2 if RAM-constrained (see
+    # runtime/prefetch/sleep_wake.py).  Off (default) = legacy stop/start
+    # swaps — byte-identical to all pre-existing configs.
+    sleep_wake_swaps: bool = False
+
     # Option D: if non-empty, the adapter starts this (distinct, co-resident)
     # aggregator model on the ensemble tool's tool_start — during the long
     # GPU-idle MACE compute window — so it is hot when control reaches

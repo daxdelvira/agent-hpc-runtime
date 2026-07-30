@@ -422,6 +422,7 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                                 [wrong_model], reason="specialist_divergence")
             t_wait0 = time.perf_counter()
             on_demand_swap = False
+            swap_mechanism = ""
             import hashlib as _hashlib
             cache_rid = "cache_" + _hashlib.md5(worker_model.encode()).hexdigest()[:12]
             cache_known = (self._cache_resource_id == cache_rid
@@ -460,6 +461,39 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                         if target_gpus & other_gpus:
                             self._orchestrator.stop_model(other)
                     self._orchestrator.start_model(worker_model)
+            elif self._config.sleep_wake_swaps:
+                # Sleep/wake swaps (RuntimeConfig.sleep_wake_swaps): the worker
+                # engine may already EXIST but be asleep (weights parked in CPU
+                # RAM by a previous sleep).  Never stop the planner — sleep it
+                # first (frees VRAM), THEN wake or (first use only) cold-boot
+                # the worker.  Strict sleep-then-wake ordering: planner +
+                # worker weights do not fit in VRAM together.
+                # get_running_model() is not meaningful here (a slept process
+                # is still "running"), so decide from the worker's own
+                # process + sleep state.
+                from runtime.prefetch.sleep_wake import (
+                    has_live_process, last_mechanism, swap_to_model)
+                worker_alive = has_live_process(self._orchestrator, worker_model)
+                if (not worker_alive) or self._orchestrator.is_sleeping(worker_model):
+                    on_demand_swap = True
+                    # Only a cold boot reads weights from storage — the staged
+                    # page cache is consumed by the first boot, not by a wake
+                    # (which copies H2D from CPU RAM).
+                    if not worker_alive and cache_known and self._scheduler is not None:
+                        self._scheduler.on_resource_consumed(
+                            cache_rid,
+                            consumed_at=time.perf_counter(),
+                            current_step=self._step,
+                        )
+                # Blocks until the worker actually serves (sleep others ->
+                # wake/boot -> serving verified); wait_s below spans the whole
+                # sleep+wake sequence because t_wait0 was taken above.
+                swap_info = swap_to_model(self._orchestrator, worker_model)
+                swap_mechanism = swap_info["mechanism"]
+                if swap_mechanism == "already_serving":
+                    # The prefetch thread owned the transition — report the
+                    # mechanism it used.
+                    swap_mechanism = last_mechanism(self._orchestrator, worker_model)
             else:
                 running = self._orchestrator.get_running_model()
                 if running != worker_model:
@@ -514,7 +548,7 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
             # (prefetch started earlier), ≈ 0 when the prefetch finished in time.
             wait_s = time.perf_counter() - t_wait0
             if self._bus is not None and (on_demand_swap or wait_s > 0.1):
-                self._bus.emit("worker_swap_wait", {
+                payload = {
                     "model": worker_model,
                     "wait_s": wait_s,
                     "on_demand_swap": on_demand_swap,
@@ -522,7 +556,13 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
                     "cache_stage_scheduled": self._cache_stage_scheduled,
                     "mode": self._config.mode.value,
                     "pool": self._config.disjoint_pools,
-                }, step=self._step)
+                }
+                if self._config.sleep_wake_swaps:
+                    # Parser facet key: how this swap was served.  Only added
+                    # in the sleep_wake arm so pre-existing configs' trace
+                    # payloads stay byte-identical.
+                    payload["swap_mechanism"] = swap_mechanism or "cold_boot"
+                self._bus.emit("worker_swap_wait", payload, step=self._step)
             # Disjoint pools: post-flip residency maintenance — evict idle
             # engines (policy, every arm) and, in REAL mode, decide from the
             # plan whether the next task's engine is kept resident or
@@ -759,10 +799,13 @@ class RuntimeChemGraphCallback(ChemGraphCallbackHandler):
         # Disjoint pools: skip the synchronous stop — the pre-boot executor
         # evicts conflicting engines in its background thread instead, so the
         # workflow never blocks on the planner's VRAM drain.
+        # Sleep/wake arm: release_gpus_for SLEEPS the planner instead of
+        # stopping it (weights -> CPU RAM, VRAM freed) so it can be woken
+        # later; with the flag off it reproduces the legacy stop exactly.
         if self._orchestrator is not None and not self._config.disjoint_pools:
-            running = self._orchestrator.get_running_model()
-            if running and running != model_name:
-                self._orchestrator.stop_model(running)
+            from runtime.prefetch.sleep_wake import release_gpus_for
+            release_gpus_for(self._orchestrator, model_name,
+                             sleep_wake=self._config.sleep_wake_swaps)
 
         resource = ResourceSpec(
             resource_id=resource_id,

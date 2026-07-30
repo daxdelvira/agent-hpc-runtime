@@ -52,16 +52,34 @@ class FakeModelOrchestrator:
                  Unknown models default to 1.0s.
     failure_models : set of model names that should raise RuntimeError.
                      Used to test error handling paths.
+    wake_times : dict mapping model name → simulated wake seconds
+                 (sleep/wake swap arm; default 0.0).
+    models : optional dict mapping model name → config dict (e.g.
+             {"gpus": [0, 1]}), mirroring ModelOrchestrator.models so
+             GPU-overlap logic can be tested.
+
+    Sleep/wake state (mirrors the real orchestrator's sleep-mode API):
+      sleeping        — set of model names currently slept (weights "in CPU RAM")
+      calls           — chronological op log, e.g. ("sleep_model", "planner", 1),
+                        for sequencing assertions in tests
+      last_transition — model name → "sleep_wake" | "cold_boot"
     """
 
     def __init__(
         self,
         load_times: dict[str, float] | None = None,
         failure_models: set[str] | None = None,
+        wake_times: dict[str, float] | None = None,
+        models: dict | None = None,
     ) -> None:
         self.load_times = load_times or {}
         self.failure_models = failure_models or set()
+        self.wake_times = wake_times or {}
+        self.models = models or {}
         self.processes: dict[str, object] = {}   # mimics ModelOrchestrator.processes
+        self.sleeping: set[str] = set()
+        self.calls: list[tuple] = []
+        self.last_transition: dict[str, str] = {}
 
     def start_model_measured(
         self,
@@ -69,21 +87,65 @@ class FakeModelOrchestrator:
         metrics=None,
     ) -> float:
         """Simulate model loading: sleep for load_times[name] seconds."""
+        self.calls.append(("start_model_measured", name))
         if name in self.failure_models:
             raise RuntimeError(f"FakeModelOrchestrator: simulated failure for {name}")
         elapsed = self.load_times.get(name, 1.0)
         time.sleep(elapsed)
         self.processes[name] = object()   # non-None sentinel
+        self.sleeping.discard(name)       # a fresh boot is awake
+        self.last_transition[name] = "cold_boot"
         return elapsed
 
     def stop_model(self, name: str, wait_s: float = 5.0) -> None:
+        self.calls.append(("stop_model", name))
         self.processes.pop(name, None)
+        self.sleeping.discard(name)
 
     def wait_until_ready(self, name: str, timeout: int = 60) -> None:
         pass   # already "ready" after start_model_measured returns
 
     def ensure_all_models_ready(self) -> None:
         pass
+
+    # ------------------------------------------------------------------
+    # Sleep/wake API (mirrors ModelOrchestrator's sleep-mode methods)
+    # ------------------------------------------------------------------
+
+    def get_running_model(self) -> str | None:
+        """First model with a live process (sleeping or not) — mirrors the
+        real orchestrator, whose slept processes stay alive."""
+        return next(iter(self.processes), None)
+
+    def is_sleeping(self, name: str) -> bool:
+        return name in self.processes and name in self.sleeping
+
+    def sleep_model(self, name: str, level: int = 1, timeout: float = 900.0) -> float:
+        self.calls.append(("sleep_model", name, level))
+        if name in self.failure_models:
+            raise RuntimeError(f"FakeModelOrchestrator: simulated sleep failure for {name}")
+        if name not in self.processes or name in self.sleeping:
+            return 0.0
+        self.sleeping.add(name)
+        return 0.0
+
+    def wake_model(self, name: str, timeout: float = 900.0) -> float:
+        self.calls.append(("wake_model", name))
+        if name not in self.processes:
+            raise RuntimeError(f"Cannot wake {name}: no live server process.")
+        elapsed = self.wake_times.get(name, 0.0)
+        if elapsed:
+            time.sleep(elapsed)
+        self.sleeping.discard(name)
+        self.last_transition[name] = "sleep_wake"
+        return elapsed
+
+    def wait_until_serving(self, name: str, timeout: int = 60) -> None:
+        self.calls.append(("wait_until_serving", name))
+        if name not in self.processes:
+            raise RuntimeError(f"{name} has no server process.")
+        if name in self.sleeping:
+            raise RuntimeError(f"{name} is asleep — wake_model() it first.")
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +171,18 @@ class ModelPrefetchExecutor(PrefetchExecutor):
         probes=None,    # ClusterProbes | None — if set, snapshots before/after load
         stop_wasted_models: bool = False,
         evict_conflicting: bool = False,
+        sleep_wake: bool = False,
     ) -> None:
         self._orchestrator = orchestrator
         self._probes = probes
+        # Sleep/wake swap arm (RuntimeConfig.sleep_wake_swaps): prefer WAKING
+        # a slept engine (weights already in CPU RAM — H2D copy, seconds) over
+        # cold-booting a new server process (~185 s).  Cold boot remains the
+        # fallback for engines that have never been booted this run; either
+        # way conflicting engines on the shared pool are SLEPT first, never
+        # stopped.  See runtime/prefetch/sleep_wake.py for the sequencing and
+        # the CPU-RAM budget note (level-2 fallback when RAM-constrained).
+        self._sleep_wake = sleep_wake
         # Disjoint-pool mode: before booting the target engine, stop (and VRAM-
         # drain) any running engine whose GPU set overlaps the target's pool —
         # e.g. the planner still holds GPUs 0-3 when the first advanced
@@ -241,10 +312,19 @@ class ModelPrefetchExecutor(PrefetchExecutor):
                               f"for {task.resource.name} pre-boot).", flush=True)
                         self._orchestrator.stop_model(other)
 
-            elapsed = self._orchestrator.start_model_measured(
-                task.resource.name,
-                metrics=None,
-            )
+            mechanism = None
+            if self._sleep_wake:
+                # Sleep/wake arm: wake-if-slept preferred over cold boot; the
+                # planner (or any conflicting engine) is slept, never stopped.
+                from runtime.prefetch.sleep_wake import swap_to_model
+                swap_info = swap_to_model(self._orchestrator, task.resource.name)
+                elapsed = swap_info["elapsed_s"]
+                mechanism = swap_info["mechanism"]
+            else:
+                elapsed = self._orchestrator.start_model_measured(
+                    task.resource.name,
+                    metrics=None,
+                )
             task.completed_at = time.perf_counter()
 
             probe_after = self._probes.snapshot() if self._probes else None
@@ -276,12 +356,20 @@ class ModelPrefetchExecutor(PrefetchExecutor):
                 "success": True,
                 "wasted": was_cancelled,
             }
+            # Sleep/wake arm: record HOW the engine became serving so the
+            # parser can facet prefetch_completed on mechanism
+            # ("sleep_wake" wake vs. "cold_boot").  Only emitted when the arm
+            # is on — existing configs' traces stay byte-identical.
+            if mechanism is not None:
+                result["mechanism"] = mechanism
             # A successful boot read the full weight snapshot: report it as
             # measured bytes so Q4/lifecycle byte provenance is not "estimated"
             # for vllm_model tasks (size itself comes from the snapshot dir's
             # st_size sum — see _model_size_bytes in the chemgraph adapter).
+            # A wake copies weights H2D from CPU RAM and reads no bytes from
+            # storage, so bytes_staged only applies to cold boots.
             size_b = getattr(task.resource, "estimated_size_bytes", None)
-            if size_b:
+            if size_b and mechanism in (None, "cold_boot"):
                 result["bytes_staged"] = int(size_b)
                 if elapsed and elapsed > 0:
                     result["gb_per_s"] = round(size_b / elapsed / 1e9, 3)
