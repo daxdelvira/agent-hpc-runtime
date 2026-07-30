@@ -63,8 +63,12 @@ if [ -z "$VLLM_PY" ] || [ ! -x "$VLLM_PY" ]; then
   plog "ABORT: vLLM python not found ('$VLLM_PY')"
   exit 1
 fi
-t0=$(date +%s.%N)
-H2D=$(timeout 180 "$VLLM_PY" - <<'PYEOF'
+# NB: fed on stdin via printf (a shell builtin), NOT a here-document.  A
+# here-doc needs a writable $TMPDIR, and inside some job containers TMPDIR
+# points at a path that does not exist — bash then fails with "cannot create
+# temp file for here-document" and this canary reports ABORT on a perfectly
+# healthy node (observed job 11518012, 2026-07-29, which burned an attempt).
+CUDA_CANARY_PY='
 import time, torch
 torch.cuda.init()
 x = torch.empty(1 << 30, dtype=torch.uint8, pin_memory=True)
@@ -73,8 +77,10 @@ t0 = time.perf_counter()
 x.to("cuda:0")
 torch.cuda.synchronize()
 print(round(1.0 / (time.perf_counter() - t0), 2))
-PYEOF
-) || { plog "ABORT: CUDA canary failed or exceeded 180 s — host/GPU path unhealthy"; exit 1; }
+'
+t0=$(date +%s.%N)
+H2D=$(printf '%s\n' "$CUDA_CANARY_PY" | timeout 180 "$VLLM_PY" -) \
+  || { plog "ABORT: CUDA canary failed or exceeded 180 s — host/GPU path unhealthy"; exit 1; }
 ELAPSED=$(python3 -c "print(round($(date +%s.%N)-$t0,1))")
 plog "CUDA init+H2D canary: ${H2D} GB/s, step ${ELAPSED}s (floors: 3 GB/s, 180 s)"
 if python3 -c "exit(0 if float('$H2D') < 3.0 else 1)"; then
