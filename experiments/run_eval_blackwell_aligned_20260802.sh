@@ -43,8 +43,23 @@ HOST=$(hostname)
 
 # --- Phase 1: activation ladder -------------------------------------------
 LADDER="results/bench_activation_ladder_${HOST}.json"
-if [ ! -e "$LADDER" ] && [ ! -e "${LADDER}.attempted" ]; then
-  touch "${LADDER}.attempted"
+# "Done" means a sleep rung was actually recorded — NOT merely that the file
+# exists. The bench persists after every record (it runs under preemptible
+# embers), so a run that died during cold boot still leaves a JSON containing
+# only the "env" row. Treating that as complete permanently skipped Phase 1 on
+# this host after the first OOM.
+ladder_done(){
+  [ -e "$LADDER" ] || return 1
+  $PY - "$LADDER" <<'EOF'
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any(str(r.get("rung", "")).startswith("sleep_l") for r in rows) else 1)
+EOF
+}
+if ! ladder_done; then
   # Import it — the constant is built with os.path.join across several lines,
   # so scraping the source with a regex silently yields "" and skips Phase 1.
   SNAP=$($PY - <<'EOF'
