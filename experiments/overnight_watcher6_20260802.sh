@@ -89,20 +89,20 @@ while true; do
     fi
   done
 
-  # One campaign per facet at a time: two concurrent exp3 runs on one node type
-  # would contend for the same GPUs and both would fail their readiness gates.
+  # One campaign per JOB, not per facet. The earlier per-facet rule assumed two
+  # campaigns on the same node type would contend for GPUs — but separate
+  # allocations are separate NODES (11629982 on 002-4-0, 11629983 on 002-6-0),
+  # so there is no contention and the rule just left a landed 7h42m hold idle.
+  # Duplicate work is possible (two nodes may both decide "0/5 completed") but
+  # the driver writes timestamped run dirs so nothing collides, and with 9 holds
+  # against a Saturday deadline, extra trials are worth more than tidy counts.
   for facet in BW L40S; do
     if [ "$facet" = BW ]; then jobs="$BW_JOBS"; gres="$BW_GRES"; typed="$BW_TYPED"
     else jobs="$L40S_JOBS"; gres="$L40S_GRES"; typed="$L40S_TYPED"; fi
-    running=0
-    for j in $jobs; do
-      [ "$(job_state "$j")" = "RUNNING" ] && has_step "$j" && running=1
-    done
-    [ "$running" = 1 ] && continue
     for j in $jobs; do
       usable "$j" "$typed" || continue
       has_step "$j" && continue
-      launch "$j" "$gres"; break
+      launch "$j" "$gres"
     done
   done
 
