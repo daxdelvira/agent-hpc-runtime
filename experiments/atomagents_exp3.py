@@ -282,6 +282,13 @@ def run_exp3(args: argparse.Namespace) -> None:
     run_id = args.run_id or str(uuid.uuid4())[:12]
     mode = RuntimeMode(args.runtime_mode)
 
+    # Must be set BEFORE AtomAgents tools are imported: orchestration_tools reads
+    # it at import time to build both the LLM-visible tool description and the
+    # runtime validator from one source. Setting it later would leave the agent
+    # being told about one potential set while another is accepted.
+    if args.potentials:
+        os.environ["ATOMAGENTS_POTENTIALS"] = args.potentials
+
     if args.lammps_slowdown > 0:
         os.environ["LAMMPS_SLOWDOWN_S"] = str(args.lammps_slowdown)
         print(f"[runtime] LAMMPS slowdown : {args.lammps_slowdown}s per relax step")
@@ -681,6 +688,19 @@ def main() -> None:
         default=0,
         dest="lammps_slowdown",
         help="Seconds of sleep after each LAMMPS relax step (simulates NFS load).",
+    )
+    parser.add_argument(
+        "--potentials",
+        default=None,
+        dest="potentials",
+        help="Comma-separated EAM potential filenames the agent may choose from "
+             "(sets ATOMAGENTS_POTENTIALS). Default keeps the workload's own pair "
+             "(W_Zhou04.eam.alloy, w_eam4.fs). Use "
+             "'W_Zhou04.eam.alloy,w_eam4_big.fs' to make the data side cost real "
+             "time: w_eam4_big.fs is 3.32 GB and ~129 s to activate, of which "
+             ">=123.5 s is parse/spline construction rather than I/O. NOTE it is a "
+             "synthetic LOAD GENERATOR (non-physical energies) and must be "
+             "described as such in any write-up.",
     )
     parser.add_argument("--task-prompt", default=None)
     parser.add_argument(
