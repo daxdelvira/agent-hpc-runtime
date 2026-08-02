@@ -58,9 +58,15 @@ except Exception as e:
 EOF
 )
   if [ -n "$SNAP" ] && [ -d "$SNAP" ]; then
-    log "Phase 1: activation ladder on 32B (cold/warm/L1/L2; cap 45 min)"
+    # tp must be chosen from the ACTUAL per-GPU memory, not hardcoded. The 32B
+    # is 68.28 GB: it fits one 96 GB Blackwell at tp=1, but a 46 GB L40S needs
+    # tp=2 or the engine OOMs before a single rung is measured. (32B has 64
+    # attention heads, so tp in {1,2,4} all divide evenly.)
+    GPUMEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+    if [ "${GPUMEM:-0}" -ge 90000 ]; then LTP=1; LGPUS=0; else LTP=2; LGPUS=0,1; fi
+    log "Phase 1: activation ladder on 32B (cold/warm/L1/L2; ${GPUMEM} MiB/GPU -> tp=$LTP; cap 45 min)"
     timeout 2700 $PY experiments/bench_activation_ladder.py \
-        --model-path "$SNAP" --gpus 0 --tp 1 --repeat 2
+        --model-path "$SNAP" --gpus "$LGPUS" --tp "$LTP" --repeat 2
     case $? in
       0)   log "Phase 1: ladder complete — L2 rung finally measured" ;;
       124) log "Phase 1: timed out at 45 min (partial ladder in $LADDER)" ;;
