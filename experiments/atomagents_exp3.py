@@ -108,6 +108,81 @@ or any other property.
 
 
 # ---------------------------------------------------------------------------
+# Prompt variants — two INDEPENDENT changes, so their effects are separable.
+#
+# WHY THESE EXIST.  Measured on the 26 collected exp3 trials (2026-08-02):
+# `plan_extracted` fires in only 12/32 traces, always at step 4 of ~8, and the
+# plan it recovers names `analyze_screw_core` and `computation_task_surface_energy`
+# — tools that are executed ZERO times — while missing `code_task` (77 calls)
+# and `plan_task` (52).  The planner is not malfunctioning: the engineer composes
+# the plan_task query from the scientific goal ALONE and drops the scope rules,
+# so the planner legitimately plans a full 7-step workflow (surface energy, save
+# data, analyze plots) while the executor runs a narrow 3-tool script.  The plan
+# is coherent and simply never followed, so insight (1) — "these workflows have a
+# central planner" — contributes nothing on this workload.
+#
+#   pinned    exactly DEFAULT_TASK_PROMPT_EXP3.  The default, byte-identical to
+#             what all 28 collected trials ran.  Never change this.
+#   aligned   CHANGE 1 — the executor must forward the scope rules into
+#             plan_task.  Nothing else differs from `pinned`, so any movement is
+#             attributable to planner/executor alignment alone.
+#   unpinned  CHANGE 1 + CHANGE 2 — additionally drops the numbered step
+#             enumeration, so tool order and potential order become the agent's
+#             choice.  Builds ON `aligned`: un-pinning without alignment would
+#             leave the plan unfollowed AND the executor unbounded, confounding
+#             both effects.
+#
+# The scope rules are deliberately KEPT in every variant.  They bound runtime
+# (no surface energy / NEB) so trials stay comparable to what is collected;
+# removing them is a different experiment.  Note the retained "at most once"
+# guard on plan_task in `unpinned` — without an ordering rule the agent can loop
+# on plan_task (a 2,265-step runaway is on record in logs/workflow_traces/).
+#
+# WARNING for anyone tuning this: if `unpinned` raises the failure rate, DO NOT
+# restore step enumeration to recover reliability.  That silently destroys both
+# the entropy this measures and the plan signal insight (1) depends on.  Escalate
+# the backing model instead, and say so in the write-up.
+# ---------------------------------------------------------------------------
+_EXP3_PLAN_ALIGNMENT = """\
+The query you pass to plan_task MUST also state the scope constraints from this \
+message — which tools are available, and that surface energy, elastic constants, \
+stacking fault energy and NEB barriers are out of scope. The planner runs in a \
+separate sub-chat and CANNOT see this message, so a plan built without those \
+constraints will propose steps you are not permitted to execute."""
+
+# CHANGE 1 only: identical to DEFAULT_TASK_PROMPT_EXP3 except that step 1 tells
+# the executor to forward the scope rules into plan_task.
+TASK_PROMPT_EXP3_ALIGNED = DEFAULT_TASK_PROMPT_EXP3.replace(
+    "1. Call plan_task to develop a detailed step-by-step simulation plan for both potentials.",
+    "1. Call plan_task to develop a detailed step-by-step simulation plan for both "
+    "potentials. " + _EXP3_PLAN_ALIGNMENT,
+)
+
+# CHANGE 1 + CHANGE 2: scope preserved, step enumeration removed.
+TASK_PROMPT_EXP3_UNPINNED = """\
+Compare the core structure of the 1/2<111> screw dislocation in W using \
+"W_Zhou04.eam.alloy" and "w_eam4.fs" EAM potentials.
+The dislocation line is along [-1,1,1], glide direction [1,-1,2], glide plane normal [1,1,0].
+
+Begin by calling plan_task once to produce your own simulation plan, then carry that \
+plan out and report the comparison. {alignment}
+
+Scope constraints:
+- Call plan_task at most once.
+- Do NOT compute surface energy, elastic constants, stacking fault energy, NEB barriers, \
+or any other property.
+- Do NOT invent tool names. Only call tools that are registered with you.
+- When the comparison is reported, TERMINATE.
+""".format(alignment=_EXP3_PLAN_ALIGNMENT)
+
+TASK_PROMPT_VARIANTS_EXP3 = {
+    "pinned": DEFAULT_TASK_PROMPT_EXP3,
+    "aligned": TASK_PROMPT_EXP3_ALIGNED,
+    "unpinned": TASK_PROMPT_EXP3_UNPINNED,
+}
+
+
+# ---------------------------------------------------------------------------
 # Build prefetch executor
 # ---------------------------------------------------------------------------
 
@@ -452,7 +527,9 @@ def run_exp3(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Run the experiment
     # ------------------------------------------------------------------
-    task_prompt = args.task_prompt or DEFAULT_TASK_PROMPT_EXP3
+    # An explicit --task-prompt always wins; otherwise the variant selects one.
+    # Default is "pinned", i.e. byte-identical to every trial collected so far.
+    task_prompt = args.task_prompt or TASK_PROMPT_VARIANTS_EXP3[args.prompt_variant]
     t_start = __import__("time").perf_counter()
 
     print("[runtime] Adapter installed. Starting experiment…\n")
@@ -493,6 +570,10 @@ def run_exp3(args: argparse.Namespace) -> None:
         out["experiment"] = "exp3"
         out["hw_profile"] = args.hw_profile
         out["lammps_slowdown_s"] = args.lammps_slowdown
+        # Faceting key: results MUST NOT be pooled across prompt variants — they
+        # are different workloads, not different configs of one workload.
+        out["prompt_variant"] = ("custom" if args.task_prompt
+                                 else args.prompt_variant)
         out["ablation"] = {
             "no_plan_extraction": args.no_plan_extraction,
             "no_divergence_guard": args.no_divergence_guard,
@@ -602,6 +683,18 @@ def main() -> None:
         help="Seconds of sleep after each LAMMPS relax step (simulates NFS load).",
     )
     parser.add_argument("--task-prompt", default=None)
+    parser.add_argument(
+        "--prompt-variant",
+        choices=sorted(TASK_PROMPT_VARIANTS_EXP3),
+        default="pinned",
+        dest="prompt_variant",
+        help="pinned = the collected-trials prompt (default, unchanged); "
+             "aligned = CHANGE 1, executor forwards scope rules into plan_task so "
+             "the plan is one it can actually execute; "
+             "unpinned = CHANGE 1 + CHANGE 2, additionally drops the numbered step "
+             "enumeration so tool and potential order become agent choices. "
+             "Ignored if --task-prompt is given.",
+    )
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--log-dir", default="logs/workflow_traces")
     parser.add_argument("--confidence", type=float, default=0.85)
