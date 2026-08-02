@@ -1,6 +1,6 @@
 [
   {
-    "_comment": "tool_resources.json — maps consumer tool names to the resources they need.",
+    "_comment": "tool_resources.json \u2014 maps consumer tool names to the resources they need.",
     "_note": "Add new workflows here without editing Python. resource_type: vllm_model | mace_model | data_file | artifact"
   },
   {
@@ -42,6 +42,16 @@
     "estimated_load_s": 1.5,
     "cancellation_safe": true,
     "consumer_step_offset": 1
+  },
+  {
+    "consumer_tool": "computation_task_screw_dislocation",
+    "resource_type": "data_file",
+    "name": "w_eam4_big.fs",
+    "path": "potential_repository/w_eam4_big.fs",
+    "estimated_load_s": 5.5,
+    "cancellation_safe": true,
+    "consumer_step_offset": 1,
+    "_note": "3.32 GB synthetic load generator (inflate_fs_blockaware.py, non-physical energies). Consumer-side activation is ~129 s but only ~5.5 s is the raw read; the remaining ~123.5 s is LAMMPS PairEAM parse + spline construction, which page-cache warming cannot recover. estimated_load_s describes the recoverable part."
   },
   {
     "consumer_tool": "computation_task_surface_energy",
@@ -103,6 +113,16 @@
     "consumer_step_offset": 1
   },
   {
+    "consumer_tool": "create_potential_file",
+    "resource_type": "data_file",
+    "name": "w_eam4_big.fs",
+    "path": "potential_repository/w_eam4_big.fs",
+    "estimated_load_s": 5.5,
+    "cancellation_safe": true,
+    "consumer_step_offset": 1,
+    "_note": "3.32 GB synthetic load generator (inflate_fs_blockaware.py, non-physical energies). Consumer-side activation is ~129 s but only ~5.5 s is the raw read; the remaining ~123.5 s is LAMMPS PairEAM parse + spline construction, which page-cache warming cannot recover. estimated_load_s describes the recoverable part."
+  },
+  {
     "_comment": "Exp3: code_task dispatches to text-72B specialist (port 8003).",
     "_note": "After plan_task the engineer typically calls code_task, so predict qwen_72b_text."
   },
@@ -125,7 +145,7 @@
     "consumer_step_offset": 2
   },
   {
-    "_comment": "mace_mp:medium matches MaceCalc(calculator_type='mace_mp', model='medium') — ChemGraph's default. run_ase is the ONLY real consumer: smiles_to_coordinate_file was wrongly listed here too (it never constructs a calculator), which made every MACE prefetch validate/consume at the wrong tool — classified 'late' despite completing before run_ase — and double-counted missed opportunities (halving recall).",
+    "_comment": "mace_mp:medium matches MaceCalc(calculator_type='mace_mp', model='medium') \u2014 ChemGraph's default. run_ase is the ONLY real consumer: smiles_to_coordinate_file was wrongly listed here too (it never constructs a calculator), which made every MACE prefetch validate/consume at the wrong tool \u2014 classified 'late' despite completing before run_ase \u2014 and double-counted missed opportunities (halving recall).",
     "consumer_tool": "run_ase",
     "resource_type": "mace_model",
     "name": "mace_mp:medium",

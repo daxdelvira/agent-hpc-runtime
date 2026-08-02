@@ -430,6 +430,33 @@ WORKLOADS: dict[str, dict] = {
         "timeout_s": 14400,
         "est_run_s": 7200,
     },
+    # A SEPARATE WORKLOAD KEY, not a config under atomagents_exp3 — the two are
+    # different workloads and their results must never pool. Three differences,
+    # each deliberate:
+    #   --prompt-variant aligned  the executor forwards its scope rules into
+    #       plan_task, so the planner's plan is one the executor can actually
+    #       run. Without this the plan names tools executed ZERO times
+    #       (analyze_screw_core, computation_task_surface_energy) and the
+    #       "central planner" signal contributes nothing.
+    #   --potentials ...,w_eam4_big.fs  swaps the 9.3 MB potential for the
+    #       3.32 GB one so loading scientific data costs real time (~129 s,
+    #       >=123.5 s of it parse/spline rather than I/O). Without this the
+    #       data axis is literally absent: 100% of measured stall is vllm_model.
+    #   --lammps-slowdown 0  the compute window now comes from REAL potential
+    #       activation instead of time.sleep(900). Override LAMMPS_SLOWDOWN_S
+    #       to reintroduce the sleep as a window-size sensitivity axis.
+    # est_run_s is lower than exp3's because 900 s of sleep per relax is gone.
+    "atomagents_exp3_aligned": {
+        "script": "experiments/atomagents_exp3.py",
+        "python": ATOMS_PYTHON,
+        "base_flags": ["--hw-profile", "blackwell_swap", "--swap-models",
+                       "--prompt-variant", "aligned",
+                       "--potentials", "W_Zhou04.eam.alloy,w_eam4_big.fs",
+                       "--lammps-slowdown", os.environ.get("LAMMPS_SLOWDOWN_S", "0")],
+        "configs": ATOMAGENTS_CONFIGS,
+        "timeout_s": 14400,
+        "est_run_s": 4200,
+    },
     # DeepDriveMD is not integrated with the runtime yet: there is no
     # runtime/adapters/deepdrivemd.py and no experiment entrypoint.  The key
     # exists so the eval tree/parser are structured for it; selecting it fails
