@@ -103,13 +103,22 @@ class FileStagingExecutor(PrefetchExecutor):
             try:
                 return future.result(timeout=5.0)
             except Exception as exc:
-                return {"elapsed_s": 0.0, "success": False, "error": str(exc)}
+                return {"elapsed_s": 0.0, "success": False, "error": str(exc),
+                        "bytes_staged": 0}
         elapsed = (
             (task.completed_at - task.started_at)
             if task.started_at is not None and task.completed_at is not None
             else 0.0
         )
-        return {"elapsed_s": elapsed, "success": task.status == PrefetchStatus.COMPLETED}
+        # Fallback path (no future recorded): still report bytes so a data
+        # prefetch never silently contributes 0 to the byte ledger.
+        try:
+            nbytes = os.path.getsize(task.resource.path) if task.resource.path else 0
+        except OSError:
+            nbytes = 0
+        ok = task.status == PrefetchStatus.COMPLETED
+        return {"elapsed_s": elapsed, "success": ok,
+                "bytes_staged": nbytes if ok else 0}
 
     def shutdown(self, wait: bool = True) -> None:
         self._pool.shutdown(wait=wait)
@@ -118,6 +127,12 @@ class FileStagingExecutor(PrefetchExecutor):
         src = task.resource.path
         os.makedirs(self.scratch_dir, exist_ok=True)
         dst = str(Path(self.scratch_dir) / Path(src).name)
+        # Size the source BEFORE the copy: it is what we are accountable for
+        # moving, and it is still correct if the copy fails partway.
+        try:
+            nbytes = os.path.getsize(src)
+        except OSError:
+            nbytes = 0
         t0 = time.perf_counter()
         try:
             shutil.copy2(src, dst)
@@ -125,8 +140,34 @@ class FileStagingExecutor(PrefetchExecutor):
             task.completed_at = time.perf_counter()
             if task.status == PrefetchStatus.IN_PROGRESS:
                 task.status = PrefetchStatus.COMPLETED
-                task.resource.path = dst    # redirect consumer to staged copy
-            return {"elapsed_s": elapsed, "src": src, "dst": dst, "success": True}
+                # NOTE: this redirect is currently INERT for every workload we
+                # run. Nothing reads resource.path — AtomAgents rebuilds
+                # "../potential_repository/<name>" itself
+                # (screw_dislocation.py:54), so the consumer reads the ORIGINAL
+                # file. The measurable benefit therefore comes only from the
+                # side effect of having read src (its bytes are now in the OS
+                # page cache), NOT from the copy landing anywhere useful. That
+                # caps recovery at the read time (~5.5 s of a 129 s EAM
+                # activation); the ~123.5 s of LAMMPS parse + spline
+                # construction happens in the consumer process regardless of
+                # where the bytes came from. Recovering that needs a pre-parsed
+                # object handed over, e.g. a warm LAMMPS pool mirroring
+                # mace_prefetch.py's _MACE_CACHE.
+                task.resource.path = dst
+            return {
+                "elapsed_s": elapsed,
+                "src": src,
+                "dst": dst,
+                "success": True,
+                # bytes_staged/gb_per_s mirror ModelCacheStagingExecutor and
+                # MegaMmapStagingExecutor so the speculation-cost ledger can
+                # finally attribute bytes to data_file. Without these, every
+                # data prefetch showed byte_source=unknown and contributed 0 to
+                # useful/wasted byte totals — data I/O was structurally
+                # invisible in the analysis even when it happened.
+                "bytes_staged": nbytes,
+                "gb_per_s": round(nbytes / 1e9 / elapsed, 3) if elapsed > 0 else None,
+            }
         except Exception as exc:
             task.status = PrefetchStatus.FAILED
             task.error = str(exc)
@@ -134,6 +175,7 @@ class FileStagingExecutor(PrefetchExecutor):
                 "elapsed_s": time.perf_counter() - t0,
                 "success": False,
                 "error": str(exc),
+                "bytes_staged": 0,
             }
 
 
