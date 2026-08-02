@@ -41,6 +41,24 @@ bash experiments/node_preflight.sh || { log "ABORT: node preflight failed"; exit
 PY=python3
 HOST=$(hostname)
 
+# --- AutoGen disk cache must NOT live on NFS ---------------------------------
+# autogen's transforms.py evaluates `Cache.disk()` at IMPORT time, which opens a
+# diskcache SQLite DB at ./.cache/<seed> relative to CWD. exp3 chdirs into
+# workloads/AtomAgents, which is on project NFS, and SQLite locking over NFS is
+# broken: with two campaigns live on different nodes every trial died with
+#   sqlite3.OperationalError: locking protocol
+# 12 trials, 0 completed, before this was caught. It only appears under
+# concurrency, so a single-campaign run looks fine and hides the bug.
+# Point .cache at node-local /tmp. Every node writes the SAME symlink target, so
+# concurrent setup is idempotent, and each node then has its own private DB.
+# mkdir FIRST — a dangling symlink makes diskcache's makedirs fail instead.
+mkdir -p /tmp/autogen_cache
+if [ ! -L workloads/AtomAgents/.cache ]; then
+  rm -rf workloads/AtomAgents/.cache
+  ln -sfn /tmp/autogen_cache workloads/AtomAgents/.cache
+  log "redirected AutoGen cache to node-local /tmp/autogen_cache (was NFS)"
+fi
+
 # --- Phase 1: activation ladder -------------------------------------------
 LADDER="results/bench_activation_ladder_${HOST}.json"
 # "Done" means a sleep rung was actually recorded — NOT merely that the file
