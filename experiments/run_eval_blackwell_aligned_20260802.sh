@@ -115,24 +115,48 @@ else
   log "Phase 1: ladder already attempted on $HOST — skipping"
 fi
 
-# --- Phase 2: the headline pair -------------------------------------------
-# baseline first: it is the X every other number is quoted against, and it is
-# the arm we can least afford to be missing if the hold is cut short.
-log "Phase 2a: atomagents_exp3_aligned baseline+full_system to n=2 (first light)"
+# --- Phase 2: the headline arms -------------------------------------------
+# ARM ROLES, so nobody re-derives them from flag names later:
+#   baseline            kill + cold boot, runtime OFF  -> X in the narrative
+#   sleep_wake          full runtime + /sleep level 2  -> the claim, X - z%
+#   sleep_wake_baseline /sleep level 2, runtime OFF    -> how much of the gain
+#                       is the swap MECHANISM rather than the prediction.
+#                       Without it, sleep_wake differs from baseline in two
+#                       ways at once and neither is attributable.
+#
+# ORDER. sleep_wake first, not baseline. Two reasons, and they override the
+# earlier "baseline first because it is X" rule:
+#   1. It is the cheapest arm per trial (a 72B tp=4 cold boot is 990-1315 s and
+#      sleep_wake pays it once per model instead of once per swap), so it is
+#      the arm most likely to actually FINISH inside a preemptible hold.
+#   2. It is the only arm that can invalidate the whole plan. If parking does
+#      not cut the swap stall, we need to know today, while there is still time
+#      to fall back to smaller models — not after collecting a full baseline.
+# baseline is already at N=6 on the pre-aligned workload, so it is the arm we
+# can most afford to be short on for another few hours.
+log "Phase 2a: sleep_wake (the claim) to n=2 — first light on parked engines"
 $PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
-    --configs baseline,full_system --trials 2
+    --configs sleep_wake --trials 2
 
 log "Phase 2a done. Status:"
 $PY experiments/run_eval_q1_q4.py --list 2>/dev/null | grep -E "workload|exp3_aligned" || true
 
-log "Phase 2b: top up to n=5"
+log "Phase 2b: baseline (X) to n=2"
 $PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
-    --configs baseline,full_system --trials 5
+    --configs baseline --trials 2
+
+log "Phase 2c: sleep_wake_baseline — separates mechanism from prediction"
+$PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
+    --configs sleep_wake_baseline --trials 2
+
+log "Phase 2d: top up the headline pair to n=5"
+$PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
+    --configs sleep_wake,baseline --trials 5
 
 # --- Phase 3: the two-insight ablation ------------------------------------
 # Only meaningful once Phase 2 shows a gap worth decomposing, but harmless to
 # attempt: the driver runs nothing if the targets are already satisfied.
-log "Phase 3 (stretch): plan_only / no_plan ablation to n=3"
+log "Phase 3 (stretch): no_plan / naive_prefetch ablation to n=3"
 $PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
     --configs no_plan,naive_prefetch --trials 3
 
