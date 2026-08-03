@@ -430,6 +430,50 @@ def run_exp3(args: argparse.Namespace) -> None:
                 from atomagents.runtime.model_config import MODELS_RTX6000 as MODELS
             else:
                 from atomagents.runtime.model_config import MODELS
+            # ----------------------------------------------------------
+            # Sleep/wake arm (--sleep-wake): park engines instead of killing
+            # them. vLLM 0.17.x gates /sleep, /wake_up and /is_sleeping behind
+            # VLLM_SERVER_DEV_MODE=1, and the engine must have been LAUNCHED
+            # with --enable-sleep-mode, so both are injected here — before any
+            # engine starts, since neither can be turned on after the fact.
+            #
+            # WHY LEVEL 2 IS THE DEFAULT HERE (chemgraph uses level 1).
+            # Level 1 offloads weights to host RAM: measured at 108-128 GiB per
+            # slept engine (Stage-0 gate (b)), which died at k=3 on a 2 TB node.
+            # exp3 carries THREE large models, so level 1 would need roughly
+            # 355 GB against a 256G hold cgroup — it cannot fit, and the failure
+            # mode is the node dying rather than a clean error. Level 2 discards
+            # the weights (VRAM still freed, ~0.3 GiB standing host RAM
+            # measured) and re-reads them on wake, while still keeping the
+            # process, CUDA context, captured graphs and profiling results —
+            # which is where the bulk of a cold boot actually goes.
+            #
+            # Caveat to carry into the write-up: level 2's wake cost depends on
+            # page-cache residency, and fadvise on Lustre was measured leaving
+            # 56.2% of shards resident, so a "cold" L2 wake here is not fully
+            # cold. Report it as contingent, not free.
+            # ----------------------------------------------------------
+            if args.sleep_wake:
+                for _mc in MODELS.values():
+                    _extra = list(_mc.get("extra_args") or [])
+                    if "--enable-sleep-mode" not in _extra:
+                        _extra.append("--enable-sleep-mode")
+                    _mc["extra_args"] = _extra
+                    _env = dict(_mc.get("extra_env") or {})
+                    _env["VLLM_SERVER_DEV_MODE"] = "1"
+                    # Sleep mode is incompatible with expandable_segments: the
+                    # allocator cannot release segments it has expanded, so
+                    # /sleep frees nothing and the next engine still OOMs.
+                    _alloc = _env.get("PYTORCH_CUDA_ALLOC_CONF", "")
+                    if "expandable_segments" in _alloc:
+                        _env.pop("PYTORCH_CUDA_ALLOC_CONF")
+                        print("[cluster] sleep-wake: dropped "
+                              "PYTORCH_CUDA_ALLOC_CONF=expandable_segments "
+                              "(incompatible with vLLM sleep mode)")
+                    _mc["extra_env"] = _env
+                print(f"[cluster] Sleep/wake swaps ENABLED (level "
+                      f"{args.sleep_level}) for {len(MODELS)} engines.")
+
             orchestrator = ModelOrchestrator(MODELS)
 
             if args.no_start_models:
@@ -461,7 +505,10 @@ def run_exp3(args: argparse.Namespace) -> None:
     if orchestrator is not None and MODELS is not None:
         try:
             from atomagents.runtime.model_router import init_router
-            router = init_router(orchestrator, MODELS)
+            router = init_router(
+                orchestrator, MODELS,
+                sleep_level=(args.sleep_level if args.sleep_wake else 0),
+            )
             print(f"[cluster] ModelRouter activated — "
                   f"{len(MODELS)} models, port map: "
                   f"{ {cfg['port']: name for name, cfg in MODELS.items()} }")
@@ -740,6 +787,26 @@ def main() -> None:
         "--swap-models",
         action="store_true",
         help="Enable model swapping via ModelOrchestrator + ModelRouter",
+    )
+    parser.add_argument(
+        "--sleep-wake",
+        action="store_true",
+        dest="sleep_wake",
+        help="Swap-mechanism arm: boot each engine once with --enable-sleep-mode "
+             "(+ VLLM_SERVER_DEV_MODE=1) and park the outgoing engine with "
+             "/sleep instead of killing it. Measured on this workload, a cold "
+             "72B tp=4 boot costs 990-1315 s against a 0.8-2.1 s wake.",
+    )
+    parser.add_argument(
+        "--sleep-level",
+        type=int,
+        default=2,
+        choices=[1, 2],
+        dest="sleep_level",
+        help="vLLM sleep level for --sleep-wake. 1 offloads weights to host RAM "
+             "(108-128 GiB per engine; three engines do NOT fit a 256G hold). "
+             "2 discards weights, keeps the process/CUDA context/graphs, and "
+             "holds ~0.3 GiB. Default 2 because exp3 carries three models.",
     )
     parser.add_argument(
         "--no-start-models",

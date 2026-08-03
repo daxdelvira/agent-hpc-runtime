@@ -342,6 +342,29 @@ ATOMAGENTS_CONFIGS: dict[str, dict] = {
     "naive_prefetch":      {"mode": "real", "predictor": "learned", "flags": ["--naive-prefetch"]},
     "no_model_prefetch":   {"mode": "real", "predictor": "learned", "flags": ["--skip-resource-types", "vllm_model"]},
     "no_data_prefetch":    {"mode": "real", "predictor": "learned", "flags": ["--skip-resource-types", "data_file"]},
+    # Sleep/wake swap mechanism. Level 2 (not 1): three engines at 108-128 GiB
+    # each cannot fit a 256G hold, and gate (b) showed the node DIES at k=3
+    # rather than erroring cleanly. Behaviour-changing (different vLLM launch
+    # args + swap path), so explicit_only keeps it out of the implicit
+    # "all configs" set — a campaign run without --configs must never pick it
+    # up and silently pool its trials with the kill+cold-boot arms.
+    "sleep_wake": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--sleep-wake", "--sleep-level", "2"],
+        "explicit_only": True,
+        "desc": "engines boot once and park via /sleep level 2 instead of "
+                "kill + cold boot; attacks the 990-1315 s bring-up stall",
+    },
+    "sleep_wake_baseline": {
+        "mode": "baseline", "predictor": "mock",
+        "flags": ["--sleep-wake", "--sleep-level", "2"],
+        "explicit_only": True,
+        # The honest comparator for the sleep_wake arm. Without it, any gain
+        # from sleep/wake is indistinguishable from the prefetcher's gain,
+        # because the kill+cold-boot baseline differs in TWO ways at once.
+        "desc": "sleep/wake swaps with the runtime OFF — isolates the swap "
+                "mechanism from the prefetcher",
+    },
 }
 
 WORKLOADS: dict[str, dict] = {
