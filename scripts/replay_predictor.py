@@ -89,9 +89,23 @@ USAGE
     python3 scripts/replay_predictor.py --workload chemgraph_swap --audit
     python3 scripts/replay_predictor.py --variants plan_only,transition_only,full
     python3 scripts/replay_predictor.py --limit 40          # quick smoke run
+    python3 scripts/replay_predictor.py --gate-diagnostic   # see below
 
 Artifacts are written to results/replay_predictor/ (JSON + CSV) so that any
 number quoted in the paper has a file behind it.
+
+PLAN-GATED SWEEP AND ITS DIAGNOSTIC (2026-08-03)
+------------------------------------------------
+The `gate_*` variants test whether the plan can gate the transition table's
+candidates -- keep the table's recall, buy back the plan's precision.  Run the
+whole sweep with --variants and read the curve, never a single point.
+
+`--gate-diagnostic` answers the same question directly and in one table, by
+bucketing every table candidate by whether the plan supports it and reporting
+the waste rate per bucket.  RUN IT BEFORE READING THE SWEEP: on facets where
+the plan-unsupported bucket is empty, every gating rule is a no-op at every
+parameter value, and the identical sweep rows are explained rather than merely
+observed.
 """
 from __future__ import annotations
 
@@ -143,6 +157,74 @@ VARIANTS: dict[str, dict[str, Any]] = {
     "full_la4":        {"signals": "full", "lookahead": 4},
     "full_la6":        {"signals": "full", "lookahead": 6},
 }
+
+# --- plan-gated sweep (2026-08-03) -----------------------------------------
+# HYPOTHESIS UNDER TEST: use the plan to gate the transition table's candidates
+# -- keep the table's recall, buy back the plan's precision.  `full` unions the
+# two signals and so inherits the table's recall AND the table's precision; the
+# gate inverts the direction of the interaction.
+#
+# PASS CRITERION, fixed BEFORE looking at any result: the rule WORKS on a facet
+# if wasted% drops substantially while cov% holds roughly flat.  It FAILS if
+# cov% falls in proportion to wasted% -- that is just a confidence threshold,
+# and a threshold is not a contribution.
+#
+# The comparator is `transition_only` (the recall the gate is trying to keep),
+# NOT `full`: plan_gated is a restricted mode and, like plan_only and
+# transition_only, does not use the MockPredictor fallback.
+#
+# gate_tail_t000 is a NO-OP gate and exists as a control: it must reproduce
+# transition_only+plan union without the mock fallback.  gate_tail_t101 must
+# equal gate_hard (nothing has confidence > 1.0).  Both are checked in
+# runtime/tests/test_learned_predictor_gating.py.
+_GATE_BASE = {"signals": "plan_gated"}
+
+
+def _gate(**kw: Any) -> dict[str, Any]:
+    return {**_GATE_BASE, **kw}
+
+
+VARIANTS.update({
+    # rule 1 -- hard gate, plus its two scope/no-plan policy variations
+    "gate_hard":        _gate(gate_mode="hard"),
+    "gate_hard_strict": _gate(gate_mode="hard", gate_no_plan="suppress"),
+    "gate_hard_key":    _gate(gate_mode="hard", gate_scope="key"),
+    # rule 2 -- soft downweight.  With min_confidence=0.30 the effective drop
+    # threshold on unsupported candidates is 0.30/factor; both are printed in
+    # the predictor's gate_spec so neither can be quoted alone.
+    "gate_soft_f90":    _gate(gate_mode="soft", gate_factor=0.90),   # -> 0.333
+    "gate_soft_f75":    _gate(gate_mode="soft", gate_factor=0.75),   # -> 0.400
+    "gate_soft_f60":    _gate(gate_mode="soft", gate_factor=0.60),   # -> 0.500
+    "gate_soft_f50":    _gate(gate_mode="soft", gate_factor=0.50),   # -> 0.600
+    "gate_soft_f40":    _gate(gate_mode="soft", gate_factor=0.40),   # -> 0.750
+    "gate_soft_f30":    _gate(gate_mode="soft", gate_factor=0.30),   # -> 1.000
+    # rule 3 -- rank and cap the post-dedup union
+    "gate_cap_k1":      _gate(gate_mode="cap", gate_k=1),
+    "gate_cap_k2":      _gate(gate_mode="cap", gate_k=2),
+    "gate_cap_k3":      _gate(gate_mode="cap", gate_k=3),
+    "gate_cap_k4":      _gate(gate_mode="cap", gate_k=4),
+    "gate_cap_k6":      _gate(gate_mode="cap", gate_k=6),
+    # rule 3 CONTROL -- same cap, ranking by confidence ALONE (plan ignored).
+    # Any cap improvement that survives this control is a volume effect, not a
+    # plan-gating effect, and must not be claimed as evidence for the plan.
+    "capctl_k1":        _gate(gate_mode="cap", gate_k=1, gate_cap_use_plan=False),
+    "capctl_k2":        _gate(gate_mode="cap", gate_k=2, gate_cap_use_plan=False),
+    "capctl_k3":        _gate(gate_mode="cap", gate_k=3, gate_cap_use_plan=False),
+    "capctl_k4":        _gate(gate_mode="cap", gate_k=4, gate_cap_use_plan=False),
+    "capctl_k6":        _gate(gate_mode="cap", gate_k=6, gate_cap_use_plan=False),
+    # rule 4 -- asymmetric suppression of the low-confidence unsupported tail.
+    # Grid chosen from the 22 distinct table probabilities >= min_confidence
+    # (0.3019 .. 1.0), so the curve has a point between every adjacent pair.
+    "gate_tail_t000":   _gate(gate_mode="tail", gate_tail=0.00),   # control: no-op
+    "gate_tail_t035":   _gate(gate_mode="tail", gate_tail=0.35),
+    "gate_tail_t045":   _gate(gate_mode="tail", gate_tail=0.45),
+    "gate_tail_t055":   _gate(gate_mode="tail", gate_tail=0.55),
+    "gate_tail_t065":   _gate(gate_mode="tail", gate_tail=0.65),
+    "gate_tail_t075":   _gate(gate_mode="tail", gate_tail=0.75),
+    "gate_tail_t085":   _gate(gate_mode="tail", gate_tail=0.85),
+    "gate_tail_t095":   _gate(gate_mode="tail", gate_tail=0.95),
+    "gate_tail_t101":   _gate(gate_mode="tail", gate_tail=1.01),   # == hard gate
+})
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +759,109 @@ COLUMN LEGEND — note that coverage and precision have DIFFERENT denominators
 # Audit: cross-check the realized-need definition against resource_consumed
 # ---------------------------------------------------------------------------
 
+def gate_diagnostic(traces: list[Trace], registry: ResourceRegistry,
+                    context_events: int) -> None:
+    """
+    Does the PLAN's support bit carry ANY information about whether a
+    TRANSITION-TABLE candidate will be wasted?
+
+    This is the question the whole plan-gating sweep is a proxy for, and it can
+    be answered directly.  At each prediction point we run plan_only and
+    transition_only side by side and bucket every table candidate into:
+
+      supported   the plan names that resource too
+      unsupported the plan fired but does NOT name that resource
+      silent      the plan produced nothing at all at this point
+
+    and report the waste rate within each bucket.  A gate can only ever act on
+    the `unsupported` bucket -- `supported` is what it keeps by definition and
+    `silent` is what the gate_no_plan policy decides wholesale.  So:
+
+      * if `unsupported` is EMPTY on a facet, every gating rule is a
+        mathematical no-op there, at every parameter value, and a flat sweep
+        row is explained rather than merely observed;
+      * if unsupW% is not materially above suppW%, the plan's support bit is
+        not a waste discriminator and no rule built on it can trade waste for
+        coverage.
+
+    Run with --gate-diagnostic.  Costs two extra predictor passes.
+    """
+    plan_p = LearnedPredictor(registry=registry, signals="plan_only")
+    tab_p = LearnedPredictor(registry=registry, signals="transition_only")
+    stats: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    for tr in traces:
+        f = str(tr.facet)
+        steps = tr.steps
+        realized = [{sp.name for sp in registry.get(s.tool)} for s in steps]
+        occ: dict[str, list[int]] = defaultdict(list)
+        for k, names in enumerate(realized):
+            for r in names:
+                occ[r].append(k)
+        for i in range(-1, len(steps) - 1):
+            if i < 0:
+                end, ctc = steps[0].event_pos, []
+            else:
+                end, ctc = steps[i].event_pos + 1, [{"name": steps[i].tool}]
+            kw = dict(step=max(i, 0),
+                      recent_events=tr.events[max(0, end - context_events):end],
+                      current_tool_calls=ctc, task_description="",
+                      plan_context=tr.plan_before(end - 1))
+            pr = plan_p.predict(**kw).resources or []
+            tb = tab_p.predict(**kw).resources or []
+            st = stats[f]
+            st["points"] += 1
+            if tb:
+                st["pts_table"] += 1
+                if pr:
+                    st["pts_both"] += 1
+                else:
+                    st["pts_plan_silent"] += 1
+            if pr:
+                st["pts_plan"] += 1
+            if not tb:
+                continue
+            support = {(r.resource_id or r.name) for r in pr}
+            seen: set[str] = set()
+            for r in tb:      # dedup to the precision unit: (point, resource)
+                if r.name in seen:
+                    continue
+                seen.add(r.name)
+                wasted = 0 if any(k > i for k in occ.get(r.name, [])) else 1
+                if not pr:
+                    bucket = "silent"
+                elif (r.resource_id or r.name) in support:
+                    bucket = "supported"
+                else:
+                    bucket = "unsupported"
+                st[bucket] += 1
+                st[bucket + "_wasted"] += wasted
+
+    def _p(a: int, b: int) -> str:
+        return f"{100.0 * a / b:5.1f}%" if b else "  n/a"
+
+    print("\n--- GATE DIAGNOSTIC: can the plan discriminate wasted table "
+          "candidates? ---")
+    hdr = (f"{'facet':<34}{'pts':>6}{'tblFired':>9}{'planSil':>8}{'both':>6}"
+           f"{'  |':>3}{'supp':>6}{'suppW%':>8}{'unsup':>6}{'unsupW%':>9}"
+           f"{'silent':>7}{'silentW%':>10}")
+    print(hdr)
+    print("-" * len(hdr))
+    for f in sorted(stats):
+        s = stats[f]
+        print(f"{f:<34}{s['points']:>6}{s['pts_table']:>9}{s['pts_plan_silent']:>8}"
+              f"{s['pts_both']:>6}{'  |':>3}"
+              f"{s['supported']:>6}{_p(s['supported_wasted'], s['supported']):>8}"
+              f"{s['unsupported']:>6}{_p(s['unsupported_wasted'], s['unsupported']):>9}"
+              f"{s['silent']:>7}{_p(s['silent_wasted'], s['silent']):>10}")
+    print("  suppW%   waste rate among table candidates the plan ALSO names")
+    print("  unsupW%  waste rate among table candidates the plan does NOT name")
+    print("           -- THE ONLY BUCKET ANY GATING RULE CAN ACT ON.  unsup=0")
+    print("              means every gate variant is a no-op on that facet.")
+    print("  silentW% waste rate where the plan said nothing; gate_no_plan")
+    print("           decides this bucket wholesale, it is not discrimination.")
+
+
 def audit_resource_consumed(traces: list[Trace], registry: ResourceRegistry) -> None:
     import hashlib as _h
     names = set()
@@ -745,6 +930,10 @@ def main() -> int:
                     help="skip traces with fewer than this many tool_calls")
     ap.add_argument("--audit", action="store_true",
                     help="also cross-check against resource_consumed events")
+    ap.add_argument("--gate-diagnostic", action="store_true",
+                    help="bucket table candidates by plan support and report the "
+                         "waste rate in each -- answers directly whether ANY "
+                         "plan-gating rule can work (see gate_diagnostic())")
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     args = ap.parse_args()
 
@@ -842,13 +1031,17 @@ def main() -> int:
 
     # ---- run ------------------------------------------------------------
     unsupported: dict[str, str] = {}
+    resolved_specs: dict[str, str] = {}
     scores: dict[tuple[str, Facet], list[TraceScore]] = defaultdict(list)
+    print("\nVARIANT DEFINITIONS (label -> constructor kwargs -> predictor_id)")
     for v in variant_order:
         pred, reason = build_predictor(v, VARIANTS[v], registry)
         if pred is None:
             unsupported[v] = reason
-            print(f"\n!! variant {v!r} NOT RUN: {reason}")
+            print(f"  {v:<18} {VARIANTS[v]}  !! NOT RUN: {reason}")
             continue
+        resolved_specs[v] = pred.predictor_id
+        print(f"  {v:<18} {VARIANTS[v]}  ->  {pred.predictor_id}")
         for tr in traces:
             scores[(v, tr.facet)].append(
                 replay_trace(tr, pred, registry, args.context_events))
@@ -878,6 +1071,9 @@ def main() -> int:
     print("    identically over all of them, but the TOOL SEQUENCE in a trace was")
     print("    produced by whatever arm recorded it.  This is a real confound for")
     print("    absolute coverage and is NOT corrected for here.")
+
+    if args.gate_diagnostic:
+        gate_diagnostic(traces, registry, args.context_events)
 
     if args.audit:
         audit_resource_consumed(traces, registry)
@@ -909,6 +1105,8 @@ def main() -> int:
         "learned_table_max_offset": max_off,
         "small_n_threshold": SMALL_N,
         "variants_requested": variant_order,
+        "variant_kwargs": {v: VARIANTS[v] for v in variant_order},
+        "variant_predictor_ids": resolved_specs,
         "variants_not_run": unsupported,
         "facet_label_sources": dict(src_counts),
         "realized_need_definition":

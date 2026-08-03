@@ -71,6 +71,57 @@ and 2 keep the exact confidences the shipped code produced, which is what makes
 `--lookahead 2` a pure superset of the old behaviour (added events only, none
 changed) — a hard requirement for diffing new traces against archived ones.
 
+Plan-gated combination (2026-08-03, `signals="plan_gated"`)
+-----------------------------------------------------------
+The union above is strictly dominated: it inherits the TABLE's recall AND the
+TABLE's precision, because on all labelled facets
+`cov%(full) == max(cov%(plan_only), cov%(transition_only))` exactly.  The
+structural reason is that 29 distinct tools in the transition table collapse
+onto only 7 distinct resources in the registry, so the two signals disagree
+about *tools* while naming the *same resources*; coverage is measured in
+resource space, so the union has almost no room to grow.
+
+`signals="plan_gated"` therefore uses the plan in the OPPOSITE direction from
+`_plan_confidence()`: the plan filters the TABLE's candidates instead of the
+table scoring the PLAN's candidates.  Four rules, selected by `gate_mode`:
+
+    hard   emit a table candidate only if the plan also names that resource
+    soft   multiply an unsupported table candidate's confidence by
+           `gate_factor`, then re-apply `min_confidence`
+    cap    emit at most `gate_k` candidates per prediction point, ranked by
+           confidence with a +1.0 bonus for candidates BOTH signals name
+    tail   drop an unsupported table candidate only if its confidence is below
+           `gate_tail`; supported candidates and the high-confidence tail of
+           unsupported ones pass untouched
+
+Two orthogonal knobs apply to every rule:
+
+    gate_scope    "resource" (default) — plan support is checked on the
+                  resource identity alone, which is the granularity `wasted%`
+                  is defined at; "key" — support must match
+                  (resource, consumer_step_offset).
+    gate_no_plan  what to do at a prediction point where Signal 1 produced
+                  NOTHING (no plan_extracted event yet, or current_tool is not
+                  locatable in the plan).  "pass" (default) lets the table
+                  through ungated — gate only where there is a plan to gate
+                  with; "suppress" drops everything.
+
+NOTE ON `soft` VS `tail`: replay scoring ignores confidence, so in
+scripts/replay_predictor.py the ONLY effect of `soft` is which candidates fall
+below `min_confidence`.  soft(f) is therefore observationally identical to
+tail(min_confidence / f) offline; they differ live, where the surviving
+candidate's confidence feeds scheduler priority.  Report the factor AND the
+threshold together — neither alone determines what survives.
+
+`plan_gated` is a RESTRICTED mode: like plan_only/transition_only it does NOT
+fall back to MockPredictor, so its numbers isolate the gated signal.  The
+comparator that holds recall fixed is `transition_only`, not `full`.
+
+All gating code is reached only when `signals == "plan_gated"`, so
+`plan_only`, `transition_only` and `full` are bit-identical to the pre-gating
+checkout by construction.  Verified explicitly by
+runtime/tests/test_learned_predictor_gating.py::test_existing_modes_bit_identical.
+
 Activation
 ----------
     from runtime.predictor.learned_predictor import LearnedPredictor
@@ -120,6 +171,16 @@ _TAG_BOTH_DISAGREE = "learned+both_disagree"
 # comparable with trials recorded before the combination change.
 _TAG_LEGACY_PLAN = "learned+plan"
 
+# --- plan-gated mode (see module docstring) --------------------------------
+_SIGNAL_MODES = ("full", "plan_only", "transition_only", "plan_gated")
+_GATE_MODES = ("hard", "soft", "cap", "tail")
+_GATE_SCOPES = ("resource", "key")
+_GATE_NO_PLAN = ("pass", "suppress")
+# Rank bonus given to a candidate BOTH signals name, in gate_mode="cap".
+# 1.0 > any confidence, so agreed candidates always outrank disagreed ones and
+# confidence only breaks ties within each group.  Not a tuning knob.
+_CAP_AGREE_BONUS = 1.0
+
 
 class LearnedPredictor(Predictor):
     """
@@ -133,11 +194,39 @@ class LearnedPredictor(Predictor):
         transitions_path: str | Path | None = None,
         registry: ResourceRegistry | None = None,
         min_confidence: float = 0.30,   # discard very weak learned transitions
-        signals: str = "full",          # "full" | "plan_only" | "transition_only"
+        signals: str = "full",          # full|plan_only|transition_only|plan_gated
         lookahead: int | None = None,   # steps ahead; None → env or _DEFAULT_LOOKAHEAD
+        # --- plan_gated knobs; INERT unless signals == "plan_gated" ---------
+        gate_mode: str = "hard",        # hard | soft | cap | tail
+        gate_factor: float = 0.5,       # soft: multiplier for unsupported cands
+        gate_k: int = 2,                # cap: max candidates per prediction point
+        gate_tail: float = 0.0,         # tail: drop unsupported below this conf
+        gate_scope: str = "resource",   # resource | key
+        gate_no_plan: str = "pass",     # pass | suppress
+        gate_cap_use_plan: bool = True,  # cap: rank with the plan-agreement bonus
     ) -> None:
-        if signals not in ("full", "plan_only", "transition_only"):
-            raise ValueError(f"signals must be full|plan_only|transition_only, got {signals!r}")
+        if signals not in _SIGNAL_MODES:
+            raise ValueError(f"signals must be one of {_SIGNAL_MODES}, got {signals!r}")
+        if gate_mode not in _GATE_MODES:
+            raise ValueError(f"gate_mode must be one of {_GATE_MODES}, got {gate_mode!r}")
+        if gate_scope not in _GATE_SCOPES:
+            raise ValueError(f"gate_scope must be one of {_GATE_SCOPES}, got {gate_scope!r}")
+        if gate_no_plan not in _GATE_NO_PLAN:
+            raise ValueError(f"gate_no_plan must be one of {_GATE_NO_PLAN}, got {gate_no_plan!r}")
+        if not 0.0 < gate_factor <= 1.0:
+            raise ValueError(f"gate_factor must be in (0, 1], got {gate_factor!r}")
+        if int(gate_k) < 0:
+            raise ValueError(f"gate_k must be >= 0, got {gate_k!r}")
+        self._gate_mode = gate_mode
+        self._gate_factor = float(gate_factor)
+        self._gate_k = int(gate_k)
+        self._gate_tail = float(gate_tail)
+        self._gate_scope = gate_scope
+        self._gate_no_plan = gate_no_plan
+        # CONTROL for gate_mode="cap": with False the ranking ignores the plan
+        # entirely and the cap becomes a pure volume cap.  Any improvement that
+        # survives this control is NOT attributable to the plan signal.
+        self._gate_cap_use_plan = bool(gate_cap_use_plan)
         if lookahead is None:
             lookahead = _lookahead_from_env()
         lookahead = int(lookahead)
@@ -167,11 +256,41 @@ class LearnedPredictor(Predictor):
 
     @property
     def predictor_id(self) -> str:
-        return "learned" if self._signals == "full" else f"learned_{self._signals}"
+        if self._signals == "full":
+            return "learned"
+        if self._signals == "plan_gated":
+            return f"learned_plan_gated[{self.gate_spec}]"
+        return f"learned_{self._signals}"
+
+    @property
+    def gate_spec(self) -> str:
+        """
+        Compact, complete description of the active gating rule.
+
+        Written into predictor_id so a trace recorded under a gated arm names
+        the exact rule AND its parameters — a bare 'plan_gated' label would be
+        unreproducible, since gate_mode/gate_tail/gate_factor change the
+        behaviour completely.  min_confidence is included because soft and tail
+        are only meaningful jointly with it.
+        """
+        parts = [self._gate_mode]
+        if self._gate_mode == "soft":
+            parts.append(f"factor={self._gate_factor:g}")
+            parts.append(f"min_conf={self._min_confidence:g}")
+            parts.append(f"eff_thresh={self._min_confidence / self._gate_factor:.4g}")
+        elif self._gate_mode == "tail":
+            parts.append(f"tail={self._gate_tail:g}")
+            parts.append(f"min_conf={self._min_confidence:g}")
+        elif self._gate_mode == "cap":
+            parts.append(f"k={self._gate_k}")
+            parts.append(f"use_plan={self._gate_cap_use_plan}")
+        parts.append(f"scope={self._gate_scope}")
+        parts.append(f"no_plan={self._gate_no_plan}")
+        return ",".join(parts)
 
     @property
     def signal_mode(self) -> str:
-        """Signal-combination mode: full | plan_only | transition_only."""
+        """Signal-combination mode: full | plan_only | transition_only | plan_gated."""
         return self._signals
 
     @property
@@ -211,7 +330,7 @@ class LearnedPredictor(Predictor):
         plan_resources: list[ResourceSpec] = []
         plan_reasoning = ""
         if (
-            self._signals in ("full", "plan_only")
+            self._signals in ("full", "plan_only", "plan_gated")
             and isinstance(plan_context, PlanContext)
             and plan_context.tool_sequence
         ):
@@ -227,7 +346,7 @@ class LearnedPredictor(Predictor):
         learned_resources: list[ResourceSpec] = []
         learned_reasoning = ""
         if (
-            self._signals in ("full", "transition_only")
+            self._signals in ("full", "transition_only", "plan_gated")
             and current_tool and self._has_learned_data
         ):
             learned_resources, learned_reasoning = self._predict_from_table(
@@ -235,9 +354,24 @@ class LearnedPredictor(Predictor):
             )
 
         # ------------------------------------------------------------------
+        # Plan gating (plan_gated only).  Runs BEFORE the union so the plan's
+        # own candidates are never gated by themselves.  No effect whatsoever
+        # on full / plan_only / transition_only.
+        # ------------------------------------------------------------------
+        gate_reasoning = ""
+        if self._signals == "plan_gated":
+            learned_resources, gate_reasoning = self._gate_table_candidates(
+                plan_resources, learned_resources,
+            )
+            if not learned_resources:
+                learned_reasoning = ""
+
+        # ------------------------------------------------------------------
         # Union with dedup on (resource_id, consumer_step_offset), max conf.
         # ------------------------------------------------------------------
         resources, n_shared = _union_dedup(plan_resources, learned_resources)
+        if self._signals == "plan_gated" and self._gate_mode == "cap":
+            resources = self._cap_candidates(resources, plan_resources, learned_resources)
         if plan_resources:
             reasoning_parts.append(plan_reasoning)
         if learned_resources:
@@ -255,6 +389,9 @@ class LearnedPredictor(Predictor):
                 predictor_tag = _TAG_PLAN_ONLY
             elif learned_resources:
                 predictor_tag = _TAG_TRANSITION_ONLY
+        elif self._signals == "plan_gated":
+            if gate_reasoning:
+                reasoning_parts.append(gate_reasoning)
         elif plan_resources:
             # plan_only ablation arm: keep the tag it emitted before this change
             predictor_tag = _TAG_LEGACY_PLAN
@@ -418,6 +555,115 @@ class LearnedPredictor(Predictor):
         targets = [r.name for r in resources]
         reasoning = f"Learned: {current_tool} → {targets}"
         return resources, reasoning
+
+    # ------------------------------------------------------------------
+    # Plan gating (signals="plan_gated" only)
+    # ------------------------------------------------------------------
+
+    def _support_keys(self, specs: list[ResourceSpec]) -> set:
+        """
+        The identities a candidate set 'names', at the active gate_scope.
+
+        scope="resource": resource identity alone.  This is the granularity
+        `wasted%` is defined at (a prediction is wasted if that RESOURCE is
+        never realized again), so it is the granularity the gate should act on.
+        scope="key": (resource, consumer_step_offset) — strictly stronger, and
+        the same key `_union_dedup` uses.
+        """
+        if self._gate_scope == "key":
+            return {_resource_key(s) for s in specs}
+        return {(s.resource_id or s.name) for s in specs}
+
+    def _spec_identity(self, spec: ResourceSpec):
+        if self._gate_scope == "key":
+            return _resource_key(spec)
+        return spec.resource_id or spec.name
+
+    def _gate_table_candidates(
+        self,
+        plan_resources: list[ResourceSpec],
+        table_resources: list[ResourceSpec],
+    ) -> tuple[list[ResourceSpec], str]:
+        """
+        Filter/downweight Signal 2's candidates using Signal 1 as the gate.
+
+        Returns (kept, reasoning).  See module docstring for the four rules.
+        """
+        if not table_resources:
+            return [], ""
+        if not plan_resources:
+            # No plan at this prediction point -> nothing to gate WITH.
+            if self._gate_no_plan == "suppress":
+                return [], (f"Gate[{self._gate_mode}]: plan silent, "
+                            f"suppressed {len(table_resources)} table candidates")
+            return list(table_resources), (
+                f"Gate[{self._gate_mode}]: plan silent, "
+                f"passed {len(table_resources)} table candidates through")
+
+        supported = self._support_keys(plan_resources)
+        kept: list[ResourceSpec] = []
+        n_dropped = 0
+        n_downweighted = 0
+        for spec in table_resources:
+            if self._spec_identity(spec) in supported:
+                kept.append(spec)
+                continue
+            # --- unsupported by the plan ---
+            if self._gate_mode == "hard":
+                n_dropped += 1
+            elif self._gate_mode == "soft":
+                new_conf = spec.confidence * self._gate_factor
+                if new_conf < self._min_confidence:
+                    n_dropped += 1
+                    continue
+                damped = copy.copy(spec)
+                damped.confidence = new_conf
+                kept.append(damped)
+                n_downweighted += 1
+            elif self._gate_mode == "tail":
+                # Asymmetric: only the LOW-confidence tail is suppressed;
+                # a high-confidence unsupported candidate survives untouched.
+                if spec.confidence < self._gate_tail:
+                    n_dropped += 1
+                    continue
+                kept.append(spec)
+            else:  # "cap": per-candidate filtering happens after the union
+                kept.append(spec)
+
+        reasoning = (f"Gate[{self.gate_spec}]: table={len(table_resources)} "
+                     f"kept={len(kept)} dropped={n_dropped} "
+                     f"downweighted={n_downweighted}")
+        return kept, reasoning
+
+    def _cap_candidates(
+        self,
+        resources: list[ResourceSpec],
+        plan_resources: list[ResourceSpec],
+        table_resources: list[ResourceSpec],
+    ) -> list[ResourceSpec]:
+        """
+        Keep at most gate_k candidates, ranked by confidence with a +1.0 bonus
+        for candidates BOTH signals name.
+
+        The cap is on prediction instances the runtime would act on, so it is
+        applied to the post-dedup union.  `sorted` is stable, so ties keep the
+        union's plan-first ordering and the result is deterministic.
+        """
+        if self._gate_k <= 0:
+            return []
+        if len(resources) <= self._gate_k:
+            return resources
+        agreed: set = set()
+        if self._gate_cap_use_plan:
+            agreed = (self._support_keys(plan_resources)
+                      & self._support_keys(table_resources))
+        ranked = sorted(
+            resources,
+            key=lambda r: -(r.confidence
+                            + (_CAP_AGREE_BONUS
+                               if self._spec_identity(r) in agreed else 0.0)),
+        )
+        return ranked[: self._gate_k]
 
     # ------------------------------------------------------------------
     # Helpers
