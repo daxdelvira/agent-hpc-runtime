@@ -60,6 +60,21 @@ usable(){ # running, right GPU type, not blacklisted
 # watcher launching anything at all.
 srun_alive(){ ps -u "$USER" -o cmd= 2>/dev/null | grep -q "^srun .*--jobid=$1 "; }
 
+# The campaign's clean-tree guard aborts in ~1 s on a dirty tree. That is a
+# correct refusal — a trial that cannot be tied to a commit is worthless — but
+# the tree goes dirty for MINUTES AT A TIME while other agents edit
+# runtime/predictor. Launching into that burns an attempt, logs SUSPECT NO-OP,
+# and after 4 of them blacklists a perfectly good hold. The dirty tree is
+# transient and external, so wait it out instead of spending attempts on it.
+# Mirrors the campaign's guard exactly, .nfs* exclusion included.
+tree_clean(){
+  local d
+  d=$(git -C "$REPO" status --porcelain --ignore-submodules=untracked \
+        -- experiments workloads runtime 2>/dev/null \
+      | grep -v '/\.nfs[0-9a-f]\{16,\}') || true
+  [ -z "$d" ]
+}
+
 launch(){ # $1=jobid $2=gres
   local n=$(( ${attempts[$1]:-0} + 1 ))
   attempts[$1]=$n
@@ -100,6 +115,13 @@ while true; do
       step_seen[$j]=0; note_step_end "$j"
     fi
   done
+
+  if ! tree_clean; then
+    [ "${dirty_noted:-0}" = 1 ] || log "tree dirty (another agent is mid-edit) — holding launches; attempts NOT spent"
+    dirty_noted=1
+    sleep 120; continue
+  fi
+  if [ "${dirty_noted:-0}" = 1 ]; then log "tree clean again — resuming launches"; dirty_noted=0; fi
 
   # One campaign per JOB, not per facet. The earlier per-facet rule assumed two
   # campaigns on the same node type would contend for GPUs — but separate
