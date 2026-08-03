@@ -48,11 +48,51 @@ stall_class (rows with exposure_s > 0), decision order:
                             time — the engine bring-up itself is the exposed
                             cost.  Checked before the window classes: when I/O
                             was on time the window argument is moot.
-  no_window                 window_s < 15 s (prediction arrived at need time)
+  no_window                 window_s < w_min  (prediction arrived at need time)
   window_too_small          window_s < transfer + spin-up (unhideable)
   late_start                window sufficient but start_delay_s consumed it
   residual_partial          transfer started early, finished after need
   unattributed              exposure with no reconstructable window
+
+Bring-up-relative window floors
+-------------------------------
+w_min and spin-up used to be the fixed constants 15 s and 30 s.  They were
+calibrated when the only way to make a vLLM engine serve was a cold boot of
+500-1300 s.  The sleep-mode arm (RuntimeConfig.sleep_wake_swaps) wakes a parked
+engine in 0.8-2.1 s — three orders of magnitude cheaper — and against fixed
+cold-boot floors every such wake would be stamped `no_window`: a 5 s window
+would be called "no window at all" even though it is >3x the entire cost of the
+operation.  The instrument would report the success case as a failure, silently
+and plausibly.
+
+A fixed threshold is the wrong instrument when the quantity it gates spans
+three orders of magnitude.  Both floors are therefore expressed relative to the
+resource's OWN measured bring-up cost (bringup_cost_s()), capped by the historic
+constants:
+
+    w_min  = min(W_MIN_CAP_S,  NO_WINDOW_FRAC * bringup)     # 15 s cap
+    spinup = min(SPINUP_CAP_S, SPINUP_FRAC   * bringup)      # 30 s cap, vllm
+
+Reading: a floor may never exceed the cost of the thing it is gating.  You
+cannot call a window "too small to act in" when it is longer than the entire
+action.  With NO_WINDOW_FRAC = SPINUP_FRAC = 1.0 the floors are not tuned
+parameters — `no_window` means literally "the window was shorter than the
+bring-up", which is regime-independent by construction.
+
+Consequences:
+  cold boot (bringup 500-1300 s)  fractions exceed the caps, min() picks the
+                                  cap, behaviour identical to the old code.
+  L1/L2 wake (bringup 0.8-2.1 s)  caps are ~10-20x the whole operation; min()
+                                  picks the relative term and the arm is scored
+                                  on whether it actually hid the wake.
+
+Using each row's own transfer_s (rather than a table of calibrated per-platform
+bring-up costs) is deliberate: it is per-trial, per-platform and per-mechanism,
+so it never pools L40S with Blackwell figures and cannot go stale when a new
+bring-up mechanism lands.  Every window-branch row carries bringup_cost_s,
+bringup_provenance, w_min_s and spinup_s so its class can be re-derived from the
+CSV alone; swap_mechanism carries vLLM's own report of how the swap was served
+("sleep_wake" / "cold_boot" / "already_serving") where the arm emits it.
 
 Usage
 -----
@@ -83,9 +123,26 @@ from parse_eval_traces import (  # noqa: E402
     used_resource_ids,
 )
 
-W_MIN_S = 15.0            # below this, the window is "no window at all"
-SPINUP_FLOOR_S = 30.0     # engine init/compile floor added to transfer when
-                          # judging window_too_small for vllm_model resources
+# ---------------------------------------------------------------------------
+# Window floors — see "Bring-up-relative window floors" in the module docstring
+# ---------------------------------------------------------------------------
+# These two constants were calibrated in the cold-boot-only era, when the ONLY
+# way to make a vLLM engine serve was a 500-1300 s boot.  They are retained as
+# CAPS, not as the floors themselves: a floor may never exceed the bring-up cost
+# it is supposed to gate (see window_floors()).
+W_MIN_CAP_S = 15.0        # cold-boot-era "no window at all" cap
+SPINUP_CAP_S = 30.0       # cold-boot-era engine init/compile cap, added to
+                          # transfer when judging window_too_small for
+                          # vllm_model resources
+# Fractions of the measured bring-up cost.  1.0 == "the floor is the bring-up
+# cost itself"; both are deliberately NOT tuned constants (see docstring).
+NO_WINDOW_FRAC = 1.0
+SPINUP_FRAC = 1.0
+
+# Backwards-compatible aliases (external callers / older notebooks import these).
+W_MIN_S = W_MIN_CAP_S
+SPINUP_FLOOR_S = SPINUP_CAP_S
+
 SIM_ELAPSED_S = 0.5       # elapsed below this on a >1 GB object = simulated
 
 NO_PREFETCH_CONFIGS = {"baseline", "observe_only"}
@@ -107,6 +164,9 @@ def collect_gates(trace: dict) -> list[dict]:
             "t_exit": w.get("t", 0.0), "wait_s": float(w.get("wait_s") or 0.0),
             "on_demand": bool(w.get("on_demand_swap")),
             "prefetch_scheduled": bool(w.get("prefetch_scheduled")),
+            # Only emitted by the sleep_wake arm (runtime/adapters/chemgraph.py
+            # adds it under RuntimeConfig.sleep_wake_swaps); "" elsewhere.
+            "mechanism": w.get("swap_mechanism", "") or "",
             "matched": False,
         })
     for i, w in enumerate(trace["agg_waits"]):
@@ -115,6 +175,7 @@ def collect_gates(trace: dict) -> list[dict]:
             "t_exit": w.get("t", 0.0), "wait_s": float(w.get("wait_s") or 0.0),
             "on_demand": bool(w.get("on_demand_start")),
             "prefetch_scheduled": bool(w.get("prefetch_started")),
+            "mechanism": w.get("swap_mechanism", "") or "",
             "matched": False,
         })
     gates.sort(key=lambda g: g["t_exit"])
@@ -283,6 +344,7 @@ def trial_rows(base: dict, trace: dict, config: str, mode: str) -> list[dict]:
             "gate_on_demand": gate["on_demand"] if gate else None,
             "gate_prefetch_scheduled": (gate["prefetch_scheduled"]
                                         if gate else None),
+            "swap_mechanism": gate["mechanism"] if gate else "",
             "simulated": simulated,
             "estimated_load_s": rec.get("estimated_load_s"),
         })
@@ -357,6 +419,7 @@ def trial_rows(base: dict, trace: dict, config: str, mode: str) -> list[dict]:
             "gate_group": f"{gate['kind']}:{gate['model']}:{gate['idx']}",
             "gate_on_demand": gate["on_demand"],
             "gate_prefetch_scheduled": gate["prefetch_scheduled"],
+            "swap_mechanism": gate["mechanism"],
             "outcome": "direct_prefetch" if direct else no_pref,
             "bytes_provenance": "unknown",
             "simulated": mode == "simulated",
@@ -417,6 +480,61 @@ def trial_rows(base: dict, trace: dict, config: str, mode: str) -> list[dict]:
     return rows
 
 
+def bringup_cost_s(r: dict) -> tuple[float | None, str]:
+    """The measured cost of making THIS resource ready, in THIS trial.
+
+    Returns (cost_s, provenance).  Priority:
+      measured   transfer_s — the task's own elapsed_s.  For a vllm_model task
+                 this is the end-to-end bring-up (cold boot OR sleep-mode wake),
+                 already inclusive of engine init, so it is the ground truth for
+                 which regime the row is in.  Preferred over any table because
+                 it is per-trial, per-platform and per-mechanism: it never
+                 requires pooling L40S with Blackwell numbers, and it cannot go
+                 stale when a new bring-up mechanism is added.
+      estimated  estimated_load_s — the resource's declared load latency, used
+                 when the object was never staged (skips, megammap_stage rows
+                 whose transfer is not instrumented).
+      unknown    neither available; caller falls back to the cold-boot-era caps.
+    """
+    t = r.get("transfer_s")
+    if isinstance(t, (int, float)) and t > 0:
+        return float(t), "measured"
+    e = r.get("estimated_load_s")
+    if isinstance(e, (int, float)) and e > 0:
+        return float(e), "estimated"
+    return None, "unknown"
+
+
+def window_floors(r: dict) -> tuple[float, float, float | None, str]:
+    """(w_min_s, spinup_s, bringup_s, provenance) for one row.
+
+    A floor may never exceed the bring-up cost it gates.  That single rule is
+    what makes the taxonomy regime-independent:
+
+      w_min  = min(W_MIN_CAP_S,  NO_WINDOW_FRAC * bringup)
+      spinup = min(SPINUP_CAP_S, SPINUP_FRAC   * bringup)   [vllm_model only]
+
+    Cold boot (bringup 500-1300 s): both fractions exceed their caps, min()
+    selects the cap, and the result is byte-identical to the pre-2026-08 code.
+    Sleep-mode wake (bringup 0.8-2.1 s): the caps are ~10-20x the entire cost
+    of the operation being judged, so min() selects the bring-up-relative term
+    and a 5 s window is correctly read as ample rather than as "no window".
+    """
+    bringup, prov = bringup_cost_s(r)
+    if bringup is None:
+        # No measurement and no estimate — keep the historical constants rather
+        # than invent a cost.  These rows are reported under provenance
+        # 'unknown' so the fallback is never silent.
+        w_min = W_MIN_CAP_S
+        spinup = (SPINUP_CAP_S if r.get("resource_type") == "vllm_model"
+                  else 0.0)
+        return w_min, spinup, None, prov
+    w_min = min(W_MIN_CAP_S, NO_WINDOW_FRAC * bringup)
+    spinup = (min(SPINUP_CAP_S, SPINUP_FRAC * bringup)
+              if r.get("resource_type") == "vllm_model" else 0.0)
+    return w_min, spinup, bringup, prov
+
+
 def _stall_class(r: dict, cache_ontime_groups: set) -> str:
     exposure = r.get("exposure_s")
     if not exposure or exposure <= 0.1:
@@ -435,10 +553,17 @@ def _stall_class(r: dict, cache_ontime_groups: set) -> str:
     window = r.get("window_s")
     if window is None:
         return "unattributed"
-    if window < W_MIN_S:
+    w_min, spinup, bringup, prov = window_floors(r)
+    # Audit trail: every window-branch decision records the floors it used and
+    # where the bring-up cost came from, so a class can be re-derived from the
+    # CSV without re-reading the trace.
+    r["bringup_cost_s"] = _r(bringup)
+    r["bringup_provenance"] = prov
+    r["w_min_s"] = _r(w_min, 3)
+    r["spinup_s"] = _r(spinup, 3)
+    if window < w_min:
         return "no_window"
     transfer = r.get("transfer_s") or r.get("estimated_load_s") or 0.0
-    spinup = SPINUP_FLOOR_S if r.get("resource_type") == "vllm_model" else 0.0
     if window < transfer + spinup:
         return "window_too_small"
     delay = r.get("start_delay_s")

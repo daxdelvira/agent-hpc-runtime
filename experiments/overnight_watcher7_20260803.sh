@@ -22,8 +22,12 @@ WLOG=$REPO/logs/overnight_watcher7_20260803.log
 mkdir -p "$REPO/logs"
 
 # ---- assignments -----------------------------------------------------------
-BW_JOBS="11629978 11629979 11629980 11629981 11652952 11652953"
-L40S_JOBS="11652948 11652949 11652950 11652951"
+# 4 h top-ups added 2026-08-03 12:37. The 8 h Blackwell holds estimate a 17:16
+# start; short holds backfill ahead of them, which is the only lever left on a
+# Resources-bound queue. Any hold not in these lists lands IDLE — the most
+# expensive failure mode here — so submit and register in the same change.
+BW_JOBS="11629978 11629979 11629980 11629981 11652952 11652953 11653557 11653558"
+L40S_JOBS="11652948 11652949 11652950 11652951 11653555 11653556"
 SCRIPT="run_eval_blackwell_aligned_20260802.sh"
 BW_GRES="gpu:4";  BW_TYPED="Partition=gpu-rtxpro-blackwell"
 L40S_GRES="gpu:6"; L40S_TYPED="gres/gpu:l40s=6"
