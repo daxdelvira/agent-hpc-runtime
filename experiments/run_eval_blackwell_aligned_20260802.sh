@@ -31,8 +31,18 @@ cd /storage/project/r-ag117-0/shared/agent_hpc/agent-hpc-runtime
 unset $(env | grep -oE '^(PMIX_[A-Z0-9_]*|PMI_[A-Z0-9_]*|SLURM_PMI[A-Z0-9_]*)') 2>/dev/null || true
 log(){ echo "[$(date +'%F %T')] === $*"; }
 
-if [ -n "$(git status --porcelain --ignore-submodules=untracked -- experiments workloads runtime 2>/dev/null)" ]; then
-  log "ABORT: uncommitted changes in experiments/workloads/runtime — commit first."; exit 1
+# Clean-tree guard: a trial must be attributable to a commit, so refuse to run
+# with local edits. EXCLUDE .nfs* — those are NFS silly-rename artifacts, made
+# when a file is unlinked while another process still holds it open. They are
+# untracked, they are not anyone's edit, and they appear and vanish on their
+# own. One of them aborted job 11652948 twice on 2026-08-03 and cost the hold:
+# the watcher's two attempts both hit it, then blacklisted a node that was
+# otherwise healthy. Anything else still aborts.
+_dirty=$(git status --porcelain --ignore-submodules=untracked -- experiments workloads runtime 2>/dev/null \
+         | grep -v '/\.nfs[0-9a-f]\{16,\}' || true)
+if [ -n "$_dirty" ]; then
+  log "ABORT: uncommitted changes in experiments/workloads/runtime — commit first."
+  log "$_dirty"; exit 1
 fi
 ngpu=$(nvidia-smi -L 2>/dev/null | wc -l)
 [ "$ngpu" -lt 4 ] && { log "ABORT: only $ngpu GPUs visible (need 4)"; exit 1; }
