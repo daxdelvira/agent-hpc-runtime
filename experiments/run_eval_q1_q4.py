@@ -65,6 +65,15 @@ PROJECT_ROOT = _HERE.parent
 EVAL_ROOT = PROJECT_ROOT / "results" / "eval_q1_q4"
 RUNS_ROOT = EVAL_ROOT / "runs"
 
+# Default predictor horizon for --lookahead.  Imported from the predictor so
+# the two cannot drift; the literal is only a fallback for the case where the
+# runtime package is not importable from the driver's sys.path.
+try:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from runtime.predictor.learned_predictor import _DEFAULT_LOOKAHEAD
+except Exception:                                   # pragma: no cover
+    _DEFAULT_LOOKAHEAD = 2
+
 CG_PYTHON = "/storage/project/r-ag117-0/shared/agent_hpc/envs/chemgraph/bin/python"
 ATOMS_PYTHON = "/storage/project/r-ag117-0/shared/agent_hpc/envs/atoms/bin/python"
 _AA_NVIDIA = ("/storage/project/r-ag117-0/shared/agent_hpc/envs/atomagents/"
@@ -669,8 +678,26 @@ def stop_hermes_daemon(proc: subprocess.Popen | None) -> None:
             proc.kill()
 
 
-def build_env(workload: str, needs_hermes: bool = False) -> dict[str, str]:
+# Signal-combination mode of LearnedPredictor per --predictor value.  Mirrors
+# experiments/chemgraph_exp.py:523 (`"full" if args.predictor == "learned"`).
+# mock/oracle are not LearnedPredictors, so they have no signal mode.
+_PREDICTOR_SIGNAL_MODE: dict[str, str | None] = {
+    "learned": "full",
+    "plan_only": "plan_only",
+    "transition_only": "transition_only",
+    "mock": None,
+    "oracle": None,
+}
+
+
+def build_env(workload: str, needs_hermes: bool = False,
+              lookahead: int | None = None) -> dict[str, str]:
     env = dict(os.environ)
+    # LearnedPredictor reads its horizon from this env var (the workload
+    # runners take --predictor but not --lookahead, so the driver cannot pass
+    # it on the command line without changing every runner's argparse).
+    if lookahead is not None:
+        env["RUNTIME_PREDICTOR_LOOKAHEAD"] = str(lookahead)
     ld_parts = [f"{_AA_NVIDIA}/cudnn/lib", f"{_AA_NVIDIA}/cusparselt/lib",
                 f"{_AA_NVIDIA}/nccl/lib", _TORCH_LIB, "/usr/local/cuda/lib64"]
     if env.get("LD_LIBRARY_PATH"):
@@ -758,6 +785,7 @@ def run_one_trial(
     config: str,
     trial_idx: int,
     dry_run: bool = False,
+    lookahead: int = _DEFAULT_LOOKAHEAD,
 ) -> bool:
     """Launch one trial; returns True if it completed successfully."""
     wl = WORKLOADS[workload]
@@ -802,7 +830,12 @@ def run_one_trial(
             return False
 
     trial_dir.mkdir(parents=True, exist_ok=False)
-    env = build_env(workload, needs_hermes=bool(cfg.get("needs_hermes")))
+    signal_mode = _PREDICTOR_SIGNAL_MODE.get(cfg["predictor"])
+    # Only LearnedPredictor arms have a horizon; recording a number for a
+    # mock/oracle arm would imply the knob did something there.
+    effective_lookahead = lookahead if signal_mode else None
+    env = build_env(workload, needs_hermes=bool(cfg.get("needs_hermes")),
+                    lookahead=effective_lookahead)
     meta = {
         "workload": workload,
         "config": config,
@@ -811,6 +844,14 @@ def run_one_trial(
         "command": " ".join(cmd),
         "runtime_mode": cfg["mode"],
         "predictor": cfg["predictor"],
+        # Predictor provenance (added 2026-08-03).  The `learned` arms changed
+        # meaning when the two predictor signals were made simultaneous, so
+        # trials recorded before/after that change must never be pooled.  These
+        # two keys make the split mechanical: signal_mode is which signals the
+        # predictor combined, lookahead is the horizon it searched.  Trials
+        # predating this key carry neither and are the pre-change population.
+        "signal_mode": signal_mode,
+        "lookahead": effective_lookahead,
         "extra_flags": cfg["flags"],
         "git_commit": commit,
         "node": socket.gethostname(),
@@ -869,6 +910,18 @@ def run_one_trial(
             summary = json.loads(summary_src.read_text())
         except Exception:
             summary = None
+        # Stamp the predictor provenance into the ARCHIVED summary too, next to
+        # the runner's own descriptors (condition/hw_profile/prompt_variant/...),
+        # so any tool reading summary.json alone can split pre-/post-change
+        # `learned` trials without cross-referencing meta.json.  Additive keys
+        # only; the runner-owned results/summary_<run_id>.json is left as-is.
+        if isinstance(summary, dict):
+            summary.setdefault("signal_mode", signal_mode)
+            summary.setdefault("lookahead", effective_lookahead)
+            try:
+                (trial_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+            except OSError as exc:
+                log(f"WARN: could not stamp provenance into summary.json: {exc!r}")
     # trace_path/system_profile_csv may be None or "" even when a summary
     # exists (atomagents_exp2/3 write trace_path=None): Path("") is '.', which
     # passes .exists() and made copy2 raise IsADirectoryError, killing the
@@ -956,9 +1009,16 @@ def main() -> None:
                         help="Stop launching runs this close to the SLURM job end")
     parser.add_argument("--max-failures", type=int, default=3,
                         help="Give up on a config after this many consecutive failures")
+    parser.add_argument("--lookahead", type=int, default=_DEFAULT_LOOKAHEAD,
+                        help="LearnedPredictor horizon in steps (offsets "
+                             "1..N are searched by both signals).  Recorded in "
+                             "meta.json/summary.json; ignored by mock/oracle arms")
     parser.add_argument("--list", action="store_true", help="Show status and exit")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.lookahead < 1:
+        print(f"ERROR: --lookahead must be >= 1, got {args.lookahead}")
+        sys.exit(2)
 
     RUNS_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -1017,7 +1077,8 @@ def main() -> None:
                     stopped_for_time = True
                     break
                 idx = todo[cfg].pop(0)
-                ok = run_one_trial(args.workload, cfg, idx, dry_run=args.dry_run)
+                ok = run_one_trial(args.workload, cfg, idx, dry_run=args.dry_run,
+                                   lookahead=args.lookahead)
                 consecutive_failures[cfg] = 0 if ok else consecutive_failures[cfg] + 1
                 if not ok and not args.dry_run:
                     # Failed trial dirs stay on disk; schedule a replacement index
@@ -1032,7 +1093,8 @@ def main() -> None:
                     stopped_for_time = True
                     break
                 idx = todo[cfg].pop(0)
-                ok = run_one_trial(args.workload, cfg, idx, dry_run=args.dry_run)
+                ok = run_one_trial(args.workload, cfg, idx, dry_run=args.dry_run,
+                                   lookahead=args.lookahead)
                 consecutive_failures[cfg] = 0 if ok else consecutive_failures[cfg] + 1
                 if not ok and not args.dry_run:
                     todo[cfg].append(todo[cfg][-1] + 1 if todo[cfg] else idx + 1)
