@@ -79,7 +79,7 @@ note_step_end(){
   launch_ts[$j]=0
 }
 
-log "watcher6 started (pid $$): BW=[$BW_JOBS] L40S=[$L40S_JOBS] -> $SCRIPT"
+log "watcher7 started (pid $$): BW=[$BW_JOBS] L40S=[$L40S_JOBS] -> $SCRIPT"
 
 while true; do
   for j in $BW_JOBS $L40S_JOBS; do
