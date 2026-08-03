@@ -517,8 +517,18 @@ def slurm_deadline_epoch() -> float | None:
     return None
 
 
-def kill_vllm_servers(wait_gpu_clear: bool = True) -> None:
-    """Kill our vLLM servers and wait for GPU memory to drain."""
+def kill_vllm_servers(wait_gpu_clear: bool = True) -> bool:
+    """Kill our vLLM servers and wait for GPU memory to drain.
+
+    Returns True if the GPUs are clean (or we were told not to wait), False if
+    memory is still held after the timeout. Callers MUST honour a False: a trial
+    started on a dirty GPU does not degrade, it dies — vLLM raises
+    "Free memory on device cuda:N (8.81/44.39 GiB) on startup is less than
+    desired GPU memory utilization" and the whole trial is lost. Eight trials
+    burned this way overnight on 2026-08-02 because this function warned and
+    returned anyway, so the driver marched on into a guaranteed failure and
+    then repeated it for every remaining trial on that node.
+    """
     user = os.environ.get("USER", "")
     subprocess.run(["pkill", "-u", user, "-f", "vllm.entrypoints.openai.api_server"],
                    capture_output=True)
@@ -529,8 +539,9 @@ def kill_vllm_servers(wait_gpu_clear: bool = True) -> None:
                    capture_output=True)
     time.sleep(10)
     if not wait_gpu_clear:
-        return
-    for _ in range(60):
+        return True
+    used = 0.0
+    for i in range(60):
         try:
             out = subprocess.run(
                 ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
@@ -539,9 +550,44 @@ def kill_vllm_servers(wait_gpu_clear: bool = True) -> None:
         except Exception:
             used = 0
         if used < 4096:
-            return
+            return True
+        # Half way through, escalate: something is holding memory that our
+        # pattern-based pkill did not match (an orphaned worker whose title was
+        # rewritten, a process re-parented after its step exited). Ask the
+        # driver itself which PIDs hold GPU memory and signal those directly.
+        if i == 30:
+            log(f"GPUs still holding {used:.0f} MiB after 150 s; "
+                f"escalating to PID-targeted kill.")
+            _kill_gpu_pids(user)
         time.sleep(5)
-    log("WARNING: GPUs still busy after 300 s of waiting; continuing anyway.")
+    log(f"ERROR: GPUs still holding {used:.0f} MiB after 300 s. "
+        f"Refusing to start a trial on a dirty GPU.")
+    return False
+
+
+def _kill_gpu_pids(user: str) -> None:
+    """SIGKILL our own processes that nvidia-smi reports as holding GPU memory."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=15).stdout
+    except Exception:
+        return
+    for tok in out.split():
+        if not tok.strip().isdigit():
+            continue
+        pid = int(tok)
+        try:
+            # Only ours: killing another user's job would be both rude and,
+            # on a shared node, a genuine outage for them.
+            owner = subprocess.run(["ps", "-o", "user=", "-p", str(pid)],
+                                   capture_output=True, text=True,
+                                   timeout=10).stdout.strip()
+            if owner and owner == user:
+                os.kill(pid, signal.SIGKILL)
+                log(f"  SIGKILLed stale GPU process {pid}")
+        except Exception:
+            pass
 
 
 def hermes_stack_available() -> str | None:
@@ -755,7 +801,21 @@ def run_one_trial(
     with open(EVAL_ROOT / "commands.log", "a") as f:
         f.write(f"{meta['start_time']}  {run_id}\n  {' '.join(cmd)}\n")
 
-    kill_vllm_servers()
+    if not kill_vllm_servers():
+        # Do not spend an hour of a preemptible hold on a trial that cannot
+        # start. Reported as its own status so these are never silently pooled
+        # with genuine workload failures when the results are aggregated.
+        log(f"SKIP {workload}/{config} t{trial_idx:02d} — GPUs not clean")
+        meta["status"] = "skipped_dirty_gpu"
+        meta["end_time"] = datetime.now().astimezone().isoformat()
+        (trial_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+        # False, not the status string: this function's contract is "did the
+        # trial complete", and a truthy return would count a skip as a success
+        # and decrement the remaining-trials target. It also counts toward
+        # --max-failures, which is what stops the campaign from retrying a
+        # node-level fault for the rest of the hold.
+        return False
+
     log(f"START {workload}/{config} t{trial_idx:02d}  run_id={run_id}")
 
     status = "failed"

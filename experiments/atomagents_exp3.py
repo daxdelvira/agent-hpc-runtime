@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime
@@ -41,6 +42,25 @@ _HERE = Path(__file__).resolve().parent
 _PROJECT_ROOT = _HERE.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 sys.path.insert(0, str(_PROJECT_ROOT / "workloads" / "AtomAgents"))
+
+# ---------------------------------------------------------------------------
+# AutoGen's disk cache directory must exist before ANY autogen import.
+#
+# autogen/agentchat/contrib/capabilities/transforms.py evaluates `Cache.disk()`
+# as a DEFAULT ARGUMENT at class-definition time, i.e. during import, and that
+# opens a diskcache SQLite DB at ./.cache/<seed> relative to CWD. Two separate
+# outages came from this:
+#   1. CWD is workloads/AtomAgents on project NFS, and SQLite locking over NFS
+#      is broken -> `sqlite3.OperationalError: locking protocol` killed 12/12
+#      trials once two campaigns ran concurrently.
+#   2. The fix (symlink .cache -> /tmp/autogen_cache) put the SYMLINK on NFS
+#      where every node sees it, while the TARGET is node-local. Any node that
+#      had not created /tmp/autogen_cache saw a dangling link and died with
+#      `FileNotFoundError: ./.cache/42` -> 10 more trials lost.
+# Doing it here, in the entry point, covers every launch path (campaign script,
+# manual driver run, interactive debugging) instead of only the one shell
+# script that happened to have the mkdir.
+os.makedirs("/tmp/autogen_cache", exist_ok=True)
 
 from runtime.config import RuntimeConfig, RuntimeMode
 from runtime.event_bus import EventBus
@@ -180,6 +200,44 @@ TASK_PROMPT_VARIANTS_EXP3 = {
     "aligned": TASK_PROMPT_EXP3_ALIGNED,
     "unpinned": TASK_PROMPT_EXP3_UNPINNED,
 }
+
+# Names baked into every prompt above, in the order the workload offers them.
+_PROMPT_POTENTIALS = ("W_Zhou04.eam.alloy", "w_eam4.fs")
+
+
+def retarget_prompt_potentials(prompt: str, offered: tuple) -> str:
+    """Rewrite hardcoded potential filenames to whatever `--potentials` offers.
+
+    WHY THIS IS NECESSARY, not cosmetic. Every prompt variant names
+    "w_eam4.fs" literally. When the driver offers `w_eam4_big.fs` instead, the
+    agent dutifully asks for a potential that is NOT on offer, the tool rejects
+    it, and the argument-recovery path runs on EVERY call. Recovery is a
+    best-effort heuristic over free text; making it the normal path rather than
+    the exceptional one is what let the wrong potential through on 2026-08-03
+    (the second simulation silently re-ran W_Zhou04). Naming the real file in
+    the prompt keeps recovery exceptional, which is the only regime it is
+    designed for.
+
+    This does NOT narrow the agent's choice — it still picks which potential to
+    run when, and in which order. It only ensures the names it is shown are the
+    names that exist, which is a bug fix, not a hint. (See the standing rule
+    above: reliability may not be bought with prompt structure.)
+
+    A no-op when the offered set is the default, so `pinned` stays
+    byte-identical to what the 28 already-collected trials ran.
+    """
+    if tuple(offered) == _PROMPT_POTENTIALS:
+        return prompt
+    if len(offered) != len(_PROMPT_POTENTIALS):
+        print(f"[runtime] WARNING: --potentials has {len(offered)} entries but the "
+              f"prompt names {len(_PROMPT_POTENTIALS)}; leaving prompt text alone. "
+              f"The agent will be shown names that may not be on offer.", flush=True)
+        return prompt
+    # Single simultaneous pass: chained str.replace could re-substitute a name
+    # that a previous replacement just introduced.
+    mapping = dict(zip(_PROMPT_POTENTIALS, offered))
+    pattern = re.compile("|".join(re.escape(k) for k in _PROMPT_POTENTIALS))
+    return pattern.sub(lambda m: mapping[m.group(0)], prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +595,12 @@ def run_exp3(args: argparse.Namespace) -> None:
     # An explicit --task-prompt always wins; otherwise the variant selects one.
     # Default is "pinned", i.e. byte-identical to every trial collected so far.
     task_prompt = args.task_prompt or TASK_PROMPT_VARIANTS_EXP3[args.prompt_variant]
+    # Show the agent the potential names that are actually on offer. No-op
+    # unless --potentials overrides the default pair.
+    from atomagents.tools.orchestration_tools import offered_potentials
+    _offered = offered_potentials()
+    task_prompt = retarget_prompt_potentials(task_prompt, _offered)
+    print(f"[runtime] Potentials on offer : {list(_offered)}")
     t_start = __import__("time").perf_counter()
 
     print("[runtime] Adapter installed. Starting experiment…\n")
