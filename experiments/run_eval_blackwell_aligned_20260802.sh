@@ -144,9 +144,24 @@ fi
 #      to fall back to smaller models — not after collecting a full baseline.
 # baseline is already at N=6 on the pre-aligned workload, so it is the arm we
 # can most afford to be short on for another few hours.
-log "Phase 2a: sleep_wake (the claim) to n=2 — first light on parked engines"
+# SLEEP_WAKE IS SUSPENDED (2026-08-03 ~14:50). Do not re-enable without reading
+# this. The wake mechanism works -- 1.038 s and 1.093 s on two nodes against
+# 1600.6 s cold boots -- but EVERY trial that successfully woke then hung:
+#   t01__131616__f96075d  wake 1.093 s -> single generation ~30 min -> API timeout
+#   t01__133722__9ada1fb  wake 1.038 s -> same, same workflow point
+# 2 of 2. Across 37 trials in the non-wake arms the longest in-flight request
+# was ~3 min (baseline max 18 x 10 s samples, full_system 17; sleep_wake 179),
+# and the server never logged a finished request. A generation that never emits
+# a stop token at a normal token rate is what corrupt weights look like, and it
+# would also explain the reported wake implying 33.2 GB/s per GPU -- above PCIe
+# Gen4 x16 theoretical, i.e. faster than a full restore can physically be.
+# Each attempt costs ~70 min of a preemptible hold and yields a trial that
+# reports status=completed while containing 18 events and 0 hits.
+# experiments/bench_wake_cache_dependence.py (with the coherence probe) decides
+# whether this is a result or a bug. Until it answers, collect arms that finish.
+log "Phase 2a: baseline (X) to n=3 — sleep_wake suspended, see comment above"
 $PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
-    --configs sleep_wake --trials 2
+    --configs baseline --trials 3
 
 log "Phase 2a done. Status:"
 $PY experiments/run_eval_q1_q4.py --list 2>/dev/null | grep -E "workload|exp3_aligned" || true
@@ -155,13 +170,13 @@ log "Phase 2b: baseline (X) to n=2"
 $PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
     --configs baseline --trials 2
 
-log "Phase 2c: sleep_wake_baseline — separates mechanism from prediction"
+log "Phase 2c: full_system to n=3"
 $PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
-    --configs sleep_wake_baseline --trials 2
+    --configs full_system --trials 3
 
 log "Phase 2d: top up the headline pair to n=5"
 $PY experiments/run_eval_q1_q4.py --workload atomagents_exp3_aligned \
-    --configs sleep_wake,baseline --trials 5
+    --configs baseline,full_system --trials 5
 
 # --- Phase 3: the two-insight ablation ------------------------------------
 # Only meaningful once Phase 2 shows a gap worth decomposing, but harmless to
