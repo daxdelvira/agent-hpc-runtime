@@ -520,6 +520,94 @@ def git_commit() -> str:
         return "nogit"
 
 
+# ---------------------------------------------------------------------------
+# Predictor provenance measured by IMPORT, not by git stamp.
+#
+# Why this exists (2026-08-03).  meta.json's `git_commit` is `git rev-parse
+# HEAD` at trial launch, and `signal_mode` is a lookup in _PREDICTOR_SIGNAL_MODE
+# keyed by the ARM NAME.  Neither says anything about the bytes Python actually
+# imports: the runner is a separate process that imports whatever is ON DISK at
+# its own import time, and the working tree is routinely dirty for minutes while
+# other agents edit runtime/predictor.  A trial started in such a window gets a
+# git_commit that does not describe its code, and a signal_mode that states the
+# arm's INTENT rather than what ran.  The `learned` arm changed meaning on
+# 2026-08-03 (a6283a2 made the plan and transition signals combine, roughly
+# doubling prefetch volume), so a wrong stamp silently pools two predictors.
+#
+# The gap is NOT a few seconds of race.  LearnedPredictor is constructed only
+# after the model router comes up, so the module is imported LAZILY, tens of
+# minutes into a trial.  Confirmed on the sleep_wake t01 of 2026-08-03:
+#   trial start / git_commit stamp .............. 12:30:32  (stamped aa5c8f7)
+#   a6283a2 lands on disk ....................... 12:37:39
+#   qwen_72b ready after 1585.7 s, predictor built  ~12:57
+#   first prediction_result ..................... 12:57:41
+# and that trace carries predictor_id="learned+both_disagree", a tag that exists
+# in exactly one commit in all of history (a6283a2) -- so the trial ran a6283a2
+# while its meta.json says aa5c8f7.  The exposure window was 27 minutes wide.
+#
+# That is why the fingerprint is taken TWICE.  A single launch-time sample would
+# have recorded the pre-change blob for that trial and been just as wrong as the
+# git stamp; only the before/after PAIR reveals it, as a mismatch.  The durable
+# version of this check belongs at the construction site (have the predictor
+# factory emit its module fingerprint into the trace), which lives in a module
+# this driver does not own; until then the pair is the reliable signal.
+#
+# `git_blob` is the git object id of the imported bytes, so a recorded trial maps
+# onto a commit mechanically:
+#     git rev-parse <commit>:runtime/predictor/learned_predictor.py
+# and the fingerprint is taken TWICE, before and after the runner. If the two
+# differ the file was edited mid-trial and the trial must be quarantined, not
+# pooled — that is the case a launch-time stamp cannot detect at all.
+_PREDICTOR_PROBE = r'''
+import hashlib, json, sys
+out = {}
+try:
+    sys.path.insert(0, sys.argv[1])
+    import runtime.predictor.learned_predictor as m
+    path = getattr(m, "__file__", None)
+    out["module_path"] = path
+    if path:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        out["sha256"] = hashlib.sha256(data).hexdigest()
+        out["bytes"] = len(data)
+        out["git_blob"] = hashlib.sha1(
+            b"blob " + str(len(data)).encode() + b"\x00" + data).hexdigest()
+    if hasattr(m, "_DEFAULT_LOOKAHEAD"):
+        out["default_lookahead"] = m._DEFAULT_LOOKAHEAD
+    cls = getattr(m, "LearnedPredictor", None)
+    # Presence of these properties is the structural signature of the
+    # simultaneous-signals predictor; absence means the pre-change module.
+    out["has_signal_mode_property"] = isinstance(
+        getattr(cls, "signal_mode", None), property)
+    out["has_lookahead_property"] = isinstance(
+        getattr(cls, "lookahead", None), property)
+except Exception as exc:
+    out["error"] = repr(exc)
+print(json.dumps(out))
+'''
+
+
+def predictor_fingerprint(python_exe: str) -> dict:
+    """Import the predictor with the TRIAL's interpreter and describe it.
+
+    Uses the same executable and sys.path the runner will use, so shadowing by
+    another entry on sys.path shows up as a module_path that is not the repo's.
+    Never raises: provenance must not be able to kill a campaign.
+    """
+    try:
+        proc = subprocess.run(
+            [python_exe, "-c", _PREDICTOR_PROBE, str(PROJECT_ROOT)],
+            cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=120)
+        line = (proc.stdout or "").strip().splitlines()
+        if not line:
+            return {"error": f"no output (rc={proc.returncode}): "
+                             f"{(proc.stderr or '')[-300:]}"}
+        return json.loads(line[-1])
+    except Exception as exc:
+        return {"error": repr(exc)}
+
+
 def gpu_info() -> list[str]:
     try:
         out = subprocess.run(
@@ -852,6 +940,12 @@ def run_one_trial(
         # predating this key carry neither and are the pre-change population.
         "signal_mode": signal_mode,
         "lookahead": effective_lookahead,
+        # signal_mode/lookahead above are the arm's INTENT, resolved from a
+        # table at launch; git_commit below is HEAD at launch.  Neither is
+        # evidence about the code that ran.  predictor_import IS: it is the
+        # module the trial's own interpreter resolves and its bytes' git blob
+        # id.  Prefer it over git_commit whenever the two disagree.
+        "predictor_import": predictor_fingerprint(wl["python"]),
         "extra_flags": cfg["flags"],
         "git_commit": commit,
         "node": socket.gethostname(),
@@ -975,13 +1069,36 @@ def run_one_trial(
         else:
             status = "failed"
 
+    # Second fingerprint: a commit landing DURING the trial leaves the launch
+    # stamp describing code the runner never ran.  Comparing the two blob ids is
+    # the only way to see that from the record afterwards.  A True here means the
+    # trial straddled an edit and must be quarantined, not pooled.
+    pred_after = predictor_fingerprint(wl["python"])
+    pred_before = meta.get("predictor_import") or {}
+    before_blob, after_blob = pred_before.get("git_blob"), pred_after.get("git_blob")
+    changed = bool(before_blob and after_blob and before_blob != after_blob)
+    if changed:
+        log(f"WARN {run_id}: predictor source changed mid-trial "
+            f"({before_blob[:12]} -> {after_blob[:12]}) — QUARANTINE, do not pool")
     meta.update({
         "status": status,
         "exit_code": rc,
         "end_time": datetime.now().astimezone().isoformat(),
         "wall_time_s": (summary or {}).get("wall_time_s"),
+        "predictor_import_after": pred_after,
+        "predictor_changed_mid_trial": changed,
     })
     (trial_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    # Mirror into the archived summary so a tool reading summary.json alone can
+    # make the same pre-/post-change split, matching the signal_mode stamp above.
+    summary_p = trial_dir / "summary.json"
+    if isinstance(summary, dict) and summary_p.exists():
+        summary.setdefault("predictor_import", pred_before)
+        summary.setdefault("predictor_changed_mid_trial", changed)
+        try:
+            summary_p.write_text(json.dumps(summary, indent=2))
+        except OSError as exc:
+            log(f"WARN: could not stamp predictor_import into summary.json: {exc!r}")
     log(f"END   {workload}/{config} t{trial_idx:02d}  status={status} "
         f"rc={rc} wall={(summary or {}).get('wall_time_s')}")
     return status == "completed"
