@@ -69,25 +69,34 @@ def resident_fraction(path: str) -> float:
     number into a warm one, which is exactly how the L2-sleep result was
     misread on 2026-08-02.
     """
-    import mmap
+    # Call libc mmap directly rather than using Python's mmap object: taking a
+    # ctypes pointer from a read-only mmap raises "underlying buffer is not
+    # writable", and the file is genuinely read-only.
     libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                          ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
+                             ctypes.POINTER(ctypes.c_ubyte)]
+    PROT_READ, MAP_SHARED, MAP_FAILED = 0x1, 0x01, ctypes.c_void_p(-1).value
+
     size = os.path.getsize(path)
     fd = os.open(path, os.O_RDONLY)
+    addr = None
     try:
-        mm = mmap.mmap(fd, size, prot=mmap.PROT_READ)
-    except Exception:
-        os.close(fd)
-        return float("nan")
-    try:
+        addr = libc.mmap(None, size, PROT_READ, MAP_SHARED, fd, 0)
+        if addr in (None, MAP_FAILED):
+            return float("nan")
         pagesize = os.sysconf("SC_PAGE_SIZE")
         npages = (size + pagesize - 1) // pagesize
         vec = (ctypes.c_ubyte * npages)()
-        addr = ctypes.c_void_p(ctypes.addressof(ctypes.c_char.from_buffer(mm)))
-        if libc.mincore(addr, ctypes.c_size_t(size), vec) != 0:
+        if libc.mincore(ctypes.c_void_p(addr), ctypes.c_size_t(size), vec) != 0:
             return float("nan")
         return sum(v & 1 for v in vec) / npages
     finally:
-        mm.close()
+        if addr not in (None, MAP_FAILED):
+            libc.munmap(ctypes.c_void_p(addr), size)
         os.close(fd)
 
 
