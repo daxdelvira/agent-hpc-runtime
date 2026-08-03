@@ -82,7 +82,24 @@ class ResourceRegistry:
         """
         Load from a JSON array of tool-resource entries.
         Each entry needs at least: consumer_tool, resource_type, name.
-        Entries with any key starting with '_' are treated as comments and skipped.
+
+        Keys starting with '_' are COMMENT FIELDS and are stripped; an entry is
+        skipped only when it has no `consumer_tool` left after stripping (i.e.
+        it is a pure comment block).
+
+        WHY THIS CHANGED (2026-08-03).  The old rule skipped any entry
+        CONTAINING an underscore key, so annotating a real entry with a `_note`
+        silently deleted it from the registry.  Four real entries were being
+        dropped, including BOTH `w_eam4_big.fs` entries — the 3.32 GB potential
+        that the entire data-prefetch axis of the evaluation depends on.  The
+        predictor could therefore never predict it: the transition would be
+        selected and then discarded for want of a ResourceSpec, and the data
+        axis measured ~0 contribution for a reason that had nothing to do with
+        prediction quality.  Also dropped: the `proactive_swap` qwen_72b entry
+        for computation_task_screw_dislocation, and run_ase -> mace_mp:medium.
+
+        Failing closed on a documentation field is the wrong default: a comment
+        must never be able to remove data.
         """
         path = Path(path) if path else _DEFAULT_DATA_PATH
         registry = cls()
@@ -91,8 +108,9 @@ class ResourceRegistry:
         with open(path) as f:
             entries = json.load(f)
         for entry in entries:
-            if not isinstance(entry, dict) or any(k.startswith("_") for k in entry):
+            if not isinstance(entry, dict):
                 continue
+            entry = {k: v for k, v in entry.items() if not k.startswith("_")}
             consumer_tool = entry.get("consumer_tool")
             if not consumer_tool:
                 continue
