@@ -1,9 +1,10 @@
 # Data regimes in agentic scientific workflows: I/O-bound vs activation-bound
 
-Survey status: **partial — truncated for budget on 2026-08-03.** Everything below is
-sourced to a repo path + code line or a measurement artifact in this tree. A web/paper
-survey leg was launched but did not return before cutoff; its scope is listed under
-"Not found / not attempted" so the gap is explicit rather than silently missing.
+Survey status: **partial — 2026-08-03.** Workload rows are sourced to a repo path + code line
+or a measurement artifact in this tree; format rows are sourced to upstream docs/source with
+verbatim quotes. The literature leg on *other* agentic workloads (ChemCrow, Coscientist,
+MDCrow, bio agents) and the SEARCH regime did not return before cutoff; that scope is listed
+under "Not found / not attempted" so the gap is explicit rather than silently missing.
 
 Definitions used here:
 - **I/O-bound** — the cost is moving bytes.
@@ -172,11 +173,112 @@ The weight-staging rates that *are* written down in this tree are:
 These disagree with each other by ~9x (different media and warm/cold states), so none of
 them is a drop-in substitute for 0.737. Pick one, name its rung, or re-measure.
 
-Note also that the claim "safetensors does near-zero-copy mmap" is **currently unsourced
-here** — I did not fetch the upstream design statement. It is almost certainly true but it
-is exactly the kind of load-bearing assertion this project now requires a quote for.
+The "near-zero-copy mmap" claim is now sourced — see the format table below, item
+*safetensors*, including the upstream README's own **self-limiting** counter-quote
+("No format is really zero-copy in ML... SafeTensors is not zero-copy for the header").
 
 ---
+
+## Format-level evidence (upstream docs and source)
+
+This section tests the hypothesis against format *designers'* own statements, independent of
+any workload. Every row carries a verbatim quote in the notes beneath.
+
+| Format | Regime | Activation work | Hardware doing it | Measured? |
+|---|---|---|---|---|
+| `safetensors` | I/O-bound | JSON header only, "<<<" data time | CPU 1-thread (header); none (data) | Yes — 76.6x CPU / 2.1x GPU vs `.pt` |
+| PyTorch `.pt` | Activation-bound | pickle VM + extra CPU copy | CPU 1-thread | Yes (same benchmark) |
+| GGUF | **I/O-bound** | **none** — dequant deferred into the matmul | none at load | No |
+| HDF5 contiguous | I/O-bound | none (filters impossible) | none | No |
+| HDF5 chunked+gzip | Activation-bound | inflate per chunk | CPU 1-thread (h5py `phil` lock) | No |
+| Blosc/Blosc2 | Activation-bound, parallelised | shuffle + codec | **CPU multi-thread + SIMD** | GB/s NOT FOUND (plots only) |
+| NetCDF4 | — | — | — | **NOT FOUND** |
+| Zarr | Activation-bound (docs say so) | decompression | CPU multi-thread, GIL released | No |
+| Arrow IPC | I/O-bound | **"does not involve any decoding"** | none | No |
+| Parquet | Activation-bound | "must be decoded in large chunks" | CPU multi-thread | No |
+| `.npy` / memmap | I/O-bound | none | none | No |
+| `np.loadtxt` | Activation-bound | ASCII to binary parse | CPU 1-thread | Partial (numpy PR 20580) |
+| Arrow CSV | Activation-bound | parse | CPU multi-thread | **~100 MB/s per core** |
+| simdjson | Activation-bound | parse | CPU SIMD | **3.5–13 GB/s** |
+| nvCOMP / cuDF Parquet | Activation-bound, **offloaded** | decompress + decode | **GPU SM, or Blackwell DE (fixed-function ASIC)** | **up to 600 GB/s; 35% e2e** |
+
+### The decisive case: Arrow IPC vs Parquet
+
+Same project, same committers, two on-disk formats, opposite regimes — and the Arrow FAQ
+(`https://arrow.apache.org/faq/`) names the cause explicitly:
+
+> "Reading Parquet files generally requires efficient yet relatively complex decoding, while
+> **reading Arrow IPC files does not involve any decoding because the on-disk representation
+> is the same as the in-memory representation.** ... If your disk storage or network is slow,
+> Parquet may be a better choice even for short-term storage or caching."
+
+> "[Parquet] efficiency comes at the cost of relatively expensive reading into memory, as
+> Parquet data cannot be directly operated on but must be decoded in large chunks."
+
+> "Conversely, Arrow is an in-memory format... **Arrow data is typically not compressed but
+> laid out in natural format for the CPU**"
+
+That final clause of the first quote is also a statement of the **crossover condition** — the
+regimes trade off, and which one wins depends on the storage rate. That is precisely the
+variable our prefetcher changes, and it is worth quoting in the paper for that reason.
+
+### GGUF: the rebuttal to "compressed implies activation-bound"
+
+A 4-bit quantised format with a **zero-cost load**, because the decode was designed into the
+kernel rather than the loader. `llama.cpp`'s `src/llama-model-loader.cpp` mmap branch is a
+pointer assignment:
+
+```cpp
+if (use_mmap) {
+    const auto & mapping = mappings.at(w.idx);
+    if (cur->data == nullptr) {
+        cur->data = (uint8_t *)mapping->addr() + w.offs;
+```
+
+and there is no dequantise call in `load_data_for`; quantised blocks are consumed in situ by
+`ggml_vec_dot_q4_0_q8_0` (`ggml/src/ggml-cpu/ggml-cpu.c`). So encoding density and load cost
+are **independent** — which is a sharper version of our hypothesis than "format design decides
+the regime": it is specifically *where the decode is placed*, and a designer can choose.
+
+### safetensors, with its own caveat
+
+`https://github.com/huggingface/safetensors` README:
+> "This repository implements a new simple format for storing tensors safely (as opposed to
+> pickle) and that is still fast (zero-copy)."
+
+But the same README volunteers the limit, which we should quote rather than let a reviewer find:
+> "No format is really zero-copy in ML, it needs to go from disk to RAM/GPU RAM (that takes
+> time)... **SafeTensors is not zero-copy for the header.** ... deserialization is <<< of the
+> time required to load the actual tensor data"
+
+`https://huggingface.co/docs/safetensors/speed` (gpt2): CPU 0.004015 s vs PyTorch 0.307460 s
+(**76.6x**); GPU 0.165206 s vs 0.353889 s (**2.1x**).
+
+**Read that pair carefully before citing it.** The 76.6x CPU figure is mmap setup versus full
+deserialisation — 0.004 s is not a read of the tensor bytes at all, it is the header parse plus
+mapping. The collapse to 2.1x on GPU is what happens once real byte movement (`cudaMemcpy`)
+dominates. Both numbers are consistent with our hypothesis, but the honest gloss is "activation
+is ~0 and I/O is what remains", not "safetensors loads 76x faster".
+
+### The answer to "which hardware", at format level
+
+Activation is **CPU in every software format above**, and the spread within CPU is large and
+purely implementation-driven: ~100 MB/s per core (Arrow CSV, general text) to 3.5–13 GB/s
+(simdjson, SIMD) — a ~35x spread for the same nominal job.
+
+**Activation on non-CPU hardware does exist**, but nowhere in our workloads. NVIDIA nvCOMP
+(`https://developer.nvidia.com/nvcomp`):
+> "It leverages Blackwell's dedicated hardware Decompression Engine (DE) to achieve **up to
+> 600 GB/s decompression throughput for standard formats.**"
+
+and the RAPIDS blog reports a measured end-to-end consequence:
+> "on a system with an **NVIDIA B100 GPU and NVMe storage, we saw 35% faster end-to-end
+> runtimes using the hardware decompression engine instead of (standard) software-based GPU
+> kernel decompression**" (Snappy-compressed Parquet, cuDF 25.04, nvCOMP 4.2.0.11)
+
+So the real axis is **transform vs transfer**, not CPU vs GPU: there are at least three
+hardware classes doing activation (CPU cores, GPU SMs, fixed-function ASIC), and even after
+activation has been GPU-accelerated once it is still on the critical path by 35%.
 
 ## Does the format-design hypothesis survive?
 
@@ -192,8 +294,29 @@ directions.**
   pickled sparse object.
 
 So the predictive variable is the encoding, not the artifact's scientific role. **No
-counterexample was found** — but note that the sample is small (4 workloads, 12 rows) and
-only 3 rows are MEASURED end-to-end, so this is corroboration, not a test with power.
+counterexample was found** — but note that the workload sample is small (4 workloads, 12 rows)
+and only 3 rows are MEASURED end-to-end, so on its own that is corroboration, not a test with
+power.
+
+**The format-level evidence above is what gives the claim power**, and it does two things to
+the hypothesis:
+
+1. *Confirms it, via a controlled case the ecosystem ran for us.* Arrow IPC vs Parquet is one
+   project, one data model, one set of committers, two on-disk formats, opposite regimes, and
+   the FAQ attributes the difference entirely to encoding. Nothing about "model vs data"
+   appears anywhere in that reasoning.
+2. *Sharpens it.* GGUF is a 4-bit quantised format with a zero-cost load. If the hypothesis
+   were "compressed/encoded formats are activation-bound", GGUF would refute it. The surviving
+   formulation is narrower and better: **the regime is set by where the decode is placed, and
+   that is a designer's choice.** `llama.cpp` moved dequantisation into the matmul kernel, so
+   the load pays nothing and every matmul pays a little. Storing the *same* weights as a
+   pickle would have made the load activation-bound instead.
+
+The one genuine qualification: **regime is a property of format *plus configuration*, not
+format alone.** HDF5 is I/O-bound contiguous and activation-bound chunked+gzip; Arrow IPC can
+be pushed into the activation regime by enabling compression. So "format design" should be
+stated as "encoding decisions", which includes options the *writer* chose at save time — which
+is exactly what rows 8 vs 9 show inside DeepDriveMD.
 
 Practical consequence for the prefetcher, which is the point of the survey: in rows 1, 4,
 5 and 8 — the artifacts an agent actually *chooses* — moving bytes earlier recovers at most
@@ -214,11 +337,27 @@ This list is deliberate: the absence is itself reportable.
 - The **SEARCH** category (MSA search over UniRef90/BFD/MGnify as an agent tool) is defined
   above but has **zero rows**. This was expected to be the third regime and is entirely
   missing.
-- Format-level upstream evidence: safetensors zero-copy design statement, GGUF/llama.cpp
-  mmap and dequantisation, HDF5 compressed-vs-contiguous, Zarr, Arrow IPC vs Parquet
-  (the cleanest same-ecosystem opposite-regime pair), nvCOMP/cuDF **GPU-side activation**.
-  The GPU-activation question — is there any hardware other than a CPU doing this work? —
-  **remains completely unanswered.**
+**Now closed** (was cut, then returned — see the format-level section):
+- safetensors zero-copy statement, GGUF/llama.cpp, HDF5 contiguous-vs-chunked, Zarr,
+  Arrow IPC vs Parquet, and the GPU-activation question. **GPU/ASIC activation does exist**
+  (nvCOMP, Blackwell DE) but appears in **none** of our four workloads.
+
+**Still missing at format level:**
+- **NetCDF4: nothing.** No measured I/O-vs-decompression split, and no statement on whether
+  its decompression is threaded. It is HDF5-backed so the HDF5 findings plausibly transfer,
+  but that is not asserted here.
+- **No absolute GB/s** for: Zarr, Arrow IPC vs Parquet reads, llama.cpp load, Blosc in prose
+  (its benchmark page publishes plots only), GPUDirect Storage from a primary NVIDIA page,
+  or the nvCOMP per-algorithm table (`doc/Benchmarks.md` **404s**; the blog's figures are
+  inside an image, not text). If any of these must be hard numbers, they have to be ours.
+- **No like-for-like single-thread-vs-SIMD CSV pair.** The ~100 MB/s/core (Arrow CSV) and
+  3.5 GB/s (simdjson NDJSON) figures are different parsers on different inputs; combining
+  them into a speedup would be the "infer a number from a related number" error.
+- **No direct `np.load`-mmap vs `np.loadtxt` MB/s comparison on the same array.** numpy PR
+  20580 gives elapsed times at unspecified row widths, not throughput. The widely-circulated
+  "loadtxt 25.7 s vs read_csv 0.78 s" figure appears only in secondary blogs and is **not**
+  cited here.
+- NVIDIA DALI / nvJPEG throughput: **unverified**, no primary quote confirmed.
 
 **Searched for and genuinely not present:**
 - **Any size or load timing for a DeepDriveMD artifact** anywhere in this tree. Formats are
@@ -227,11 +366,14 @@ This list is deliberate: the absence is itself reportable.
 - **LAMMPS `setfl` reader internals**: whether the parse is rank-0-then-broadcast, and
   whether spline construction is threaded. Not verified; `pair_eam.cpp` was not read. This
   matters because it decides whether the 98 s in row 1 is one core or many.
-- **Thread count / parallelism for every activation in the table.** I established *which
-  processor* (CPU in every determined case, 6 of 12 rows) but established *degree of
-  parallelism* in **zero** rows. This is the axis the brief called least-documented, and
-  that assessment is confirmed: it is not documented, and it is also not recoverable from
-  the loader code alone.
+- **Thread count / parallelism for the *workload* rows.** I established *which processor*
+  (CPU in every determined case, 6 of 12 workload rows) but established *degree of
+  parallelism* in **zero** workload rows. Note the contrast: at **format** level the
+  parallelism is often documented (h5py serialises behind `phil`; Zarr releases the GIL;
+  Arrow CSV is multi-threaded by default; Blosc is multi-thread + SIMD). So the axis is
+  documented by format *designers* and undocumented by workload *authors* — which is a
+  finding about the field, and probably a sentence worth putting in the paper.
 - **No workload in this survey performs activation on the GPU.** In every case where the
-  hardware was determined, it was the CPU. Stated as an observation over 4 workloads, not
-  as a general claim.
+  hardware was determined, it was the CPU — even though the hardware to do otherwise exists
+  and is shipping (nvCOMP/Blackwell DE, 600 GB/s). Stated as an observation over 4
+  workloads, not as a general claim.
