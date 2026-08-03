@@ -161,6 +161,67 @@ def timed_generation(port: int, n: int, max_tokens: int) -> tuple[float, float]:
     return el, (n * max_tokens) / el if el > 0 else float("nan")
 
 
+def coherence_probe(port: int, max_tokens: int = 200,
+                    timeout: float = 300.0) -> dict:
+    """Ask a question with a determinate answer and INSPECT THE OUTPUT.
+
+    WHY THIS EXISTS.  `sanity_generate` reads the response and throws it away,
+    returning only latency -- so a model that wakes with corrupt weights and
+    emits fluent garbage at a normal token rate passes it.  That is not
+    hypothetical: in two live sleep_wake trials the woken 72B entered a single
+    generation that ran ~30 min and never emitted a stop token, against a
+    maximum of ~3 min across 37 trials in the non-wake arms, and the server
+    never logged a finished request.  A fast wake that returns a broken model
+    is worse than a slow one, and latency alone cannot tell them apart.
+
+    Returns the finish_reason, the token count, and the text, plus a crude
+    repetition score.  A degenerate loop shows up as finish_reason="length"
+    (it never chose to stop) together with a high repeat fraction.
+    """
+    import json as _json
+    import urllib.request
+    body = _json.dumps({
+        "model": SERVED,
+        "messages": [{"role": "user",
+                      "content": "What is the capital of France? Answer in one short sentence."}],
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+    }).encode()
+    req = urllib.request.Request(
+        f"http://localhost:{port}/v1/chat/completions", data=body,
+        headers={"Content-Type": "application/json"}, method="POST")
+    t0 = time.perf_counter()
+    try:
+        raw = urllib.request.urlopen(req, timeout=timeout).read()
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "elapsed_s": round(time.perf_counter() - t0, 2)}
+    el = time.perf_counter() - t0
+    try:
+        d = _json.loads(raw)
+        ch = (d.get("choices") or [{}])[0]
+        text = (ch.get("message") or {}).get("content") or ""
+        fin = ch.get("finish_reason")
+        ntok = (d.get("usage") or {}).get("completion_tokens")
+    except Exception as exc:
+        return {"ok": False, "error": f"unparseable: {exc}",
+                "elapsed_s": round(el, 2)}
+
+    words = text.split()
+    rep = 1.0 - (len(set(words)) / len(words)) if words else 0.0
+    return {
+        "ok": True,
+        "elapsed_s": round(el, 2),
+        "finish_reason": fin,
+        "completion_tokens": ntok,
+        "repeat_frac": round(rep, 3),
+        "mentions_paris": "paris" in text.lower(),
+        # Degenerate == ran to the token cap (never chose to stop) AND repeats.
+        "degenerate": bool(fin == "length" and rep > 0.5),
+        "text_head": text[:200],
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model-path", required=True)
@@ -199,7 +260,7 @@ def main() -> int:
         # ---- rung 3/4 baseline: steady-state generation BEFORE any sleep ----
         el, tps = timed_generation(args.port, args.gen_n, 4)
         rec(rung="gen_steady", total_s=round(el, 3), tok_per_s=round(tps, 2),
-            n=args.gen_n)
+            n=args.gen_n, coherence=coherence_probe(args.port))
 
         for label, do_evict in (("wake_warm", False), ("wake_cold", True)):
             t0 = time.perf_counter()
@@ -231,7 +292,8 @@ def main() -> int:
                 ram_used_gib_slept=ram_slept, gpu_mib_slept=gpu_slept,
                 gpu_mib_awake=gpu_mem_used_mib(gpus),
                 gen_after_wake_total_s=round(el_a, 3),
-                gen_after_wake_tok_per_s=round(tps_a, 2))
+                gen_after_wake_tok_per_s=round(tps_a, 2),
+                coherence=coherence_probe(args.port))
     finally:
         if proc is not None:
             kill(proc)
