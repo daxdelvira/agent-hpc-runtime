@@ -48,10 +48,22 @@ usable(){ # running, right GPU type, not blacklisted
   return 0
 }
 
+# An srun that has been launched but has no step yet is WAITING, not dead.
+# On 2026-08-03 srun took 9 min to get a step on job 11652948 (the node was
+# busy with foreign compute). has_step stayed false, so the watcher spent both
+# attempts inside that window and blacklisted a node whose campaign then ran
+# fine for hours — the hold was only saved by a manual check. Treat a live srun
+# process as "launch in flight" and never count a second attempt against it.
+# Anchored on "^srun " deliberately: a bare `pgrep -f -- --jobid=$1` also matches
+# any shell whose command line merely CONTAINS the job id (including the shell
+# a human runs the check from), which reports every job as alive and stops the
+# watcher launching anything at all.
+srun_alive(){ ps -u "$USER" -o cmd= 2>/dev/null | grep -q "^srun .*--jobid=$1 "; }
+
 launch(){ # $1=jobid $2=gres
   local n=$(( ${attempts[$1]:-0} + 1 ))
   attempts[$1]=$n
-  if [ "$n" -gt 2 ]; then
+  if [ "$n" -gt 4 ]; then
     log "job $1: attempt limit reached — blacklisting (check campaign log)"
     blacklist[$1]=1; return
   fi
@@ -102,6 +114,7 @@ while true; do
     for j in $jobs; do
       usable "$j" "$typed" || continue
       has_step "$j" && continue
+      srun_alive "$j" && continue   # launch in flight, waiting for a step
       launch "$j" "$gres"
     done
   done
