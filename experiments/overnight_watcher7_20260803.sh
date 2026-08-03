@@ -29,7 +29,18 @@ mkdir -p "$REPO/logs"
 BW_JOBS="11629978 11629979 11629980 11629981 11652952 11652953 11653557 11653558"
 L40S_JOBS="11652948 11652949 11652950 11652951 11653555 11653556"
 SCRIPT="run_eval_blackwell_aligned_20260802.sh"
-BW_GRES="gpu:4";  BW_TYPED="Partition=gpu-rtxpro-blackwell"
+# The GPU-type gate must match on AllocTRES, which names the type actually
+# ALLOCATED, and is only populated once the job is RUNNING.  It must NOT match
+# on Partition=: every hold here carries gpu-v100 as a fallback partition
+#   (11629978: Partition=gpu-rtxpro-blackwell,gpu-v100)
+# so the old BW_TYPED="Partition=gpu-rtxpro-blackwell" was a SUBSTRING of the
+# requested partition list and matched even when the job landed on a V100.
+# V100 is SM 7.0; this vLLM needs SM 8.0+, so the campaign cannot run there —
+# the watcher would have burned all 4 attempts and blacklisted the hold.
+# GRES type names come from `sinfo -p <part> -o "%G"`:
+#   gpu-rtxpro-blackwell -> gpu:rtx_pro_6000_blackwell:8 ; gpu-l40s -> gpu:l40s:8
+# The trailing count is the per-hold request (BW gpu=4, L40S gpu=6).
+BW_GRES="gpu:4";  BW_TYPED="gres/gpu:rtx_pro_6000_blackwell=4"
 L40S_GRES="gpu:6"; L40S_TYPED="gres/gpu:l40s=6"
 NOOP_FLOOR_S=180     # a step shorter than this did no real work
 # ---------------------------------------------------------------------------
