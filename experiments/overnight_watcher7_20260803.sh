@@ -28,7 +28,7 @@ mkdir -p "$REPO/logs"
 # expensive failure mode here — so submit and register in the same change.
 BW_JOBS="11629978 11629979 11629980 11629981 11652952 11652953 11653557 11653558"
 L40S_JOBS="11652948 11652949 11652950 11652951 11653555 11653556"
-SCRIPT="run_eval_blackwell_aligned_20260802.sh"
+SCRIPT="run_eval_aligned_20260803.sh"
 # The GPU-type gate must match on AllocTRES, which names the type actually
 # ALLOCATED, and is only populated once the job is RUNNING.  It must NOT match
 # on Partition=: every hold here carries gpu-v100 as a fallback partition
