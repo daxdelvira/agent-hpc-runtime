@@ -382,3 +382,66 @@ This list is deliberate: the absence is itself reportable.
   hardware was determined, it was the CPU — even though the hardware to do otherwise exists
   and is shipping (nvCOMP/Blackwell DE, 600 GB/s). Stated as an observation over 4
   workloads, not as a general claim.
+
+---
+
+# Appendix: agentic-biology systems (external survey)
+
+Produced by a sub-agent on 2026-08-03 whose parent was terminated by an API spend
+limit before it could fold this in; recovered from the session transcript.
+
+CAVEAT ON PROVENANCE: the safety classifier was unavailable when this sub-agent's
+output was reviewed, and its claims have NOT been independently re-verified.
+Byte sizes are stated to come from the GitHub Trees API (`?recursive=1`, `size`)
+and HTTP `HEAD` `content-length`; the regime labels are INFERRED from loader code
+by the same reasoning used elsewhere in this document. Spot-check before citing.
+
+| # | System | Repo | Committed data | Remote data | Regime | Activation hardware | Confidence |
+|---|---|---|---|---|---|---|---|
+| B1 | BioDiscoveryAgent | snap-stanford | 10,041,908 B (29 files) | `achilles.csv` DepMap, README says "at least 300MB"; exact size NOT FOUND (Figshare blocks HEAD) | NETWORK-API by default; **I/O then activation** with `--gene_search` | CPU: `pd.read_csv` single-thread; BLAS `.dot` parallel | STATED sizes / INFERRED regime |
+| B2 | **Biomni** | snap-stanford | 3,509,010 B | **15,050,945,988 B (15.05 GB), 76/76 files resolved by HEAD** | **I/O + activation** | CPU single-thread (pandas, `pickle.load`, `sc.read_h5ad`) | **MEASURED sizes** / INFERRED regime |
+| B3 | CellAgent | cellagent659 | 6,005,874 B xlsx + 760,048 B csv | input AnnData UNKNOWN (user-supplied) | activation / SEARCH | GPU via scVI; CPU capped `n_jobs=4` | STATED / INFERRED |
+| B4 | Robin | Future-House | 189.7 MB — **all run OUTPUTS, not inputs**; zero `.fcs` | via Edison platform | NETWORK-API | CPU single-thread (`choix.ilsr_pairwise`) | INFERRED (high) |
+| B5 | **GenoTEX / GenoMAS** | Liu-Hy | 69.4 MB / 9.11 MB | **41.5 GB input, 82.0 GB total** (README) | **activation then I/O** | CPU single-thread gzip + parse | STATED (quoted README) |
+| B6 | ProtAgents | lamm-mit | 4,883,431 B JSON vector index | ProteinForceGPT `model.safetensors` **1,817,061,136 B** (HF API) | activation | **CPU pinned explicitly in 3 places** while loading a 1.8 GB transformer | MEASURED size / INFERRED regime |
+| B7 | STELLA | zaixizhang | 4.21 MB; `data/` holds only a 0-byte `.gitkeep` | optional 2.0 GB zip (Drive); uncompressed size NOT FOUND | NETWORK-API by default | unknown / CPU (no `torch.device` found) | INFERRED |
+| B8 | BioMANIA | batmen-lab | 181.6 MB (demo GIFs); **no `data/` dir at all** | Google Drive bundles, sizes NOT FOUND | NETWORK-API + activation | GPU for retriever; CPU for analysis | INFERRED |
+| B9 | BioAgents | bio-xyz | 2.2 MB pure TypeScript | S3 object store | NETWORK-API | CPU | INFERRED (high) |
+
+## Cross-cutting findings
+
+1. **Most agentic-biology systems are network-API wrappers with negligible local
+   data.** Robin's committed corpus is its own *outputs*; STELLA's `data/` is a
+   single 0-byte `.gitkeep`; BioMANIA has no `data/` directory; BioAgents is 2.2 MB
+   of TypeScript. Only three have a real disk workload: Biomni (15.05 GB measured),
+   GenoTEX/GenoMAS (41.5 GB quoted), BioDiscoveryAgent (~300 MB, optional path).
+
+2. **Nobody uses backed/lazy AnnData.** `grep -n "backed"` returns zero hits in
+   `biomni/tool/genomics.py` and in CellAgent's `scOmni/codes/`. Every
+   `sc.read_h5ad` fully materialises an HDF5 file that supports partial reads.
+   This is the cleanest unexploited-lazy-I/O opportunity found.
+
+3. **The heaviest activation costs are deserialisation, not transfer.** Biomni's
+   three GeneBass `.pkl` files (1.52–1.66 GB each) and its 6.25 GB
+   `BindingDB_All_202409.tsv`. GenoTEX reads every `.gz` cohort **twice**
+   (`preprocess.py:140` line-scan, then `:149` full parse) and gzip is
+   non-seekable, so the second pass re-inflates from byte 0.
+
+4. **Access is genuinely agent-determined in exactly two systems**:
+   BioDiscoveryAgent's `gene_search` (LLM picks the gene, then re-reads and
+   re-parses the whole ~300 MB matrix with no cache, `tools.py:286-289`) and
+   GenoMAS's cohort selection (`environment.py:274` `os.listdir` → LLM chooses).
+   These two meet the three-part workload filter; the other seven do not.
+
+5. **Hardware skews CPU-single-thread more than expected.** ProtAgents pins CPU in
+   three places while loading a 1.82 GB transformer. GPU appears only for
+   embedding/foundation models.
+
+6. **Free measurement infrastructure**: GenoTEX ships `utils/resource_monitor.py`
+   with per-process CPU/RSS/GPU sampling. That repo instruments itself, so MEASURED
+   numbers for a real agentic-biology workload are obtainable by running it.
+
+## Not found in this appendix
+TAIS has no code repo (superseded by GenoMAS per arXiv:2402.12391 comments).
+Exact `achilles.csv` size. STELLA's uncompressed resource size. BioMANIA's Drive
+bundle sizes. CellAgent input AnnData sizes. ProtAgents' Chroma weights.
