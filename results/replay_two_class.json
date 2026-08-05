@@ -1,0 +1,142 @@
+{
+  "modes": {
+    "instrumented": {
+      "n_trials": 31,
+      "n_needs": 150,
+      "n_data_needs": 20,
+      "rows": [
+        {
+          "budget_gb": 0.0,
+          "never_retain": 81865.46950000004,
+          "lru": 81865.46950000004,
+          "belady": 81865.46950000004,
+          "value_density": 81865.46950000004
+        },
+        {
+          "budget_gb": 130.0,
+          "never_retain": 81865.46950000004,
+          "lru": 82410.3855,
+          "belady": 82410.3855,
+          "value_density": 82410.3855
+        },
+        {
+          "budget_gb": 180.0,
+          "never_retain": 81865.46950000004,
+          "lru": 82410.3855,
+          "belady": 82410.3855,
+          "value_density": 82410.3855
+        },
+        {
+          "budget_gb": 280.0,
+          "never_retain": 81865.46950000004,
+          "lru": 60164.927292771084,
+          "belady": 59396.78140240964,
+          "value_density": 59396.78140240964
+        },
+        {
+          "budget_gb": 340.0,
+          "never_retain": 81865.46950000004,
+          "lru": 60164.927292771084,
+          "belady": 59396.78140240964,
+          "value_density": 59396.78140240964
+        },
+        {
+          "budget_gb": 420.0,
+          "never_retain": 81865.46950000004,
+          "lru": 60164.927292771084,
+          "belady": 59396.78140240964,
+          "value_density": 59396.78140240964
+        },
+        {
+          "budget_gb": 560.0,
+          "never_retain": 81865.46950000004,
+          "lru": 50947.176608433736,
+          "belady": 50947.176608433736,
+          "value_density": 50947.176608433736
+        },
+        {
+          "budget_gb": 700.0,
+          "never_retain": 81865.46950000004,
+          "lru": 50947.176608433736,
+          "belady": 50947.176608433736,
+          "value_density": 50947.176608433736
+        }
+      ],
+      "observed_potentials": {
+        "W_screw_Zhou04": 2.6765,
+        "W_screw_w_eam4_big": 79.6983,
+        "W_screw_eam4": 2.6299,
+        "W_screw_w_eam4": 114.4718
+      }
+    },
+    "reconstructed": {
+      "n_trials": 31,
+      "n_needs": 190,
+      "n_data_needs": 60,
+      "rows": [
+        {
+          "budget_gb": 0.0,
+          "never_retain": 82384.1043,
+          "lru": 82384.1043,
+          "belady": 82384.1043,
+          "value_density": 82384.1043
+        },
+        {
+          "budget_gb": 130.0,
+          "never_retain": 82384.1043,
+          "lru": 82721.1967,
+          "belady": 82554.8567,
+          "value_density": 82554.8567
+        },
+        {
+          "budget_gb": 180.0,
+          "never_retain": 82384.1043,
+          "lru": 82721.1967,
+          "belady": 82554.8567,
+          "value_density": 82554.8567
+        },
+        {
+          "budget_gb": 280.0,
+          "never_retain": 82384.1043,
+          "lru": 60392.56849277109,
+          "belady": 59541.25260240964,
+          "value_density": 59541.25260240964
+        },
+        {
+          "budget_gb": 340.0,
+          "never_retain": 82384.1043,
+          "lru": 60309.398492771084,
+          "belady": 59541.25260240964,
+          "value_density": 59541.25260240964
+        },
+        {
+          "budget_gb": 420.0,
+          "never_retain": 82384.1043,
+          "lru": 60309.398492771084,
+          "belady": 59541.25260240964,
+          "value_density": 59541.25260240964
+        },
+        {
+          "budget_gb": 560.0,
+          "never_retain": 82384.1043,
+          "lru": 51091.647808433736,
+          "belady": 51091.647808433736,
+          "value_density": 51091.647808433736
+        },
+        {
+          "budget_gb": 700.0,
+          "never_retain": 82384.1043,
+          "lru": 51091.647808433736,
+          "belady": 51091.647808433736,
+          "value_density": 51091.647808433736
+        }
+      ],
+      "observed_potentials": {
+        "W_screw_Zhou04": 2.6765,
+        "W_screw_w_eam4_big": 79.6983,
+        "W_screw_eam4": 2.6299,
+        "W_screw_w_eam4": 114.4718
+      }
+    }
+  }
+}
