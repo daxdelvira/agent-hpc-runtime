@@ -46,11 +46,15 @@ cp "$D/Pfam-A.hmm"          "$T/" || exit 1
 
 if [ "$RUNSET" = "full" ]; then
   time gunzip -c "$D/uniref50.fasta.gz" > "$T/uniref50.fasta" || exit 1
+elif [ "$RUNSET" = "strided" ]; then
+  cp "$W/p1_2gb.fasta" "$T/" || exit 1
+  cp "$W/p1_8gb.fasta" "$T/" || exit 1
+  time gunzip -c "$D/uniref50.fasta.gz" > "$T/uniref50.fasta" || exit 1
 else
   cp "$W/p1_2gb.fasta" "$T/" || exit 1
   cp "$W/p1_8gb.fasta" "$T/" || exit 1
   # Only the first ~8.1 GB is needed for the subsets, so decompress that much
-  # rather than all 27 GB. SIGPIPE from the truncated consumer is expected.
+  # rather than all of it. SIGPIPE from the truncated consumer is expected.
   gunzip -c "$D/uniref50.fasta.gz" 2>/dev/null | head -c 8200000000 \
       > "$T/uniref50_head.fasta"
   [ -s "$T/uniref50_head.fasta" ] || exit 1
@@ -62,7 +66,15 @@ ls -la "$T"
 # its own file because the inline version opened the destination "wb" and then
 # read from it to find the last record boundary -- io.UnsupportedOperation, one
 # traceback, and the 8 GB subset silently never created.
-if [ "$RUNSET" != "full" ]; then
+if [ "$RUNSET" = "strided" ]; then
+  # Every 8th / every 2nd record out of the whole 16.94 GB file, so the subset's
+  # record-length distribution matches the database instead of its first 2 GB.
+  python3 experiments/make_fasta_subset.py \
+      "$T/uniref50.fasta" "$T/uniref50s_2gb.fasta" 2 8 || exit 1
+  python3 experiments/make_fasta_subset.py \
+      "$T/uniref50.fasta" "$T/uniref50s_8gb.fasta" 8 2 || exit 1
+  rm -f "$T/uniref50.fasta"
+elif [ "$RUNSET" != "full" ]; then
   python3 experiments/make_fasta_subset.py \
       "$T/uniref50_head.fasta" "$T/uniref50_2gb.fasta" 2 || exit 1
   python3 experiments/make_fasta_subset.py \
@@ -98,6 +110,16 @@ if [ "$RUNSET" = "full" ]; then
   # query, and at 27 GB either alone would be most of an hour.
   run uniref50_real_full "$T/uniref50.fasta"   bench_p1_real_uniref50_full.json \
       --query-ids P69905
+elif [ "$RUNSET" = "strided" ]; then
+  # The size-matched real-vs-synthetic comparison, redone on REPRESENTATIVE
+  # subsets. The head-truncated versions of these two rungs are kept rather
+  # than deleted, because the gap between them IS the finding about sampling.
+  run uniref50s_real_2gb "$T/uniref50s_2gb.fasta" \
+      bench_p1_real_uniref50s_2gb.json \
+      --query-ids P69905,P0CG48,P06576 --n-sampled-queries 6 --hmm "$HMM"
+  run uniref50s_real_8gb "$T/uniref50s_8gb.fasta" \
+      bench_p1_real_uniref50s_8gb.json \
+      --query-ids P69905,P0CG48 --hmm "$HMM"
 else
   run uniref50_real_2gb "$T/uniref50_2gb.fasta" bench_p1_real_uniref50_2gb.json \
       --query-ids P69905,P0CG48,P06576 --n-sampled-queries 6 --hmm "$HMM"
