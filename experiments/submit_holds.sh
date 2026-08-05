@@ -15,33 +15,41 @@
 # the name keeps the wp_bw_ / wp_l40s_ prefix. Do not rename without changing
 # the watcher's discovery pattern.
 #
-# NO gpu-v100, AND --partition ALONE DOES NOT ACHIEVE THAT. The site appends
-# gpu-v100 to the partition list regardless of what is requested (watcher7's
-# header records the same thing: "11629978: Partition=gpu-rtxpro-blackwell,
-# gpu-v100"). V100 is SM 7.0 and this vLLM needs 8.0+, so a hold that lands
-# there cannot run the campaign and burns all 4 watcher attempts.
+# TWO INDEPENDENT WAYS A HOLD BECOMES UNSCHEDULABLE, both discovered 2026-08-05
+# and both reported identically as Reason=BadConstraints -- which, unlike
+# Resources, never clears on its own. The site appends gpu-v100 to every hold's
+# partition list no matter what --partition asks for (watcher7's header records
+# the same: "11629978: Partition=gpu-rtxpro-blackwell,gpu-v100"), and anything
+# the appended partition can NEVER satisfy poisons the whole job.
 #
-# Worse than useless — on 2026-08-05 it made two holds UNSCHEDULABLE. The
-# mem=1000G Blackwell holds went to Reason=BadConstraints even though
-# `sbatch --test-only` confirmed the same request schedules fine on Blackwell
-# alone. One impossible partition in the list poisons the whole job, and
-# BadConstraints does not clear on its own the way Resources does.
+#   CAUSE 1 -- MEMORY ABOVE 772000 MB. gpu-v100 is heterogeneous:
+#   `sinfo -p gpu-v100 -h -N -o %m | sort -n | uniq -c` gives 9 nodes at 191000,
+#   26 at 385000, 5 at 772000. A request is schedulable exactly while it fits
+#   the LARGEST v100 node:
+#        256G =  262144 MB -> fits    -> PENDING(Resources)   fine
+#        750G =  768000 MB -> fits    -> PENDING(Resources)   fine
+#       1000G = 1024000 MB -> fits nothing -> BadConstraints  stuck
+#   Nothing in the partition or QOS limits shows this; MaxMemPerNode is
+#   UNLIMITED on both partitions and the ceiling is purely the widest node.
 #
-# THE MEMORY CEILING IS 772000 MB, and it is not obvious. gpu-v100 is
-# heterogeneous — `sinfo -p gpu-v100 -h -N -o %m | sort -n | uniq -c` gives
-# 9 nodes at 191000, 26 at 385000, 5 at 772000. So a request is schedulable
-# exactly while it fits the LARGEST v100 node:
-#     256G = 262144 MB   -> fits            -> PENDING(Resources)   fine
-#    1000G = 1024000 MB  -> fits nothing    -> BadConstraints       stuck
-# Hence 750G below: comfortably under 772000, and still 2.7x the 280 GB
-# retention threshold — enough to park two 72B engines (2 x 279 GB) at once,
-# which is the configuration E5 says we actually need.
+#   CAUSE 2 -- --constraint ON A BLACKWELL-ONLY NODE FEATURE. Adding
+#   --constraint=RTX-Pro-Blackwell was the first attempted fix for cause 1. It
+#   makes things WORSE: no gpu-v100 node carries that feature, so the appended
+#   partition can never satisfy the request and every hold jams regardless of
+#   memory. Verified by a controlled pair -- 750G without the constraint queued
+#   as Resources while 256G WITH it went to BadConstraints.
 #
-# --constraint on a node feature was tried first and does NOT fix it: the
-# appended partition survives the feature filter (verified on 11692938,
-# Partition=gpu-rtxpro-blackwell,gpu-v100 with Features=RTX-Pro-Blackwell set).
-# The feature is kept anyway because it still prevents a hold from LANDING on
-# a V100, which is the failure watcher7's header documents.
+# So: 750G, and NO --constraint. Do not "help" the scheduler with either knob.
+#
+# Landing on a V100 would still be useless (SM 7.0; this vLLM needs 8.0+), but
+# that is already handled at runtime rather than at submit: watcher8's usable()
+# gates on AllocTRES carrying gres/gpu:rtx_pro_6000_blackwell and blacklists a
+# hold that landed on the wrong GPU type. The constraint was redundant with a
+# check we already had, and it cost two resubmissions to learn that.
+#
+# 750G is not a compromise: it is 2.7x the 280 GB retention threshold from E5 --
+# enough to park two 72B engines at once, which is the configuration the policy
+# actually needs.
 set -u
 REPO=/storage/project/r-ag117-0/shared/agent_hpc/agent-hpc-runtime
 ACCOUNT=gts-ag117
@@ -52,7 +60,7 @@ QOS=embers          # free but PREEMPTIBLE: 5 of the last 8 jobs were preempted.
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
-# name                partition               gpus  mem    hours  cpus  feature
+# name                partition               gpus  mem    hours  cpus
 #
 # The 750G Blackwell holds are the load-bearing new ones. E5 put the retention
 # feasibility threshold at 280 GB -- exactly one 72B's park footprint -- and
@@ -63,25 +71,24 @@ DRY=0
 # Kept alongside 256G holds because a large request is slower to schedule and
 # the existing campaign must not stall waiting for one.
 HOLDS="
-wp_bw_bigmem_a   gpu-rtxpro-blackwell  4  750G   7:59  12  RTX-Pro-Blackwell
-wp_bw_bigmem_b   gpu-rtxpro-blackwell  4  750G   7:59  12  RTX-Pro-Blackwell
-wp_bw_std_a      gpu-rtxpro-blackwell  4  256G   7:59  12  RTX-Pro-Blackwell
-wp_bw_std_b      gpu-rtxpro-blackwell  4  256G   7:59  12  RTX-Pro-Blackwell
-wp_bw_short_a    gpu-rtxpro-blackwell  4  256G   3:59  12  RTX-Pro-Blackwell
-wp_l40s_a        gpu-l40s              6  400G   7:59  12  L40S
-wp_l40s_b        gpu-l40s              6  400G   7:59  12  L40S
-wp_l40s_short_a  gpu-l40s              6  256G   3:59  12  L40S
+wp_bw_bigmem_a   gpu-rtxpro-blackwell  4  750G   7:59  12
+wp_bw_bigmem_b   gpu-rtxpro-blackwell  4  750G   7:59  12
+wp_bw_std_a      gpu-rtxpro-blackwell  4  256G   7:59  12
+wp_bw_std_b      gpu-rtxpro-blackwell  4  256G   7:59  12
+wp_bw_short_a    gpu-rtxpro-blackwell  4  256G   3:59  12
+wp_l40s_a        gpu-l40s              6  400G   7:59  12
+wp_l40s_b        gpu-l40s              6  400G   7:59  12
+wp_l40s_short_a  gpu-l40s              6  256G   3:59  12
 "
 
 submitted=()
-while read -r name part gpus mem hours cpus feature; do
+while read -r name part gpus mem hours cpus; do
   [ -z "${name:-}" ] && continue
   cmd=(sbatch --parsable
        --job-name="$name"
        --account="$ACCOUNT"
        --qos="$QOS"
        --partition="$part"
-       --constraint="$feature"
        --nodes=1
        --ntasks=1
        --cpus-per-task="$cpus"
