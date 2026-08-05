@@ -29,9 +29,20 @@ but it must not be cited as a finding and must not close a gate.
 | **P3 exogenous size** | is the size set by something outside the experiment? | RETRACTIONS: if we choose the size it is an illustration, not a regime |
 | **P4 agent-determined** | does the agent choose *which* artifact? | the criterion that killed every earlier candidate |
 
-**Nothing below has passed P3 or P4 yet.** Every size measured so far is a knob we
-turned. That is acceptable for P1/P2, which ask about the mechanism, and is
-disqualifying for the workload claim.
+**P3 is now passed by exactly one candidate; P4 by none.** Until 2026-08-05 every
+size measured was a knob we turned, which is acceptable for P1/P2 (they ask
+about the mechanism) and disqualifying for the workload claim.
+
+C1 now clears P3: **UniRef50 is 16.94 GB because UniProt made it that size**, and
+UniRef90 is a second, larger point on the same axis that we equally did not
+choose. The release is versioned (2026_02) and md5-published, so the number is
+citable and reproducible by anyone. This is the first size in the project that
+is not ours.
+
+**P4 remains untested for every candidate**, and it is still the criterion that
+killed all the earlier ones. Passing P3 does not soften it: a database whose
+size we did not choose is not yet a workload in which *an agent chooses which
+database to search*.
 
 ---
 
@@ -60,10 +71,16 @@ policy consumes**, so it was always the right ranking key.
 
 | candidate | load_warm | activated | expansion | **s/GB held** | io_share |
 |---|---|---|---|---|---|
-| pyhmmer FASTA (2 GB) | 13.65 s | 4.54 GB | 2.27× | **3.006** | n/a |
+| **pyhmmer, REAL UniRef50 (16.94 GB)** | 107.10 s | 36.08 GB | 2.13× | **2.968** | **11.9%** |
+| pyhmmer synthetic FASTA (2 GB) | 13.65 s | 4.54 GB | 2.27× | **3.006** | n/a |
 | LAMMPS EAM (3.32 GB) | 42.83 s | 16.93 GB | 5.10× | **2.530** | 1.9% |
 | 72B model parked at R2 | — | ~279 GB | 1.90× | **~2.96** | — |
 | **Parquet → Arrow (2 GB)** | 1.69 s | 4.09 GB | 2.04× | **0.413** | **29.4%** |
+
+The pyhmmer row is now measured on the real database rather than on random
+residues, and **it barely moved**: s/GB 2.968 against 3.006, expansion 2.13×
+against 2.27×. See §"C1 on real data" below for the full ladder, the same-node
+control, and the one place where real data does NOT behave like synthetic.
 
 **The ranking inverts.** Parquet, which looked like the best non-incumbent
 candidate at 73%, is **~7× WORSE than pyhmmer** on the metric that matters: it
@@ -81,7 +98,8 @@ in the paper only alongside the compute it was measured against.
 |---|---|---|---|---|---|---|
 | **LAMMPS EAM** (incumbent) | PASS | **90%** | ✗ inflated by us | ✗ | `measured` | `results/bench_activated_residency_BIG.json` |
 | **Parquet → Arrow** | PASS | **73%** | untested | untested | `measured-unpersisted` | **none — re-run required** |
-| **pyhmmer FASTA** | PASS | **~49%** | ✗ synthetic | untested | `measured` | `results/bench_p1_hmmer_2gb.json` |
+| **pyhmmer, REAL UniRef50** | PASS | **48.6% phmmer / 3.4% hmmsearch** | ✅ **UniProt sets the size** | untested | `measured` | `results/bench_p1_real_uniref50_full.json` |
+| pyhmmer synthetic FASTA | PASS | **~49%** | ✗ synthetic | untested | `measured` | `results/bench_p1_hmmer_2gb.json` |
 | RELION 5.0 | **FAIL (confirmed)** | — | — | — | `inspected` (exhaustive) | — |
 | raw MRC stacks | pass | *provisional ~0%* | — | — | `asserted` | **none** |
 | MMseqs2 / DIAMOND | untested | untested | — | — | — | — |
@@ -127,14 +145,131 @@ Confirmed at 8 GB once storage was controlled: **47.6%**, so the share is flat a
 > 52.2 s at a FLAT 423 krec/s, first million to nineteenth. See
 > `results/diag_p1_superlinear_8gb.json`. Do not cite 91.8% or 12.13x.
 
-Two caveats that bound it. HMMER's per-call search costs about what its load
-costs, so retention roughly halves a call and **cannot win big at any database
-size** — the ratio does not improve with scale, and the 8 GB point now confirms
-that rather than contradicting it. And the FASTAs are random residues, which find
-8-27 hits where a real database would find many more; HMMER's cost is dominated
-by the MSV/Viterbi sweep over all sequences and should be largely hit-count
-independent, but that is `asserted`, not measured, and the ~48% figure is what
-the whole pyhmmer assessment rests on.
+One caveat bounds it and survives everything below. HMMER's per-call search
+costs about what its load costs, so retention roughly halves a call and **cannot
+win big at any database size** — the ratio does not improve with scale, and the
+8 GB point confirms that rather than contradicting it.
+
+The other caveat — that random residues find 8-27 hits where a real database
+finds many more — was the open question. It is now measured.
+
+---
+
+## C1 on real data — UniProt release 2026_02 (measured 2026-08-05)
+
+Everything above was random-residue FASTA we generated. The real databases were
+downloaded and **md5-verified against the publisher's own `RELEASE.metalink` /
+`md5_checksums`**, which are stored next to the data so the check can be
+re-derived:
+
+| file | size | md5 | verified |
+|---|---|---|---|
+| `uniprot_sprot.fasta.gz` | 93,706,469 B | `797dad11a33b1b58e3c140649a74d6b6` | ✅ |
+| `Pfam-A.hmm.gz` | 418,160,514 B | `7ab3c4e215d0daaea3004e37c4e24f8a` | ✅ |
+| `uniref50.fasta.gz` | 8,770,260,598 B | `3228886e9d749f050f60e9a0ce1f727d` | ✅ |
+| `uniref90.fasta.gz` | 32,059,052,376 B | `abdd341aeafa7fa060c8d6639d594990` | ✅ |
+
+**UniRef50 decompresses to 16.94 GB, not the ~27 GB the plan assumed.** Checked
+independently of the benchmark by streaming the gz through `wc -c` and `grep -c
+"^>"`: **16,939,476,667 bytes / 38,794,121 records**, matching what the probe
+reported to the byte and to the record.
+
+### The compute-independent metrics hold on real data
+
+All rungs on node-local NVMe, and every one has `rungs_verified_distinct: true`
+— the cold rung is confirmed to have pulled the file off the device and the warm
+rung confirmed not to, via `/proc/self/io: read_bytes`. **These are the first
+valid pyhmmer I/O shares; every earlier one was void.**
+
+| dataset | file | records | B/rec | load_warm | activated | expansion | **s/GB** | io_share |
+|---|---|---|---|---|---|---|---|---|
+| Swiss-Prot | 0.288 GB | 575,503 | 500 | 1.83 s | 0.559 GB | 1.94× | **3.268** | 41.2% |
+| UniRef50 strided | 2.0 GB | 4,200,401 | 476 | 13.33 s | 3.984 GB | 1.992× | **3.345** | 19.9% |
+| UniRef50 strided | 8.0 GB | 16,801,599 | 476 | 52.66 s | 15.941 GB | 1.993× | **3.303** | 12.9% |
+| **UniRef50 whole** | **16.94 GB** | **38,794,121** | 437 | 107.10 s | 36.08 GB | **2.130×** | **2.968** | **11.9%** |
+| *synthetic, for reference* | 2.0 GB | 5,000,672 | 400 | 14.39 s | 4.534 GB | 2.267× | 3.175 | 11.8% |
+
+**Same-node control** (`atl1-1-02-005-2-2`, `results/bench_p1_pair_*.json`) —
+seconds do not transfer across nodes, so the real-vs-synthetic gap is only
+admissible measured together:
+
+| | real UniRef50 2 GB | synthetic 2 GB | real/synth |
+|---|---|---|---|
+| expansion | 1.992× | 2.267× | **0.88** |
+| s/GB retained | 3.345 | 3.175 | **1.05** |
+| activation share (random 200-mer) | 47.35% | 48.01% | **0.99** |
+
+**Verdict: the synthetic numbers were right.** Expansion is ~12% lower on real
+data and s/GB ~5% higher; activation share is indistinguishable. Nothing in the
+C1 assessment changes. Activation share is 47.1-48.6% on real data across a 59×
+size range (0.29 → 16.94 GB), exactly the 46-49% band the synthetic runs gave.
+
+### ⚠️ Where real data does NOT behave like synthetic: the QUERY
+
+The asserted claim was that HMMER's cost is largely hit-count independent
+because the MSV/Viterbi filter sweeps every sequence regardless. **Partly true,
+and it fails exactly where it matters most.** Measured on one retained block, so
+the load is held constant and only the query changes:
+
+*(a) Arbitrary real queries — the claim HOLDS.* Six real Swiss-Prot proteins,
+each paired with a **length-matched random control** (query length and homology
+are otherwise confounded — a real query is usually longer than 200 aa, so a bare
+real-vs-random gap is mostly length):
+
+| query | len | real hits | real s | rand s | real/rand |
+|---|---|---|---|---|---|
+| Q6GZX4 | 256 | 11 | 25.44 | 21.36 | 1.19× |
+| A6SZI9 | 439 | 41 | 36.90 | 36.40 | 1.01× |
+| B1LL12 | 137 | 22 | 10.64 | 11.75 | 0.91× |
+| A9GUX6 | 194 | 40 | 16.64 | 15.70 | 1.06× |
+| B7LUR8 | 70 | 38 | 7.30 | 6.89 | 1.06× |
+| A6TFL2 | 341 | **1145** | 54.30 | 27.59 | **1.97×** |
+
+Five of six are within ±20% of a length-matched random query. The sixth, with
+1145 hits, costs 1.97×. So cost is hit-count *dependent*, but only weakly until
+hits become a non-trivial fraction of the database.
+
+*(b) A real profile query — the claim FAILS, by 24×.* `hmmsearch` with a Pfam
+profile is the canonical HMMER call, and Pkinase (PF00069) matches a large
+fraction of a real database and almost nothing in random residues:
+
+| 2 GB, same node `…007-24-2` | compute | hits | activation share |
+|---|---|---|---|
+| synthetic | 23.6 s | 31 | 37.6% |
+| **real UniRef50** | **566.0 s** | **37,577** | **1.9%** |
+
+**24.0× on identical-size data, same node, same profile.** Corroborated on the
+representative strided subset (369.9 s / 46,126 hits, 15.7×) and at 8 GB
+(1482.5 s / 182,323 hits, share 3.4%).
+
+### A sampling trap worth recording: a UniRef50 prefix is not UniRef50
+
+The first "real 2 GB" subset was a head truncation, and it is **biased**:
+
+| | records | B/record | expansion | s/GB |
+|---|---|---|---|---|
+| whole `uniref50.fasta` (16.94 GB) | 38,794,121 | 437 | 2.130× | 2.968 |
+| its **first** 2 GB | 1,000,810 | **1998** | **1.148×** | 4.652 |
+| **every 8th record**, 2 GB | 4,200,401 | 476 | 1.992× | 3.345 |
+
+The file is not in random order: its opening region holds sequences ~4.6×
+longer than the database average. That matters here more than it would
+elsewhere, because pyhmmer's expansion is driven by **per-record** overhead —
+so the prefix reports 1.148× expansion where the database is 2.13×, a 1.9× error
+that looks exactly like a real finding. Had the head subset been the only real
+measurement, the conclusion "expansion collapses on real data" would have been
+reported, and it would have been an artifact of `head -c`. Strided sampling
+(`experiments/make_fasta_subset.py`, stride mode) reproduces the whole-database
+value to within 7%. **Any size-matched subset of an ordered database must be
+strided, not truncated.**
+
+**What this costs C1.** Retention halves a `phmmer` call (1.9×) and does
+essentially nothing for an `hmmsearch` call (1.03×). The ~48% share is real, but
+it is the share *for a single-sequence query*, and the profile search — the more
+common use — sits at 2-3%. This is the same 28× trap Parquet exposed, now
+demonstrated within one consumer on real data. **The compute-independent metrics
+are unaffected: s/GB and expansion do not move, because the query changes only
+the denominator.** That is precisely why s/GB is the ranking key.
 
 ### Detail on the two provisional eliminations
 

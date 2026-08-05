@@ -162,6 +162,12 @@ physically plausible 16.6 GB/s per GPU across two PCIe links.
 | D4 | 8 background parsers cost the foreground **0.0%** | `bench_preactivation_interference.py` | `results/bench_preactivation_interference.json` | **A** — verified by loadavg 7.25 and 46.41 CPU-s in 6 s wall |
 | D5 | s/GB spans **65×** across formats; flat to 1.00–1.16× across a 4× size range | `bench_format_activation` | `results/bench_format_activation.csv` | **B** — all six formats are generated |
 | D6 | pyhmmer activation share **~46–49%**, flat across 40×; expansion 2.27–2.31× | `bench_p1_consumer_retention.py` | `results/bench_p1_hmmer_2gb.json`, diag JSON | **B** — synthetic FASTA, random residues |
+| D10 | **on REAL UniRef50 (16.94 GB, 38.79 M records): expansion 2.13×, s/GB 2.968, activation share 48.6%** — i.e. D6 holds | `bench_p1_consumer_retention.py` | `results/bench_p1_real_uniref50_full.json` | **A** — publisher md5 verified, node-local NVMe, `rungs_verified_distinct: true` |
+| D11 | real-vs-synthetic **same-node** control at 2 GB: expansion 0.88×, s/GB 1.05×, activation share 0.99× | same | `results/bench_p1_pair_real_2gb.json`, `..._synth_2gb.json` | **A** — both rungs one node, so seconds are comparable |
+| D12 | pyhmmer io_share on node-local NVMe is **11.9–19.9%** (12.9% at 8 GB, 11.9% at 16.94 GB) | same | `results/bench_p1_real_uniref50*.json` | **A** — first valid pyhmmer io_share; cold rung verified to have pulled 16,952 MB off the device, warm rung 7.4 MB |
+| D13 | **search cost is NOT hit-count independent for a profile query**: Pfam Pkinase on 2 GB costs 566.0 s / 37,577 hits on real UniRef50 vs 23.6 s / 31 hits on synthetic — **24.0×**, same node | same, `--hmm` | `results/bench_p1_real_uniref50_2gb.json`, `..._synth_2gb_samenode.json` | **A** — same node, same profile, same file size |
+| D14 | for *arbitrary* real queries the claim DOES hold: 5 of 6 length-matched pairs within ±20%, the sixth (1145 hits) at 1.97× | same, `--n-sampled-queries` | `results/bench_p1_real_uniref50_2gb.json` | **A** — length-matched random control per query |
+| D15 | a **head-truncated** UniRef50 subset is biased: first 2 GB = 1998 B/record and 1.148× expansion vs 437 B/record and 2.130× for the whole file | `make_fasta_subset.py` head vs stride | `results/bench_p1_real_uniref50_2gb.json` vs `..._uniref50s_2gb.json` | **A** — negative result about method, not about pyhmmer |
 | D7 | Lustre read collapses **16.3× within one 8 GB read**; local NVMe flat at 1.00× | `diag_p1_superlinear.py` | `results/diag_p1_superlinear_8gb.json` | **B** — 2 observations, 1 node, unknown neighbours |
 | D8 | Parquet activation share 73%, expansion 2.93× | inline script, login node, 82 MB | **none** | **C** → re-running as `bench_p1_parquet.py` |
 | D9 | raw MRC ≈ 1× expansion, R3 collapses onto R1 | — | **none** | **D** |
@@ -273,11 +279,22 @@ supervision one action with name-based discovery.
 6. **`sweep_policy_regime.py` outputs as measurements.** Design answers only.
 7. **Any host-memory delta taken with `/proc/meminfo` on a shared node** — see
    §2.3a. Use the cgroup path.
-8. **Any I/O share on node-local NVMe — because none has been measured yet.**
-   `diag_p1_superlinear.py` ran two loads on two filesystems; it never ran a
-   cold/warm pair. Every io_share figure so far is either from Lustre (void, §4.2)
-   or from the login node. `bench_p1_parquet.py` is the first to attempt one where
-   eviction demonstrably works.
+8. ~~**Any I/O share on node-local NVMe — because none has been measured yet.**~~
+   **RESOLVED 2026-08-05.** `bench_p1_parquet.py` measured the first one, and
+   the real-UniProt runs (D12) now give pyhmmer's: **11.9–19.9%**, every rung
+   carrying `rungs_verified_distinct: true`. That flag is not a claim about
+   `fadvise` — it is `/proc/self/io: read_bytes` confirming the cold rung pulled
+   16,952 MB off the device and the warm rung 7.4 MB. Trust these.
+
+9. **Any activation share quoted without its compute — now demonstrated *twice*.**
+   Parquet showed a 28× spread across computes on identical data. pyhmmer on real
+   UniRef50 shows 24× between a single-sequence query and a Pfam profile query
+   (D13). Two independent consumers, same failure. A bare "activation share" is
+   not a measurement.
+
+10. **Any subset of an ordered database taken with `head`.** D15: the first 2 GB
+    of UniRef50 has 4.6× the average record length and reports 1.148× expansion
+    where the database is 2.130×. It would have read as a clean finding.
 
 ---
 
