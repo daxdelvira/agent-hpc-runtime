@@ -1,0 +1,42 @@
+{
+  "potential": "/storage/project/r-ag117-0/shared/agent_hpc/agent-hpc-runtime/workloads/AtomAgents/potential_repository/w_eam4.fs",
+  "potential_gb": 0.009,
+  "comparisons": [
+    {
+      "geometry": "small_bcc",
+      "natoms_fork": 16,
+      "natoms_retained": 16,
+      "natoms_match": true,
+      "pe_fork": 7673.632599829207,
+      "pe_retained": 7673.632599829207,
+      "pe_rel_diff": 0.0,
+      "passed": true,
+      "fork_s": 3.077,
+      "retained_s": 0.159
+    },
+    {
+      "geometry": "oriented_large",
+      "natoms_fork": 384,
+      "natoms_retained": 384,
+      "natoms_match": true,
+      "pe_fork": 7686.703856994314,
+      "pe_retained": 7686.703856994314,
+      "pe_rel_diff": 0.0,
+      "passed": true,
+      "fork_s": 0.311,
+      "retained_s": 0.03
+    }
+  ],
+  "pool_stats": {
+    "retained": 1,
+    "potentials": [
+      "/storage/project/r-ag117-0/shared/agent_hpc/agent-hpc-runtime/workloads/AtomAgents/potential_repository/w_eam4.fs"
+    ],
+    "parses_avoided": 1,
+    "parses_paid": 1
+  },
+  "fork_total_s": 3.388,
+  "retained_total_s": 0.189,
+  "speedup": 17.926,
+  "PASS": true
+}
