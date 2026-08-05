@@ -42,7 +42,7 @@ disqualifying for the workload claim.
 | **LAMMPS EAM** (incumbent) | PASS | **90%** | ✗ inflated by us | ✗ | `measured` | `results/bench_activated_residency_BIG.json` |
 | **Parquet → Arrow** | PASS | **73%** | untested | untested | `measured-unpersisted` | **none — re-run required** |
 | **pyhmmer FASTA** | PASS | **~49%** | ✗ synthetic | untested | `measured` | `results/bench_p1_hmmer_2gb.json` |
-| RELION 5.0 | *provisional FAIL* | — | — | — | `inspected` | — |
+| RELION 5.0 | **FAIL (confirmed)** | — | — | — | `inspected` (exhaustive) | — |
 | raw MRC stacks | pass | *provisional ~0%* | — | — | `asserted` | **none** |
 | MMseqs2 / DIAMOND | untested | untested | — | — | — | — |
 | minimap2 / BWA index | untested | untested | — | — | — | — |
@@ -82,14 +82,30 @@ be largely hit-count independent, but that is `asserted`, not measured, and the
 
 ### Detail on the two provisional eliminations
 
-**RELION 5.0 — provisional FAIL on P1a, do not treat as closed.** `ls` of the
-module's `bin/` shows 25+ standalone binaries (`relion_refine`, `relion_autopick`,
-`relion_ctf_refine`, ...) and no Python bindings, so a particle stack cannot be
-held in a live consumer. But this was directory inspection only: RELION 5 ships
-external-job wrappers and was not checked for a Python API elsewhere in the tree.
-**One hour of proper checking closes or reopens this**, and it matters because
-cryo-EM is the candidate with the best P3 story (EMPIAR depositions are 700 GB-1.8 TB
-and sized by an instrument, not by us).
+**RELION 5.0 — FAIL on P1a. CONFIRMED 2026-08-05, gate closed.** The earlier
+verdict rested on `ls` of `bin/` and was correctly flagged as non-exhaustive. A
+full search of the install tree now settles it:
+
+- The **only** two Python files in the entire package are `relion_it.py` (1029
+  lines, 9 subprocess calls -- the RELION-IT automated pipeline driver) and
+  `relion_schemegui.py` (419 lines, 8 subprocess calls -- an FLTK GUI). Both
+  ORCHESTRATE the binaries; neither holds particle data in-process.
+- The only shared objects shipped are `libfltk*.so` -- the GUI toolkit. There is
+  no Python extension module anywhere in the tree.
+- `import relion` fails; nothing is importable.
+
+So a particle stack cannot be held across tool calls in RELION, and this is not
+something we can fix -- it is what the program is.
+
+**The nuance that does NOT rescue it.** A Python cryo-EM consumer built on
+`mrcfile`/`numpy` is perfectly possible, and would trivially pass P1a. But then
+WE write the consumer, and its activation cost is whatever we implement -- which
+fails exogeneity for exactly the reason the inflated EAM potential does. Passing
+P1a by authoring the consumer is not passing P1a.
+
+**Cost of this closure:** cryo-EM had the best P3 story of any candidate (EMPIAR
+depositions 700 GB-1.8 TB, sized by an instrument). Losing it is why the register
+now leans on C1/C3, both of which have weaker exogeneity.
 
 **raw MRC — provisional, and it was overstated.** The claim "expansion ~1x,
 activation share ~0%, so R3 collapses onto R1" is `asserted` from the format
