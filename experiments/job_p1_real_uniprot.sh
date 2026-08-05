@@ -78,7 +78,7 @@ if [ "$RUNSET" = "strided" ] || [ "$RUNSET" = "pair" ]; then
         "$T/uniref50.fasta" "$T/uniref50s_8gb.fasta" 8 2 || exit 1
   fi
   rm -f "$T/uniref50.fasta"
-elif [ "$RUNSET" != "full" ]; then
+elif [ "$RUNSET" != "full" ] && [ "$RUNSET" != "uniref90" ]; then
   python3 experiments/make_fasta_subset.py \
       "$T/uniref50_head.fasta" "$T/uniref50_2gb.fasta" 2 || exit 1
   python3 experiments/make_fasta_subset.py \
