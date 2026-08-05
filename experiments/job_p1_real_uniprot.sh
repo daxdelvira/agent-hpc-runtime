@@ -46,7 +46,7 @@ cp "$D/Pfam-A.hmm"          "$T/" || exit 1
 
 if [ "$RUNSET" = "full" ]; then
   time gunzip -c "$D/uniref50.fasta.gz" > "$T/uniref50.fasta" || exit 1
-elif [ "$RUNSET" = "strided" ]; then
+elif [ "$RUNSET" = "strided" ] || [ "$RUNSET" = "pair" ]; then
   cp "$W/p1_2gb.fasta" "$T/" || exit 1
   cp "$W/p1_8gb.fasta" "$T/" || exit 1
   time gunzip -c "$D/uniref50.fasta.gz" > "$T/uniref50.fasta" || exit 1
@@ -66,13 +66,15 @@ ls -la "$T"
 # its own file because the inline version opened the destination "wb" and then
 # read from it to find the last record boundary -- io.UnsupportedOperation, one
 # traceback, and the 8 GB subset silently never created.
-if [ "$RUNSET" = "strided" ]; then
+if [ "$RUNSET" = "strided" ] || [ "$RUNSET" = "pair" ]; then
   # Every 8th / every 2nd record out of the whole 16.94 GB file, so the subset's
   # record-length distribution matches the database instead of its first 2 GB.
   python3 experiments/make_fasta_subset.py \
       "$T/uniref50.fasta" "$T/uniref50s_2gb.fasta" 2 8 || exit 1
-  python3 experiments/make_fasta_subset.py \
-      "$T/uniref50.fasta" "$T/uniref50s_8gb.fasta" 8 2 || exit 1
+  if [ "$RUNSET" = "strided" ]; then
+    python3 experiments/make_fasta_subset.py \
+        "$T/uniref50.fasta" "$T/uniref50s_8gb.fasta" 8 2 || exit 1
+  fi
   rm -f "$T/uniref50.fasta"
 elif [ "$RUNSET" != "full" ]; then
   python3 experiments/make_fasta_subset.py \
@@ -110,6 +112,16 @@ if [ "$RUNSET" = "full" ]; then
   # query, and at 27 GB either alone would be most of an hour.
   run uniref50_real_full "$T/uniref50.fasta"   bench_p1_real_uniref50_full.json \
       --query-ids P69905
+elif [ "$RUNSET" = "pair" ]; then
+  # The one comparison that MUST be same-node, isolated so it is short enough to
+  # be certain of finishing: representative real vs synthetic at 2 GB, cheap
+  # computes only. s/GB and load_warm are in SECONDS, and seconds do not
+  # transfer across nodes -- a 2.3x spread was measured on identical work -- so
+  # the strided-vs-synthetic gap is only admissible if both are measured here.
+  run uniref50s_real_2gb_pair "$T/uniref50s_2gb.fasta" \
+      bench_p1_pair_real_2gb.json --query-ids P69905
+  run synthetic_2gb_pair      "$T/p1_2gb.fasta" \
+      bench_p1_pair_synth_2gb.json --query-ids P69905
 elif [ "$RUNSET" = "strided" ]; then
   # The size-matched real-vs-synthetic comparison, redone on REPRESENTATIVE
   # subsets. The head-truncated versions of these two rungs are kept rather
