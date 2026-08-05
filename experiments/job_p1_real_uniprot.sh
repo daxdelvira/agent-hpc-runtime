@@ -44,7 +44,9 @@ echo "=== staging to node-local NVMe (RUNSET=$RUNSET) ==="
 cp "$D/uniprot_sprot.fasta" "$T/" || exit 1
 cp "$D/Pfam-A.hmm"          "$T/" || exit 1
 
-if [ "$RUNSET" = "full" ]; then
+if [ "$RUNSET" = "uniref90" ]; then
+  time gunzip -c "$D/uniref90.fasta.gz" > "$T/uniref90.fasta" || exit 1
+elif [ "$RUNSET" = "full" ]; then
   time gunzip -c "$D/uniref50.fasta.gz" > "$T/uniref50.fasta" || exit 1
 elif [ "$RUNSET" = "strided" ] || [ "$RUNSET" = "pair" ]; then
   cp "$W/p1_2gb.fasta" "$T/" || exit 1
@@ -107,9 +109,17 @@ run () {   # run <label> <fasta> <out> <extra args...>
 #
 # Order matters: the headline real-vs-synthetic pair at 2 GB runs FIRST so a
 # preemption cannot cost the comparison the paper actually needs.
-if [ "$RUNSET" = "full" ]; then
+if [ "$RUNSET" = "uniref90" ]; then
+  # The largest scale point available. UniRef90 is a genuinely different
+  # database, not a bigger sample of UniRef50 -- clustered at 90% rather than
+  # 50% identity, so it holds far more near-duplicate sequences. If expansion
+  # and s/GB are format constants they should survive that, and if they are
+  # really properties of one database's redundancy they should not.
+  run uniref90_real_full "$T/uniref90.fasta"   bench_p1_real_uniref90_full.json \
+      --query-ids P69905
+elif [ "$RUNSET" = "full" ]; then
   # Cheap computes only: P06576 and the profile search each cost ~100x a random
-  # query, and at 27 GB either alone would be most of an hour.
+  # query, and at this size either alone would be most of an hour.
   run uniref50_real_full "$T/uniref50.fasta"   bench_p1_real_uniref50_full.json \
       --query-ids P69905
 elif [ "$RUNSET" = "pair" ]; then
