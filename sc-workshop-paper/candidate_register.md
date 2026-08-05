@@ -188,6 +188,7 @@ valid pyhmmer I/O shares; every earlier one was void.**
 | UniRef50 strided | 8.0 GB | 16,801,599 | 476 | 52.66 s | 15.941 GB | 1.993× | **3.303** | 12.9% |
 | **UniRef50 whole** | **16.94 GB** | **38,794,121** | 437 | 107.10 s | 36.08 GB | **2.130×** | **2.968** | **11.9%** |
 | *synthetic, for reference* | 2.0 GB | 5,000,672 | 400 | 14.39 s | 4.534 GB | 2.267× | 3.175 | 11.8% |
+| *synthetic, for reference* | 8.0 GB | 19,914,456 | 402 | 56.75 s | 18.06 GB | 2.257× | 3.143 | 12.5% |
 
 **Same-node control** (`atl1-1-02-005-2-2`, `results/bench_p1_pair_*.json`) —
 seconds do not transfer across nodes, so the real-vs-synthetic gap is only

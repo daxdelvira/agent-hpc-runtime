@@ -1,0 +1,111 @@
+[
+  {
+    "rung": "r1_load_cold",
+    "elapsed_s": 64.876,
+    "resident_frac_before": 0.0,
+    "storage_mb": 8004.2,
+    "n_sequences": 19914456,
+    "activated_gb": 18.055,
+    "file_gb": 8.0,
+    "expansion": 2.257,
+    "t": 1785967159.9992552,
+    "host": "atl1-1-02-007-24-2.pace.gatech.edu",
+    "label": "synthetic_8gb"
+  },
+  {
+    "rung": "r3a_search_on_fresh_block",
+    "elapsed_s": 72.423,
+    "n_hits": 34,
+    "t": 1785967232.4247518,
+    "host": "atl1-1-02-007-24-2.pace.gatech.edu",
+    "label": "synthetic_8gb"
+  },
+  {
+    "rung": "r3_reuse_live",
+    "elapsed_s": 61.468,
+    "n_hits": 75,
+    "note": "no reload: the DigitalSequenceBlock from r1 is still resident",
+    "t": 1785967293.9171622,
+    "host": "atl1-1-02-007-24-2.pace.gatech.edu",
+    "label": "synthetic_8gb"
+  },
+  {
+    "rung": "r3q_phmmer_real:P69905",
+    "elapsed_s": 40.894,
+    "n_hits": 9,
+    "query_len": 142,
+    "note": "real conserved protein as query; same retained block",
+    "t": 1785967336.6667557,
+    "host": "atl1-1-02-007-24-2.pace.gatech.edu",
+    "label": "synthetic_8gb"
+  },
+  {
+    "rung": "r3q_phmmer_real:P0CG48",
+    "elapsed_s": 169.818,
+    "n_hits": 1,
+    "query_len": 685,
+    "note": "real conserved protein as query; same retained block",
+    "t": 1785967506.4856477,
+    "host": "atl1-1-02-007-24-2.pace.gatech.edu",
+    "label": "synthetic_8gb"
+  },
+  {
+    "rung": "r2_load_warm",
+    "elapsed_s": 56.751,
+    "resident_frac_before": 1.0,
+    "storage_mb": 3.3,
+    "n_sequences": 19914456,
+    "rss_live_held_gb": 18.082,
+    "rss_live_after_release_gb": 16.596,
+    "released_gb": 1.486,
+    "note": "fresh parse, page cache hot \u2014 what a per-call subprocess pays",
+    "t": 1785967571.2886217,
+    "host": "atl1-1-02-007-24-2.pace.gatech.edu",
+    "label": "synthetic_8gb"
+  },
+  {
+    "rung": "VERDICT",
+    "compute_s_by_compute": {
+      "phmmer_random200": 61.468,
+      "phmmer_real:P69905": 40.894,
+      "phmmer_real:P0CG48": 169.818
+    },
+    "n_hits_by_compute": {
+      "phmmer_random200": 75,
+      "phmmer_real:P69905": 9,
+      "phmmer_real:P0CG48": 1
+    },
+    "activation_share_by_compute": {
+      "phmmer_random200": 0.4801,
+      "phmmer_real:P69905": 0.5812,
+      "phmmer_real:P0CG48": 0.2505
+    },
+    "retention_speedup_by_compute": {
+      "phmmer_random200": 1.92,
+      "phmmer_real:P69905": 2.39,
+      "phmmer_real:P0CG48": 1.33
+    },
+    "activation_share_range": [
+      0.2505,
+      0.5812
+    ],
+    "load_cold_s": 64.876,
+    "load_warm_s": 56.751,
+    "compute_s": 61.468,
+    "page_cache_control": true,
+    "storage_mb_cold": 8004.2,
+    "storage_mb_warm": 3.3,
+    "rungs_verified_distinct": true,
+    "io_share_of_cold": 0.1252,
+    "activation_share_of_call": 0.4801,
+    "retention_speedup": 1.92,
+    "activated_gb": 18.055,
+    "expansion": 2.257,
+    "s_per_gb_retained": 3.143,
+    "P1a_expressible": "PASS",
+    "magnitude": "MODERATE",
+    "t": 1785967571.2892385,
+    "host": "atl1-1-02-007-24-2.pace.gatech.edu",
+    "label": "synthetic_8gb"
+  }
+]
