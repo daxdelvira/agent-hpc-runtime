@@ -187,6 +187,7 @@ valid pyhmmer I/O shares; every earlier one was void.**
 | UniRef50 strided | 2.0 GB | 4,200,401 | 476 | 13.33 s | 3.984 GB | 1.992× | **3.345** | 19.9% |
 | UniRef50 strided | 8.0 GB | 16,801,599 | 476 | 52.66 s | 15.941 GB | 1.993× | **3.303** | 12.9% |
 | **UniRef50 whole** | **16.94 GB** | **38,794,121** | 437 | 107.10 s | 36.08 GB | **2.130×** | **2.968** | **11.9%** |
+| **UniRef90 whole** | **60.95 GB** | **121,389,642** | 502 | 372.60 s | 117.20 GB | **1.923×** | **3.179** | **11.5%** |
 | *synthetic, for reference* | 2.0 GB | 5,000,672 | 400 | 14.39 s | 4.534 GB | 2.267× | 3.175 | 11.8% |
 | *synthetic, for reference* | 8.0 GB | 19,914,456 | 402 | 56.75 s | 18.06 GB | 2.257× | 3.143 | 12.5% |
 
@@ -202,8 +203,25 @@ admissible measured together:
 
 **Verdict: the synthetic numbers were right.** Expansion is ~12% lower on real
 data and s/GB ~5% higher; activation share is indistinguishable. Nothing in the
-C1 assessment changes. Activation share is 47.1-48.6% on real data across a 59×
-size range (0.29 → 16.94 GB), exactly the 46-49% band the synthetic runs gave.
+C1 assessment changes.
+
+Across a **212× size range on real data** — 0.29 GB Swiss-Prot to 60.9 GB
+UniRef90, and UniRef90 is a *different* database (90% identity clustering, far
+more redundant), not more of the same one:
+
+| metric | range on real data | synthetic |
+|---|---|---|
+| expansion | **1.92 – 2.13×** | 2.27× |
+| s/GB retained | **2.97 – 3.35** | 3.13 – 3.18 |
+| activation share (`phmmer`, random 200-mer) | **47.1 – 48.6%** | 48.0 – 48.6% |
+| io_share (node-local NVMe) | **11.5 – 12.9%** | 11.8 – 12.5% |
+
+These are format constants, and Swiss-Prot's 41.2% io_share is the one outlier —
+expected, since a 0.29 GB file is small enough to be served partly from the
+drive's own cache, which `mincore` cannot see.
+
+**Both size estimates in the plan were high.** UniRef50 is 16.94 GB, not ~27;
+UniRef90 is 60.95 GB, not ~100.
 
 ### ⚠️ Where real data does NOT behave like synthetic: the QUERY
 
