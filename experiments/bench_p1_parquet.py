@@ -161,12 +161,24 @@ def main() -> int:
         expansion=round(inmem / (nbytes / 1e9), 3))
 
     # --- r3 reuse: compute against the RETAINED table, three intensities -----
+    # One intensity failing must not cost the whole size point. `sort` raises
+    # inside Arrow's take() at 448M rows (8 GB), which killed the 8 and 32 GB
+    # runs of the first attempt after the cheap intensities had already
+    # succeeded -- their results were lost with the process.
     comp = {}
     for kind in ("scan", "groupby", "sort"):
-        t0 = time.time(); compute(tbl, kind); dt = time.time() - t0
-        comp[kind] = dt
-        rec(rung=f"r3_reuse_live__{kind}", elapsed_s=round(dt, 3),
-            note="no reload: the Arrow table from r1 is still resident")
+        try:
+            t0 = time.time(); compute(tbl, kind); dt = time.time() - t0
+            comp[kind] = dt
+            rec(rung=f"r3_reuse_live__{kind}", elapsed_s=round(dt, 3),
+                note="no reload: the Arrow table from r1 is still resident")
+        except Exception as e:
+            rec(rung=f"r3_reuse_live__{kind}", elapsed_s=None,
+                error=f"{type(e).__name__}: {str(e)[:160]}",
+                note="intensity unavailable at this size; other intensities stand")
+    if not comp:
+        print("no compute intensity succeeded — cannot form a verdict")
+        return 1
 
     # --- r2 warm rebuild: what a per-call subprocess pays --------------------
     del tbl

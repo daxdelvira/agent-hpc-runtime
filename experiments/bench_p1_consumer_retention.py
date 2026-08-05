@@ -121,6 +121,13 @@ def resident_fraction(path: str) -> float:
     libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
                           ctypes.c_int, ctypes.c_int, ctypes.c_long]
     libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    # MUST be set: without argtypes ctypes marshals the length as c_int, which
+    # OVERFLOWS above 2 GB and makes mincore fail, returning -1.0 for exactly the
+    # large files this benchmark exists to measure. Copied from
+    # bench_activated_residency.py:81 without this line, and it went unnoticed
+    # because -1.0 is only visible in a field nothing downstream consumes.
+    libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
+                             ctypes.POINTER(ctypes.c_ubyte)]
     size = os.path.getsize(path)
     if size == 0:
         return 0.0
@@ -132,7 +139,7 @@ def resident_fraction(path: str) -> float:
         pagesz = os.sysconf("SC_PAGE_SIZE")
         npages = (size + pagesz - 1) // pagesz
         vec = (ctypes.c_ubyte * npages)()
-        if libc.mincore(ctypes.c_void_p(addr), size, vec) != 0:
+        if libc.mincore(ctypes.c_void_p(addr), ctypes.c_size_t(size), vec) != 0:
             libc.munmap(ctypes.c_void_p(addr), size)
             return -1.0
         resident = sum(v & 1 for v in vec)
@@ -144,6 +151,48 @@ def resident_fraction(path: str) -> float:
 
 def rss_gb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 ** 2)
+
+
+def storage_bytes() -> int:
+    """Bytes this process has really caused to be fetched from the STORAGE layer.
+
+    `/proc/self/io: read_bytes` is the one instrument here that does not depend on
+    any other instrument telling the truth. `rchar` counts bytes delivered to
+    read(2) -- satisfied from page cache or not -- while `read_bytes` counts only
+    what actually came off the device. Their ratio IS the cache hit rate.
+
+    THIS IS THE CHECK THAT WAS MISSING. Every withdrawn number in this project
+    came from a cold rung that was not cold, and both existing instruments can be
+    fooled: fadvise is a hint the kernel may ignore, and mincore reports the
+    client's belief about its own mapping. read_bytes is downstream of both --
+    if the bytes did not come off the device, the rung was warm, whatever
+    fadvise returned and whatever mincore believes.
+
+    Measured 2026-08-05 on a 256 MB file, cold then warm:
+
+        local NVMe   mincore 0.000 -> 268.4 MB from storage;  warm -> 0.0 MB
+        project NFS  mincore 0.000 -> 268.4 MB from storage;  warm -> 0.0 MB
+        lustre       mincore 0.562 ->  83.9 MB from storage;  warm -> 0.0 MB
+
+    Note the Lustre row: eviction there is PARTIAL AND NONDETERMINISTIC, not the
+    clean no-op recorded earlier from a 64 MB probe (1.000 -> 1.000). That is
+    worse than a no-op, because a partial eviction still produces a plausible
+    cold-vs-warm difference -- just an unreproducible one.
+
+    Works on all three filesystems, so it validates shared-storage runs too.
+    Returns -1 if unavailable (the field is Linux-specific and can be restricted).
+
+    NOT usable for mmap-based consumers' page faults -- read()-based readers show
+    majflt=0 throughout (verified). Use ru_majflt for mmap consumers instead.
+    """
+    try:
+        with open("/proc/self/io") as f:
+            for line in f:
+                if line.startswith("read_bytes:"):
+                    return int(line.split(":")[1])
+    except OSError:
+        pass
+    return -1
 
 
 # ---- workload generation ----------------------------------------------------
@@ -256,13 +305,16 @@ def main() -> int:
     evict(fasta)
     frac = resident_fraction(fasta)
     rss0 = rss_gb()
+    sb0 = storage_bytes()
     t0 = time.time()
     block = load_block(fasta)
     t_cold = time.time() - t0
+    sb_cold = storage_bytes() - sb0
     rss1 = rss_gb()
     alphabet = block.alphabet
     rec(rung="r1_load_cold", elapsed_s=round(t_cold, 3),
         resident_frac_before=round(frac, 4),
+        storage_mb=round(sb_cold / 1e6, 1),
         n_sequences=len(block),
         activated_gb=round(rss1 - rss0, 3),
         file_gb=round(nbytes / 1e9, 3),
@@ -296,11 +348,14 @@ def main() -> int:
     del block
     frac_warm = resident_fraction(fasta)
     rss2 = rss_gb()
+    sb1 = storage_bytes()
     t0 = time.time()
     block2 = load_block(fasta)
     t_warm = time.time() - t0
+    sb_warm = storage_bytes() - sb1
     rec(rung="r2_load_warm", elapsed_s=round(t_warm, 3),
         resident_frac_before=round(frac_warm, 4),
+        storage_mb=round(sb_warm / 1e6, 1),
         n_sequences=len(block2),
         note="fresh parse, page cache hot — what a per-call subprocess pays")
 
@@ -326,8 +381,15 @@ def main() -> int:
     # is reported as null rather than as a number when it could not be
     # established. A plausible-looking 12.7% from two rungs with identical cache
     # state is worse than an admitted gap.
+    # Gate io_share on what the DEVICE actually did, not on what fadvise
+    # claimed. The cold rung must have pulled most of the file off storage and
+    # the warm rung must have pulled almost none; otherwise the two rungs were
+    # not in different cache states and their difference is noise.
+    cold_ok = sb_cold >= 0.5 * nbytes
+    warm_ok = 0 <= sb_warm <= 0.1 * nbytes
+    rungs_distinct = bool(cache_control and cold_ok and warm_ok)
     io_share = ((t_cold - t_warm) / t_cold
-                if (cache_control and t_cold > 0) else None)
+                if (rungs_distinct and t_cold > 0) else None)
     cold_call = t_warm + t_reuse      # per-call consumer: rebuild, then compute
     warm_call = t_reuse               # retained consumer: compute only
     speedup = cold_call / warm_call if warm_call > 0 else float("inf")
@@ -338,6 +400,9 @@ def main() -> int:
         "load_warm_s": round(t_warm, 3),
         "compute_s": round(t_reuse, 3),
         "page_cache_control": cache_control,
+        "storage_mb_cold": round(sb_cold / 1e6, 1),
+        "storage_mb_warm": round(sb_warm / 1e6, 1),
+        "rungs_verified_distinct": rungs_distinct,
         "io_share_of_cold": (round(io_share, 4) if io_share is not None
                              else None),
         "activation_share_of_call": round(activation_share, 4),

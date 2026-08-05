@@ -35,6 +35,46 @@ disqualifying for the workload claim.
 
 ---
 
+## ⚠️ THE RANKING METRIC WAS WRONG (2026-08-05) — read this before the table
+
+The table below ranks candidates by **activation share** = `load / (load + compute)`.
+Measuring Parquet properly showed that number is **not a property of the format at
+all**. Same 2 GB file, same Arrow table, three different per-call computes:
+
+| per-call compute | compute time | activation share | retention speedup |
+|---|---|---|---|
+| `scan` (sum one column) | 0.094 s | **94.7%** | 18.95× |
+| `groupby` (hash agg) | 0.259 s | **86.7%** | 7.53× |
+| `sort` (full sort) | 48.795 s | **3.4%** | 1.03× |
+
+**A 28× spread on identical data.** So "LAMMPS 90%, Parquet 73%, pyhmmer 48%" was
+never comparing formats — it was comparing whatever compute each probe happened to
+use (a force evaluation, a groupby, a single-query search). Those are different
+denominators and the comparison was meaningless.
+
+### The compute-independent metrics, which is what should have been compared
+
+`s/GB retained` = `load_warm / activated_GB` — seconds of stall avoided per GB
+held. It has no `compute` term, and it is **exactly the quantity the value-density
+policy consumes**, so it was always the right ranking key.
+
+| candidate | load_warm | activated | expansion | **s/GB held** | io_share |
+|---|---|---|---|---|---|
+| pyhmmer FASTA (2 GB) | 13.65 s | 4.54 GB | 2.27× | **3.006** | n/a |
+| LAMMPS EAM (3.32 GB) | 42.83 s | 16.93 GB | 5.10× | **2.530** | 1.9% |
+| 72B model parked at R2 | — | ~279 GB | 1.90× | **~2.96** | — |
+| **Parquet → Arrow (2 GB)** | 1.69 s | 4.09 GB | 2.04× | **0.413** | **29.4%** |
+
+**The ranking inverts.** Parquet, which looked like the best non-incumbent
+candidate at 73%, is **~7× WORSE than pyhmmer** on the metric that matters: it
+decodes too fast relative to what it holds, so retaining it buys little per GB.
+Its 29.4% I/O share (the first valid one measured on node-local NVMe, where
+eviction is verified) says the same thing from the other side — Parquet is
+substantially more movement-bound than the transformation-bound candidates.
+
+**Consequence:** C3 is demoted, C1 is promoted, and activation share should appear
+in the paper only alongside the compute it was measured against.
+
 ## Status
 
 | candidate | P1a | P2 magnitude | P3 | P4 | evidence | artifact |

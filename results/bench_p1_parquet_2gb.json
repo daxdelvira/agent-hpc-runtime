@@ -1,0 +1,76 @@
+[
+  {
+    "rung": "r1_load_cold",
+    "elapsed_s": 2.395,
+    "resident_frac_before": 0.0,
+    "n_rows": 112000000,
+    "n_cols": 5,
+    "file_gb": 2.001,
+    "arrow_nbytes_gb": 4.088,
+    "rss_delta_gb": 6.528,
+    "expansion": 2.043,
+    "t": 1785958822.198783,
+    "host": "atl1-1-01-006-16-1.pace.gatech.edu"
+  },
+  {
+    "rung": "r3_reuse_live__scan",
+    "elapsed_s": 0.094,
+    "note": "no reload: the Arrow table from r1 is still resident",
+    "t": 1785958822.2930646,
+    "host": "atl1-1-01-006-16-1.pace.gatech.edu"
+  },
+  {
+    "rung": "r3_reuse_live__groupby",
+    "elapsed_s": 0.259,
+    "note": "no reload: the Arrow table from r1 is still resident",
+    "t": 1785958822.5517762,
+    "host": "atl1-1-01-006-16-1.pace.gatech.edu"
+  },
+  {
+    "rung": "r3_reuse_live__sort",
+    "elapsed_s": 48.795,
+    "note": "no reload: the Arrow table from r1 is still resident",
+    "t": 1785958871.346542,
+    "host": "atl1-1-01-006-16-1.pace.gatech.edu"
+  },
+  {
+    "rung": "r2_load_warm",
+    "elapsed_s": 1.69,
+    "resident_frac_before": 1.0,
+    "note": "fresh decode, page cache hot \u2014 what a per-call subprocess pays",
+    "t": 1785958873.1823723,
+    "host": "atl1-1-01-006-16-1.pace.gatech.edu"
+  },
+  {
+    "rung": "VERDICT",
+    "load_cold_s": 2.395,
+    "load_warm_s": 1.69,
+    "compute_s": {
+      "scan": 0.094,
+      "groupby": 0.259,
+      "sort": 48.795
+    },
+    "page_cache_control": true,
+    "io_share_of_cold": 0.2945,
+    "activation_share_by_compute": {
+      "scan": 0.9472,
+      "groupby": 0.8673,
+      "sort": 0.0335
+    },
+    "retention_speedup_by_compute": {
+      "scan": 18.95,
+      "groupby": 7.53,
+      "sort": 1.03
+    },
+    "activation_share_range": [
+      0.0335,
+      0.9472
+    ],
+    "arrow_gb": 4.088,
+    "expansion": 2.043,
+    "s_per_gb_retained": 0.413,
+    "P1a_expressible": "PASS",
+    "t": 1785958873.1825535,
+    "host": "atl1-1-01-006-16-1.pace.gatech.edu"
+  }
+]
