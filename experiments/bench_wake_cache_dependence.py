@@ -229,6 +229,10 @@ def main() -> int:
     ap.add_argument("--tp", type=int, default=4)
     ap.add_argument("--port", type=int, default=8231)
     ap.add_argument("--gen-n", type=int, default=8)
+    ap.add_argument("--sleep-level", type=int, choices=(1, 2), default=2,
+                    help="vLLM sleep level to probe. 2 (default) reproduces every "
+                         "prior run; 1 keeps weights in host RAM and has never "
+                         "been coherence-tested.")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -264,7 +268,12 @@ def main() -> int:
 
         for label, do_evict in (("wake_warm", False), ("wake_cold", True)):
             t0 = time.perf_counter()
-            _post(args.port, "/sleep?level=2")
+            # LEVEL IS A FLAG, NOT A CONSTANT (2026-08-04). This was hardcoded to
+            # level=2, so every coherence verdict on record is an L2 verdict — the
+            # "!!!!" corruption finding says nothing about L1, which has never been
+            # probed. L1 keeps the weights in host RAM rather than discarding them,
+            # so it is a different restore path and may well be correct.
+            _post(args.port, f"/sleep?level={args.sleep_level}")
             wait_sleeping(args.port, True)
             sleep_s = time.perf_counter() - t0
             frac_slept = resident_fraction(shards)
@@ -284,7 +293,8 @@ def main() -> int:
             # Immediately after the wake — this is the lazy-restore probe.
             el_a, tps_a = timed_generation(args.port, args.gen_n, 4)
 
-            rec(rung=label, sleep_s=round(sleep_s, 3), wake_s=round(wake_s, 3),
+            rec(rung=label, sleep_level=args.sleep_level,
+                sleep_s=round(sleep_s, 3), wake_s=round(wake_s, 3),
                 evicted_shards=n_ev,
                 resident_frac_when_slept=round(frac_slept, 4),
                 resident_frac_before_wake=round(frac_before_wake, 4),
