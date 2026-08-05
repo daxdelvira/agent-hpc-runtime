@@ -31,20 +31,38 @@ df -h /tmp | tail -1
 mkdir -p "$T" || exit 1
 trap 'rm -rf "$T"' EXIT
 
-echo "=== staging to node-local NVMe ==="
+# RUNSET splits the work by MEMORY FOOTPRINT, because the scheduler routes by
+# it: a request over ~64 GB leaves cpu-small for cpu-large, which is far more
+# contended. Peak RSS is ~1x the activated structure (verified: releasing the
+# block returns almost nothing to the OS, but the warm rung reuses the freed
+# arena rather than growing, so 0.288 GB Swiss-Prot peaks at 0.577 GB not
+# 1.15 GB). So `small` -- everything up to 8 GB, ~18 GB activated -- fits a
+# 64 GB cpu-small job, and only full UniRef50 (~52 GB activated) needs the big
+# partition.
+RUNSET=${RUNSET:-small}
+echo "=== staging to node-local NVMe (RUNSET=$RUNSET) ==="
 cp "$D/uniprot_sprot.fasta" "$T/" || exit 1
 cp "$D/Pfam-A.hmm"          "$T/" || exit 1
-cp "$W/p1_2gb.fasta"        "$T/" || exit 1
-cp "$W/p1_8gb.fasta"        "$T/" || exit 1
-time gunzip -c "$D/uniref50.fasta.gz" > "$T/uniref50.fasta" || exit 1
+
+if [ "$RUNSET" = "full" ]; then
+  time gunzip -c "$D/uniref50.fasta.gz" > "$T/uniref50.fasta" || exit 1
+else
+  cp "$W/p1_2gb.fasta" "$T/" || exit 1
+  cp "$W/p1_8gb.fasta" "$T/" || exit 1
+  # Only the first ~8.1 GB is needed for the subsets, so decompress that much
+  # rather than all 27 GB. SIGPIPE from the truncated consumer is expected.
+  gunzip -c "$D/uniref50.fasta.gz" 2>/dev/null | head -c 8200000000 \
+      > "$T/uniref50_head.fasta"
+  [ -s "$T/uniref50_head.fasta" ] || exit 1
+fi
 ls -la "$T"
 
 # Record-aligned truncations, so the real subsets are valid FASTA and directly
 # size-comparable to the existing synthetic 2 GB and 8 GB points.
-python3 - "$T" <<'PY'
+[ "$RUNSET" = "full" ] || python3 - "$T" <<'PY'
 import os, sys
 T = sys.argv[1]
-src = os.path.join(T, "uniref50.fasta")
+src = os.path.join(T, "uniref50_head.fasta")
 for gb, name in ((2, "uniref50_2gb.fasta"), (8, "uniref50_8gb.fasta")):
     dst = os.path.join(T, name)
     target = int(gb * 1e9)
@@ -89,19 +107,22 @@ run () {   # run <label> <fasta> <out> <extra args...>
 #
 # Order matters: the headline real-vs-synthetic pair at 2 GB runs FIRST so a
 # preemption cannot cost the comparison the paper actually needs.
-run uniref50_real_2gb  "$T/uniref50_2gb.fasta" bench_p1_real_uniref50_2gb.json \
-    --query-ids P69905,P0CG48,P06576 --n-sampled-queries 6 --hmm "$HMM"
-run synthetic_2gb      "$T/p1_2gb.fasta"       bench_p1_synth_2gb_samenode.json \
-    --query-ids P69905,P0CG48,P06576 --n-sampled-queries 6 --hmm "$HMM"
-run sprot_real_0.29gb  "$SPROT"                bench_p1_real_sprot.json \
-    --query-ids P69905,P0CG48,P06576 --n-sampled-queries 6 --hmm "$HMM"
-run uniref50_real_8gb  "$T/uniref50_8gb.fasta" bench_p1_real_uniref50_8gb.json \
-    --query-ids P69905,P0CG48 --hmm "$HMM"
-run synthetic_8gb      "$T/p1_8gb.fasta"       bench_p1_synth_8gb_samenode.json \
-    --query-ids P69905,P0CG48
-# Full UniRef50. Cheap computes only: P06576 and the profile search each cost
-# ~100x a random query, and at 27 GB either alone would be most of an hour.
-run uniref50_real_full "$T/uniref50.fasta"     bench_p1_real_uniref50_full.json \
-    --query-ids P69905
+if [ "$RUNSET" = "full" ]; then
+  # Cheap computes only: P06576 and the profile search each cost ~100x a random
+  # query, and at 27 GB either alone would be most of an hour.
+  run uniref50_real_full "$T/uniref50.fasta"   bench_p1_real_uniref50_full.json \
+      --query-ids P69905
+else
+  run uniref50_real_2gb "$T/uniref50_2gb.fasta" bench_p1_real_uniref50_2gb.json \
+      --query-ids P69905,P0CG48,P06576 --n-sampled-queries 6 --hmm "$HMM"
+  run synthetic_2gb     "$T/p1_2gb.fasta"      bench_p1_synth_2gb_samenode.json \
+      --query-ids P69905,P0CG48,P06576 --n-sampled-queries 6 --hmm "$HMM"
+  run sprot_real_0.29gb "$SPROT"               bench_p1_real_sprot.json \
+      --query-ids P69905,P0CG48,P06576 --n-sampled-queries 6 --hmm "$HMM"
+  run uniref50_real_8gb "$T/uniref50_8gb.fasta" bench_p1_real_uniref50_8gb.json \
+      --query-ids P69905,P0CG48 --hmm "$HMM"
+  run synthetic_8gb     "$T/p1_8gb.fasta"      bench_p1_synth_8gb_samenode.json \
+      --query-ids P69905,P0CG48
+fi
 
 echo "ALL DONE $(date -Is)"

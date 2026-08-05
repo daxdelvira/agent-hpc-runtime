@@ -153,6 +153,25 @@ def rss_gb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 ** 2)
 
 
+def vmrss_gb() -> float:
+    """LIVE resident set, unlike rss_gb() which is a peak and never decreases.
+
+    Needed to answer a question the peak cannot: after `del block`, is the
+    activated structure ACTUALLY gone before the warm rung rebuilds it? If the
+    TopHits from the search rungs pin the block, r2 holds two copies and the job
+    needs twice the memory -- which is a job-sizing landmine and also means the
+    warm rung is not the clean rebuild it claims to be.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / (1024 ** 2)
+    except OSError:
+        pass
+    return -1.0
+
+
 def storage_bytes() -> int:
     """Bytes this process has really caused to be fetched from the STORAGE layer.
 
@@ -545,7 +564,11 @@ def main() -> int:
 
     # --- r2: warm. Rebuild from a hot page cache, as a per-call subprocess
     # would. The block is dropped first so this is a genuine rebuild.
-    del block
+    rss_live_held = vmrss_gb()
+    del block, hits1, hits2
+    import gc
+    gc.collect()
+    rss_live_freed = vmrss_gb()
     frac_warm = resident_fraction(fasta)
     rss2 = rss_gb()
     sb1 = storage_bytes()
@@ -557,6 +580,9 @@ def main() -> int:
         resident_frac_before=round(frac_warm, 4),
         storage_mb=round(sb_warm / 1e6, 1),
         n_sequences=len(block2),
+        rss_live_held_gb=round(rss_live_held, 3),
+        rss_live_after_release_gb=round(rss_live_freed, 3),
+        released_gb=round(rss_live_held - rss_live_freed, 3),
         note="fresh parse, page cache hot — what a per-call subprocess pays")
 
     # --- verdict -------------------------------------------------------------
