@@ -1,0 +1,53 @@
+[
+  {
+    "rung": "A_parse_geom1",
+    "elapsed_s": 99.9135,
+    "natoms": 16,
+    "t": 1785961508.6445582
+  },
+  {
+    "rung": "B_same_geom_reuse",
+    "elapsed_s": 9.5218,
+    "note": "E1's rung: same box, new positions",
+    "t": 1785961518.1674438
+  },
+  {
+    "rung": "C_cross_geom_keep_tables",
+    "elapsed_s": 0.0125,
+    "succeeded": false,
+    "error": "Exception: ERROR: Cannot create_box after simulation box is defined (src/create_box.cpp:41)",
+    "natoms": null,
+    "note": "new box in the live instance, pair_coeff NOT re-issued",
+    "t": 1785961518.180094
+  },
+  {
+    "rung": "C2_cross_geom_in_place",
+    "elapsed_s": 13.0,
+    "succeeded": true,
+    "error": null,
+    "natoms": 33580,
+    "note": "delete_atoms + change_box + create_atoms; pair_coeff NOT re-issued",
+    "t": 1785961531.180272
+  },
+  {
+    "rung": "D_cross_geom_clear_reparse",
+    "elapsed_s": 103.8131,
+    "note": "clear + rebuild + full re-parse \u2014 what the fork-per-call does today",
+    "t": 1785961634.9996738
+  },
+  {
+    "rung": "VERDICT",
+    "parse_s": 99.9135,
+    "same_geom_reuse_s": 9.5218,
+    "cross_geom_keep_s": 0.0125,
+    "cross_geom_succeeded": false,
+    "clear_and_reparse_s": 103.8131,
+    "cross_geom_in_place_s": 13.0,
+    "cross_geom_in_place_succeeded": true,
+    "parse_avoided_s": 90.813,
+    "parse_avoided_frac_of_call": 0.8748,
+    "NOTE": "Judge on parse_avoided_s. A potential whose parse is small relative to geometry+force work cannot show a win no matter how well retention works -- run with the 3.32 GB potential for the number that matters.",
+    "conclusion": "CROSS-GEOMETRY RETENTION WORKS via delete_atoms + change_box + create_atoms (create_box is rejected in a live instance). A live worker can serve all three invocations off one parse; the plan's 4-of-6-redundant claim stands.",
+    "t": 1785961635.0005684
+  }
+]
