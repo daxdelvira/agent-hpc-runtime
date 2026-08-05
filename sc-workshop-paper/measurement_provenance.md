@@ -44,8 +44,55 @@ Returns the fraction of a file actually in the page cache, so the state that
 eviction *claims* to have produced can be checked rather than assumed. Implemented
 via `ctypes` because Python exposes no `mincore`.
 
-**How it lies:** returns the client's view. Confirms what this node believes, not
-what the storage system did.
+**Validated as a closed loop, not by return code** (2026-08-05, kernel
+5.14.0-570). On the same 16 MB file: write → read → `mincore` **1.000** → evict →
+`mincore` **0.000**. Both transitions observed, so the instrument is confirmed in
+both directions against known ground truth. This is precisely what Lustre fails:
+the second transition never happens there.
+
+**A kernel hardening that would have broken this silently, and was checked.**
+CVE-2019-5489 (page-cache side channel) prompted an upstream change making
+`mincore()` refuse honest residency for files the caller cannot write — it reports
+pages as *resident* instead. Had that been active, every cold rung on a read-only
+shared dataset would report 1.000 and be undetectable, which is exactly what the
+workload pivot will use. Tested directly: evict a file, `chmod 444`, re-check
+(`os.access(W_OK)` False). It returned **0.000**. The mitigation is not active on
+this kernel and residency reporting is truthful regardless of write permission.
+
+**How it still lies:** it sees the OS page cache only. It cannot observe the NVMe
+drive's DRAM cache or the controller, so "evicted from page cache" is not "will be
+read from flash" — a small file may be served entirely from drive cache, which
+*understates* true cold cost. Immaterial where parsing dominates (pyhmmer runs at
+153 MB/s, far below NVMe sequential), but it would matter for a genuinely
+I/O-bound consumer.
+
+### 2.3a Memory accounting scope — the wrong instrument was used, and a right one exists
+
+**`/proc/meminfo` is HOST-WIDE, including inside a SLURM job.** Measured from
+inside a job with a 16 GB request: `MemTotal 196137532 kB` — the whole node. No
+security feature blocks this; the problem is that it answers a different question
+than the one asked.
+
+**Consequence for M2.** The 120.77 GiB park cost is a `MemTotal−MemAvailable`
+delta taken on GPUs 4–5 of an L40S hold whose campaign was concurrently running
+vLLM engines on GPUs 0–3, churning tens of GB of host RAM. Any allocation or free
+by that campaign between the two readings is attributed to us. **Demoted A → B.**
+
+What keeps it credible is corroboration, not cleanliness: gate (b) independently
+gives 108–128 GiB per engine and the 8-node ladder gives 113.5–115.8 GiB, so
+~10 measurements cluster narrowly around it. **Report the band, not the point.**
+
+**The instrument that should have been used.** Per-job cgroup accounting is
+available but not at the obvious path — `/sys/fs/cgroup/memory.current` is
+unreadable. Resolve it from `/proc/self/cgroup`:
+
+```
+/sys/fs/cgroup/system.slice/<node>_slurmstepd.scope/job_<id>/step_<n>/user/task_0/memory.current
+```
+
+`memory.current` and `memory.peak` both read cleanly there. This is cgroup-scoped
+and immune to other tenants. **Every future host-memory measurement uses this**;
+`/proc/meminfo` is correct only for a node we hold exclusively.
 
 ### 2.3 Memory accounting — three different readings, deliberately
 - `VmRSS` from `/proc/self/status` — live process footprint, used for
@@ -94,7 +141,7 @@ measured speedups.**
 | # | claim | instrument | artifact | trust |
 |---|---|---|---|---|
 | M1 | L1 sleep wakes **coherently**; 782.27 s boot → **2.076 s** wake (377×) | `bench_wake_cache_dependence.py --sleep-level 1` | `results/bench_wake_L1_coherence_32b.json` | **A** |
-| M2 | park cost **120.77 GiB for a 68.28 GB model = 1.90×** | same run, `MemTotal−MemAvailable` | same | **A** |
+| M2 | park cost **120.77 GiB for a 68.28 GB model = 1.90×** | same run, `MemTotal−MemAvailable` | same | **B** — host-wide reading on a shared node; see §2.3a |
 | M3 | wake is page-cache independent (evicting 18 shards moved it 0.015 s) | same, `mincore()` verified | same | **A** |
 | M4 | cold boot for ONE identical 68.3 GB model ranges **344–1372 s (4.0×)** across 8 nodes; wake stays 1.43–2.07 s, park 113.5–115.8 GiB | `bench_activation_ladder` | `results/bench_activation_ladder_*.json` ×8 | **A** |
 | M5 | warm boot vs cold boot is **sign-unstable**: −7.0% to +37.1% | same 8 files | same | **B** — page-cache state across jobs not controlled |
@@ -224,6 +271,13 @@ supervision one action with name-based discovery.
    extrapolated. Only the ratio is real.
 5. **D9 (raw MRC).** Never executed.
 6. **`sweep_policy_regime.py` outputs as measurements.** Design answers only.
+7. **Any host-memory delta taken with `/proc/meminfo` on a shared node** — see
+   §2.3a. Use the cgroup path.
+8. **Any I/O share on node-local NVMe — because none has been measured yet.**
+   `diag_p1_superlinear.py` ran two loads on two filesystems; it never ran a
+   cold/warm pair. Every io_share figure so far is either from Lustre (void, §4.2)
+   or from the login node. `bench_p1_parquet.py` is the first to attempt one where
+   eviction demonstrably works.
 
 ---
 
