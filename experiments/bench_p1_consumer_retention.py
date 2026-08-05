@@ -71,6 +71,49 @@ def evict(path: str) -> None:
         os.close(fd)
 
 
+def evict_works(path: str) -> bool:
+    """Does posix_fadvise(DONTNEED) actually evict `path`'s filesystem?
+
+    IT DOES NOT ON LUSTRE, and it fails SILENTLY -- fadvise returns success and
+    the pages stay resident. Measured 2026-08-05 on a 64 MB file, full read then
+    evict:
+
+        /storage/scratch1 (lustre)   1.000 -> 1.000    <-- no-op
+        /storage/project  (nfs)      1.000 -> 0.000
+        /tmp              (local)    1.000 -> 0.000
+
+    Every cold-vs-warm number in this file is a DIFFERENCE between two rungs
+    whose cache state is set by evict(). If evict is a no-op, the two rungs have
+    the same cache state and their difference is run-to-run noise being reported
+    as an I/O share. That is the same failure class as the L2 sleep result: a
+    probe that silently did nothing, whose output still looks like data.
+
+    Call this before trusting `io_share_of_cold`. The RETENTION numbers do not
+    depend on it -- r2 (rebuild) and r3 (reuse) run in one process against
+    whatever cache state exists, and r3 touches no files at all -- so a False
+    here invalidates one column, not the experiment.
+    """
+    probe = path + ".evictprobe"
+    try:
+        with open(probe, "wb") as f:
+            f.write(os.urandom(8 << 20))
+        os.sync()
+        with open(probe, "rb") as f:
+            while f.read(1 << 20):
+                pass
+        if resident_fraction(probe) < 0.9:
+            return False          # never got warm; cannot conclude either way
+        evict(probe)
+        return resident_fraction(probe) < 0.1
+    except Exception:
+        return False
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+
+
 def resident_fraction(path: str) -> float:
     """Fraction of `path` currently in the page cache, via mincore()."""
     libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
@@ -193,6 +236,13 @@ def main() -> int:
     nbytes = os.path.getsize(fasta)
     print(f"fasta: {nbytes/1e9:.3f} GB", flush=True)
 
+    # Establish up front whether the cold/warm rungs can mean anything HERE.
+    # On Lustre they cannot; see evict_works().
+    cache_control = evict_works(fasta)
+    _cc = ("WORKING" if cache_control else
+           "UNAVAILABLE (fadvise is a no-op here — io_share suppressed)")
+    print(f"page-cache control on this filesystem: {_cc}", flush=True)
+
     recs = []
 
     def rec(**kw):
@@ -272,7 +322,12 @@ def main() -> int:
     # `t_reuse` is a SEARCH on the retained block, so it is compute, not load.
     # Comparing t_warm against it directly (the old `t_warm > 5*t_reuse` test)
     # asked "is loading slower than searching?", which is not the question.
-    io_share = (t_cold - t_warm) / t_cold if t_cold > 0 else 0.0
+    # io_share is the ONLY quantity that depends on evict() having worked, so it
+    # is reported as null rather than as a number when it could not be
+    # established. A plausible-looking 12.7% from two rungs with identical cache
+    # state is worse than an admitted gap.
+    io_share = ((t_cold - t_warm) / t_cold
+                if (cache_control and t_cold > 0) else None)
     cold_call = t_warm + t_reuse      # per-call consumer: rebuild, then compute
     warm_call = t_reuse               # retained consumer: compute only
     speedup = cold_call / warm_call if warm_call > 0 else float("inf")
@@ -282,7 +337,9 @@ def main() -> int:
         "load_cold_s": round(t_cold, 3),
         "load_warm_s": round(t_warm, 3),
         "compute_s": round(t_reuse, 3),
-        "io_share_of_cold": round(io_share, 4),
+        "page_cache_control": cache_control,
+        "io_share_of_cold": (round(io_share, 4) if io_share is not None
+                             else None),
         "activation_share_of_call": round(activation_share, 4),
         "retention_speedup": round(speedup, 2),
         "activated_gb": round(rss1 - rss0, 3),
