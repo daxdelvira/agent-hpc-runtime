@@ -58,30 +58,16 @@ fi
 ls -la "$T"
 
 # Record-aligned truncations, so the real subsets are valid FASTA and directly
-# size-comparable to the existing synthetic 2 GB and 8 GB points.
-[ "$RUNSET" = "full" ] || python3 - "$T" <<'PY'
-import os, sys
-T = sys.argv[1]
-src = os.path.join(T, "uniref50_head.fasta")
-for gb, name in ((2, "uniref50_2gb.fasta"), (8, "uniref50_8gb.fasta")):
-    dst = os.path.join(T, name)
-    target = int(gb * 1e9)
-    with open(src, "rb") as fi, open(dst, "wb") as fo:
-        left = target
-        while left > 0:
-            b = fi.read(min(1 << 24, left))
-            if not b:
-                break
-            fo.write(b); left -= len(b)
-        # back up to the last record boundary so the file ends cleanly
-        fo.flush(); size = fo.tell()
-        tail = 1 << 20
-        fo.seek(max(0, size - tail)); chunk = fo.read()
-        cut = chunk.rfind(b"\n>")
-        if cut >= 0:
-            fo.truncate(max(0, size - tail) + cut + 1)
-    print(name, os.path.getsize(dst), flush=True)
-PY
+# size-comparable to the existing synthetic 2 GB and 8 GB points. This lives in
+# its own file because the inline version opened the destination "wb" and then
+# read from it to find the last record boundary -- io.UnsupportedOperation, one
+# traceback, and the 8 GB subset silently never created.
+if [ "$RUNSET" != "full" ]; then
+  python3 experiments/make_fasta_subset.py \
+      "$T/uniref50_head.fasta" "$T/uniref50_2gb.fasta" 2 || exit 1
+  python3 experiments/make_fasta_subset.py \
+      "$T/uniref50_head.fasta" "$T/uniref50_8gb.fasta" 8 || exit 1
+fi
 ls -la "$T"
 df -h /tmp | tail -1
 

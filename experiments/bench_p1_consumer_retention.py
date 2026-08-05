@@ -388,6 +388,10 @@ def main() -> int:
                     help="FASTA to use; generated if absent")
     ap.add_argument("--size-gb", type=float, default=2.0,
                     help="size to generate if --fasta does not exist")
+    ap.add_argument("--allow-generate", action="store_true",
+                    help="permit synthesising --fasta when it is absent. OFF "
+                         "by default: a missing real database must fail loudly, "
+                         "not be replaced by random residues under its label.")
     ap.add_argument("--out", default="results/bench_p1_consumer_retention.json")
     ap.add_argument("--mode", choices=("cold", "warm", "full"), default="full",
                     help="'full' runs cold+warm+reuse in one process. cold and "
@@ -417,6 +421,17 @@ def main() -> int:
 
     fasta = os.path.abspath(args.fasta)
     if not os.path.exists(fasta):
+        # A MISSING FILE MUST NOT SILENTLY BECOME A SYNTHETIC ONE. This nearly
+        # produced the worst artifact this project could emit: a staging bug
+        # left uniref50_8gb.fasta uncreated, and the old behaviour would have
+        # generated a 2 GB random-residue FASTA in its place and written it out
+        # under the label `uniref50_real_8gb` -- synthetic data wearing a real
+        # database's name, in a file whose whole purpose is to tell them apart.
+        if not args.allow_generate:
+            print(f"FATAL: {fasta} does not exist. Pass --allow-generate to "
+                  f"synthesise one; refusing to invent data for a run labelled "
+                  f"{args.label!r}.", file=sys.stderr)
+            return 2
         print(f"generating {args.size_gb} GB FASTA at {fasta} ...", flush=True)
         make_fasta(fasta, int(args.size_gb * 1e9))
     nbytes = os.path.getsize(fasta)
