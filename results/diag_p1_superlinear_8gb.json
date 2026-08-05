@@ -1,0 +1,303 @@
+{
+  "host": "atl1-1-01-005-22-2.pace.gatech.edu",
+  "cgroup_limit_gb": Infinity,
+  "runs": [
+    {
+      "label": "shared",
+      "path": "/storage/scratch1/7/avandevoorde3/p1/p1_8gb.fasta",
+      "total_load_s": 568.273,
+      "n_records": 19914456,
+      "file_gb": 8.0,
+      "throughput_mb_s": 14.1,
+      "rss_after_gb": 18.231,
+      "marks": [
+        {
+          "records": 1000000,
+          "cum_s": 3.288,
+          "batch_s": 3.288,
+          "rate_krec_s": 304.1,
+          "rss_gb": 0.917
+        },
+        {
+          "records": 2000000,
+          "cum_s": 6.389,
+          "batch_s": 3.101,
+          "rate_krec_s": 322.5,
+          "rss_gb": 1.816
+        },
+        {
+          "records": 3000000,
+          "cum_s": 9.529,
+          "batch_s": 3.14,
+          "rate_krec_s": 318.5,
+          "rss_gb": 2.715
+        },
+        {
+          "records": 4000000,
+          "cum_s": 12.547,
+          "batch_s": 3.018,
+          "rate_krec_s": 331.3,
+          "rss_gb": 3.615
+        },
+        {
+          "records": 5000000,
+          "cum_s": 15.605,
+          "batch_s": 3.058,
+          "rate_krec_s": 327.0,
+          "rss_gb": 4.516
+        },
+        {
+          "records": 6000000,
+          "cum_s": 18.71,
+          "batch_s": 3.105,
+          "rate_krec_s": 322.0,
+          "rss_gb": 5.413
+        },
+        {
+          "records": 7000000,
+          "cum_s": 21.928,
+          "batch_s": 3.218,
+          "rate_krec_s": 310.8,
+          "rss_gb": 6.313
+        },
+        {
+          "records": 8000000,
+          "cum_s": 24.712,
+          "batch_s": 2.784,
+          "rate_krec_s": 359.2,
+          "rss_gb": 7.212
+        },
+        {
+          "records": 9000000,
+          "cum_s": 27.966,
+          "batch_s": 3.254,
+          "rate_krec_s": 307.3,
+          "rss_gb": 8.112
+        },
+        {
+          "records": 10000000,
+          "cum_s": 31.548,
+          "batch_s": 3.581,
+          "rate_krec_s": 279.2,
+          "rss_gb": 9.01
+        },
+        {
+          "records": 11000000,
+          "cum_s": 87.031,
+          "batch_s": 55.483,
+          "rate_krec_s": 18.0,
+          "rss_gb": 9.908
+        },
+        {
+          "records": 12000000,
+          "cum_s": 144.739,
+          "batch_s": 57.708,
+          "rate_krec_s": 17.3,
+          "rss_gb": 10.808
+        },
+        {
+          "records": 13000000,
+          "cum_s": 195.198,
+          "batch_s": 50.459,
+          "rate_krec_s": 19.8,
+          "rss_gb": 11.708
+        },
+        {
+          "records": 14000000,
+          "cum_s": 246.354,
+          "batch_s": 51.156,
+          "rate_krec_s": 19.5,
+          "rss_gb": 12.606
+        },
+        {
+          "records": 15000000,
+          "cum_s": 303.138,
+          "batch_s": 56.784,
+          "rate_krec_s": 17.6,
+          "rss_gb": 13.506
+        },
+        {
+          "records": 16000000,
+          "cum_s": 351.008,
+          "batch_s": 47.871,
+          "rate_krec_s": 20.9,
+          "rss_gb": 14.405
+        },
+        {
+          "records": 17000000,
+          "cum_s": 411.266,
+          "batch_s": 60.258,
+          "rate_krec_s": 16.6,
+          "rss_gb": 15.305
+        },
+        {
+          "records": 18000000,
+          "cum_s": 461.765,
+          "batch_s": 50.498,
+          "rate_krec_s": 19.8,
+          "rss_gb": 16.205
+        },
+        {
+          "records": 19000000,
+          "cum_s": 515.277,
+          "batch_s": 53.512,
+          "rate_krec_s": 18.7,
+          "rss_gb": 17.105
+        }
+      ]
+    },
+    {
+      "label": "local_nvme",
+      "path": "/tmp/p1_8gb.fasta",
+      "total_load_s": 52.186,
+      "n_records": 19914456,
+      "file_gb": 8.0,
+      "throughput_mb_s": 153.3,
+      "rss_after_gb": 18.232,
+      "marks": [
+        {
+          "records": 1000000,
+          "cum_s": 2.362,
+          "batch_s": 2.362,
+          "rate_krec_s": 423.4,
+          "rss_gb": 16.652
+        },
+        {
+          "records": 2000000,
+          "cum_s": 4.899,
+          "batch_s": 2.537,
+          "rate_krec_s": 394.2,
+          "rss_gb": 16.712
+        },
+        {
+          "records": 3000000,
+          "cum_s": 7.539,
+          "batch_s": 2.64,
+          "rate_krec_s": 378.8,
+          "rss_gb": 16.772
+        },
+        {
+          "records": 4000000,
+          "cum_s": 10.064,
+          "batch_s": 2.525,
+          "rate_krec_s": 396.1,
+          "rss_gb": 16.832
+        },
+        {
+          "records": 5000000,
+          "cum_s": 12.659,
+          "batch_s": 2.595,
+          "rate_krec_s": 385.4,
+          "rss_gb": 16.892
+        },
+        {
+          "records": 6000000,
+          "cum_s": 15.258,
+          "batch_s": 2.599,
+          "rate_krec_s": 384.8,
+          "rss_gb": 16.951
+        },
+        {
+          "records": 7000000,
+          "cum_s": 17.976,
+          "batch_s": 2.719,
+          "rate_krec_s": 367.8,
+          "rss_gb": 17.011
+        },
+        {
+          "records": 8000000,
+          "cum_s": 20.776,
+          "batch_s": 2.799,
+          "rate_krec_s": 357.2,
+          "rss_gb": 17.071
+        },
+        {
+          "records": 9000000,
+          "cum_s": 23.124,
+          "batch_s": 2.349,
+          "rate_krec_s": 425.7,
+          "rss_gb": 17.131
+        },
+        {
+          "records": 10000000,
+          "cum_s": 26.032,
+          "batch_s": 2.908,
+          "rate_krec_s": 343.9,
+          "rss_gb": 17.191
+        },
+        {
+          "records": 11000000,
+          "cum_s": 28.369,
+          "batch_s": 2.337,
+          "rate_krec_s": 427.9,
+          "rss_gb": 17.251
+        },
+        {
+          "records": 12000000,
+          "cum_s": 30.744,
+          "batch_s": 2.375,
+          "rate_krec_s": 421.0,
+          "rss_gb": 17.31
+        },
+        {
+          "records": 13000000,
+          "cum_s": 33.812,
+          "batch_s": 3.068,
+          "rate_krec_s": 326.0,
+          "rss_gb": 17.37
+        },
+        {
+          "records": 14000000,
+          "cum_s": 36.169,
+          "batch_s": 2.356,
+          "rate_krec_s": 424.4,
+          "rss_gb": 17.43
+        },
+        {
+          "records": 15000000,
+          "cum_s": 38.544,
+          "batch_s": 2.376,
+          "rate_krec_s": 421.0,
+          "rss_gb": 17.49
+        },
+        {
+          "records": 16000000,
+          "cum_s": 41.796,
+          "batch_s": 3.252,
+          "rate_krec_s": 307.5,
+          "rss_gb": 17.55
+        },
+        {
+          "records": 17000000,
+          "cum_s": 44.137,
+          "batch_s": 2.341,
+          "rate_krec_s": 427.1,
+          "rss_gb": 17.61
+        },
+        {
+          "records": 18000000,
+          "cum_s": 46.523,
+          "batch_s": 2.386,
+          "rate_krec_s": 419.2,
+          "rss_gb": 17.669
+        },
+        {
+          "records": 19000000,
+          "cum_s": 48.884,
+          "batch_s": 2.362,
+          "rate_krec_s": 423.4,
+          "rss_gb": 17.729
+        }
+      ]
+    }
+  ],
+  "verdict": {
+    "local_vs_shared_speedup": 10.89,
+    "shared_rate_first_batch_krec_s": 304.1,
+    "shared_rate_last_batch_krec_s": 18.7,
+    "within_load_rate_decay": 16.26,
+    "peak_rss_gb": 18.232,
+    "cgroup_limit_gb": Infinity,
+    "conclusion": "H1 \u2014 storage. The 91.8% was Lustre contention; pyhmmer's real activation share is the ~49% measured at 2 GB."
+  }
+}

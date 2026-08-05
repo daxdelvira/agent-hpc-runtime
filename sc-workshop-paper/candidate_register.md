@@ -72,13 +72,29 @@ Expansion flat at 2.27-2.31x across a 10x range, consistent with the plan's
 finding that these are format constants. s/GB 3.01, in the same band as a parked
 72B (~2.96).
 
+Confirmed at 8 GB once storage was controlled: **47.6%**, so the share is flat at
+~46-49% across a 40x size range and is a format constant like expansion.
+
+| size | load | compute | share | speedup | load rate |
+|---|---|---|---|---|---|
+| 0.2 GB | 1.02 s | 1.36 s | 42.8% | 1.75x | 197 MB/s |
+| 2 GB | 13.65 s | 14.46 s | 48.6% | 1.94x | 147 MB/s |
+| 8 GB | 52.19 s | 57.44 s | 47.6% | 1.91x | 153 MB/s |
+
+> **An 8 GB reading of 91.8% / 12.13x was reported and is WITHDRAWN.** It came
+> from a load off Lustre scratch where throughput degraded 16x within the single
+> read (304 -> 18.7 krec/s). The identical file on node-local NVMe loaded in
+> 52.2 s at a FLAT 423 krec/s, first million to nineteenth. See
+> `results/diag_p1_superlinear_8gb.json`. Do not cite 91.8% or 12.13x.
+
 Two caveats that bound it. HMMER's per-call search costs about what its load
 costs, so retention roughly halves a call and **cannot win big at any database
-size** — the ratio does not improve with scale. And the FASTAs are random
-residues, which find 8-27 hits where a real database would find many more;
-HMMER's cost is dominated by the MSV/Viterbi sweep over all sequences and should
-be largely hit-count independent, but that is `asserted`, not measured, and the
-~49% figure is what the whole pyhmmer assessment rests on.
+size** — the ratio does not improve with scale, and the 8 GB point now confirms
+that rather than contradicting it. And the FASTAs are random residues, which find
+8-27 hits where a real database would find many more; HMMER's cost is dominated
+by the MSV/Viterbi sweep over all sequences and should be largely hit-count
+independent, but that is `asserted`, not measured, and the ~48% figure is what
+the whole pyhmmer assessment rests on.
 
 ### Detail on the two provisional eliminations
 
