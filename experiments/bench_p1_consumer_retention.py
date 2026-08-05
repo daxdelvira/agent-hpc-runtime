@@ -252,18 +252,115 @@ def load_block(path: str):
         return sf.read_block()
 
 
-def build_query(alphabet):
+def build_query(alphabet, seed: int = 11, length: int = 200, name: str = "query"):
     """A single-sequence query, built once; its cost is not what we measure."""
     from pyhmmer.easel import TextSequence
-    rng = random.Random(11)
-    seq = "".join(rng.choice(_AA) for _ in range(200))
-    return TextSequence(name=b"query", sequence=seq).digitize(alphabet)
+    rng = random.Random(seed)
+    seq = "".join(rng.choice(_AA) for _ in range(length))
+    return TextSequence(name=name.encode(), sequence=seq).digitize(alphabet)
+
+
+def real_queries(path: str, ids, alphabet):
+    """Pull named REAL protein sequences out of `path` to use as queries.
+
+    WHY THIS EXISTS. Every pyhmmer number in this project was measured with a
+    RANDOM 200-residue query, which finds 8-75 hits in a database of millions.
+    The claim that this does not matter -- that HMMER's cost is dominated by the
+    MSV/Viterbi filter sweeping every sequence and is therefore largely
+    hit-count independent -- was `asserted`, never measured, and the whole ~48%
+    activation share rests on it. A real conserved protein queried against a
+    real database produces hit counts orders of magnitude larger, on the SAME
+    retained block, which turns the assertion into a controlled comparison.
+
+    Matching is on the accession or the entry name as they appear in a UniProt
+    FASTA header (`>sp|P69905|HBA_HUMAN ...`), so either form works. Missing IDs
+    are skipped rather than fatal -- a query that is absent from the release
+    must not cost the run.
+    """
+    from pyhmmer.easel import SequenceFile
+    wanted = set(ids)
+    found = {}
+    with SequenceFile(path, digital=False) as sf:
+        for seq in sf:
+            # pyhmmer 0.12 returns `str` here; older builds returned `bytes`.
+            # Normalise, because getting this wrong silently yields zero
+            # matches and the real-query comparison quietly does not happen.
+            name = seq.name
+            if isinstance(name, bytes):
+                name = name.decode(errors="replace")
+            name = name or ""
+            parts = name.split("|")
+            keys = (parts[1], parts[2], name) if len(parts) >= 3 else (name,)
+            for key in keys:
+                if key in wanted and key not in found:
+                    found[key] = seq.digitize(alphabet)
+            if len(found) == len(wanted):
+                break
+    return found
+
+
+def sampled_queries(path: str, k: int, stride: int, alphabet):
+    """`k` real sequences spread through `path`, as an UNBIASED query sample.
+
+    The named-accession list is deliberately biased -- hemoglobin, ubiquitin and
+    ATP synthase beta are among the most conserved proteins there are, so they
+    sit at the expensive end of the search-cost distribution. Quoting only those
+    would replace one wrong number with another. This draws every `stride`-th
+    record instead, which is what an arbitrary real query looks like.
+    """
+    from pyhmmer.easel import SequenceFile
+    out = []
+    with SequenceFile(path, digital=False) as sf:
+        for i, seq in enumerate(sf):
+            if i % stride:
+                continue
+            nm = seq.name
+            if isinstance(nm, bytes):
+                nm = nm.decode(errors="replace")
+            out.append((nm, seq.digitize(alphabet)))
+            if len(out) >= k:
+                break
+    return out
+
+
+def load_hmm(path: str, name: str | None):
+    """First HMM in `path`, or the one whose NAME/ACC matches `name`.
+
+    An HMM query is what `hmmsearch` actually does, so it is the realistic
+    per-call compute for this consumer; a single sequence query is `phmmer`.
+    They are DIFFERENT COMPUTES and therefore different denominators for
+    activation share -- which is the whole point of reporting several.
+    """
+    from pyhmmer.plan7 import HMMFile
+
+    def s(v):
+        if v is None:
+            return ""
+        return v.decode(errors="replace") if isinstance(v, bytes) else str(v)
+
+    with HMMFile(path) as hf:
+        first = None
+        for hmm in hf:
+            if first is None:
+                first = hmm
+            if name is None:
+                return hmm
+            if s(hmm.name) == name or s(hmm.accession).split(".")[0] == name:
+                return hmm
+        return first          # requested profile absent: use one, don't fail
+    return None
 
 
 def search(query, block):
     from pyhmmer.plan7 import Pipeline
     pli = Pipeline(alphabet=block.alphabet)
     return pli.search_seq(query, block)
+
+
+def search_hmm(hmm, block):
+    from pyhmmer.plan7 import Pipeline
+    pli = Pipeline(alphabet=block.alphabet)
+    return pli.search_hmm(hmm, block)
 
 
 def main() -> int:
@@ -276,6 +373,27 @@ def main() -> int:
     ap.add_argument("--mode", choices=("cold", "warm", "full"), default="full",
                     help="'full' runs cold+warm+reuse in one process. cold and "
                          "warm are for driving separate processes explicitly.")
+    ap.add_argument("--label", default=None,
+                    help="free-text tag recorded in every row, e.g. "
+                         "'uniref50_real' vs 'synthetic'")
+    ap.add_argument("--query-fasta", default=None,
+                    help="FASTA to draw REAL query sequences from (Swiss-Prot). "
+                         "Each becomes an extra named compute on the SAME "
+                         "retained block, so hit-count sensitivity is measured "
+                         "rather than assumed.")
+    ap.add_argument("--query-ids", default="P69905,P0CG48,P06576",
+                    help="comma-separated UniProt accessions or entry names")
+    ap.add_argument("--n-sampled-queries", type=int, default=0,
+                    help="how many arbitrary real sequences to draw from "
+                         "--query-fasta as queries, each paired with a "
+                         "length-matched random control")
+    ap.add_argument("--sample-stride", type=int, default=97391,
+                    help="take every Nth record when sampling queries")
+    ap.add_argument("--hmm", default=None,
+                    help="Pfam-A.hmm to draw a profile query from; an HMM "
+                         "search is hmmsearch's real compute")
+    ap.add_argument("--hmm-name", default="Pkinase",
+                    help="HMM NAME or accession to use; first HMM if absent")
     args = ap.parse_args()
 
     fasta = os.path.abspath(args.fasta)
@@ -297,6 +415,8 @@ def main() -> int:
     def rec(**kw):
         kw["t"] = time.time()
         kw["host"] = os.uname().nodename
+        if args.label:
+            kw["label"] = args.label
         recs.append(kw)
         print("  " + json.dumps({k: v for k, v in kw.items()
                                  if k not in ("t", "host")}), flush=True)
@@ -342,6 +462,86 @@ def main() -> int:
     rec(rung="r3_reuse_live", elapsed_s=round(t_reuse, 3),
         n_hits=len(hits2),
         note="no reload: the DigitalSequenceBlock from r1 is still resident")
+
+    # --- extra computes on the SAME retained block ---------------------------
+    # Two questions, both answered here because they need the same expensive
+    # block and would be uncomparable across processes:
+    #   (a) is per-call search cost hit-count dependent? (the asserted claim)
+    #   (b) what is the SPREAD of activation share across plausible computes?
+    #       Parquet showed 28x on identical data, so a single share is not a
+    #       property of the format and must never be quoted alone.
+    computes = {"phmmer_random200": (round(t_reuse, 3), len(hits2))}
+
+    if args.query_fasta and os.path.exists(args.query_fasta):
+        ids = [i for i in args.query_ids.split(",") if i]
+        try:
+            qs = real_queries(args.query_fasta, ids, alphabet)
+        except Exception as e:                       # pragma: no cover
+            qs = {}
+            rec(rung="r3q_ERROR", error=repr(e))
+        for nm, q in qs.items():
+            t0 = time.time()
+            h = search(q, block)
+            dt = time.time() - t0
+            rec(rung=f"r3q_phmmer_real:{nm}", elapsed_s=round(dt, 3),
+                n_hits=len(h), query_len=len(q),
+                note="real conserved protein as query; same retained block")
+            computes[f"phmmer_real:{nm}"] = (round(dt, 3), len(h))
+        missing = [i for i in ids if i not in qs]
+        if missing:
+            rec(rung="r3q_missing", ids=missing)
+
+        # Unbiased sample, each paired with a LENGTH-MATCHED random query.
+        # Query length and homology both drive HMMER's cost and they are
+        # confounded in any single comparison: a real query is usually longer
+        # than 200 aa, so a bare real-vs-random gap could be pure length. The
+        # matched pair holds length fixed, so whatever gap remains is the part
+        # attributable to sequences surviving the MSV/Viterbi filters -- which
+        # is exactly the "hit-count independence" claim under test.
+        if args.n_sampled_queries > 0:
+            try:
+                samples = sampled_queries(args.query_fasta,
+                                          args.n_sampled_queries,
+                                          args.sample_stride, alphabet)
+            except Exception as e:                   # pragma: no cover
+                samples = []
+                rec(rung="r3s_ERROR", error=repr(e))
+            for j, (nm, q) in enumerate(samples):
+                L = len(q)
+                t0 = time.time()
+                h = search(q, block)
+                dt_real = time.time() - t0
+                rq = build_query(alphabet, seed=1000 + j, length=L,
+                                 name=f"rand{L}")
+                t0 = time.time()
+                hr = search(rq, block)
+                dt_rand = time.time() - t0
+                rec(rung=f"r3s_pair[{j}]", query=nm, query_len=L,
+                    real_s=round(dt_real, 3), real_hits=len(h),
+                    randmatched_s=round(dt_rand, 3), randmatched_hits=len(hr),
+                    real_over_random=(round(dt_real / dt_rand, 3)
+                                      if dt_rand > 0 else None))
+                computes[f"phmmer_sampled[{j}]:{nm}"] = (round(dt_real, 3),
+                                                         len(h))
+                computes[f"phmmer_randlen{L}[{j}]"] = (round(dt_rand, 3),
+                                                       len(hr))
+
+    if args.hmm and os.path.exists(args.hmm):
+        try:
+            hmm = load_hmm(args.hmm, args.hmm_name)
+        except Exception as e:                       # pragma: no cover
+            hmm = None
+            rec(rung="r3h_ERROR", error=repr(e))
+        if hmm is not None:
+            nm = hmm.name or "?"
+            nm = nm.decode(errors="replace") if isinstance(nm, bytes) else str(nm)
+            t0 = time.time()
+            h = search_hmm(hmm, block)
+            dt = time.time() - t0
+            rec(rung=f"r3h_hmmsearch:{nm}", elapsed_s=round(dt, 3),
+                n_hits=len(h), hmm_len=hmm.M,
+                note="profile HMM query — this is what hmmsearch actually does")
+            computes[f"hmmsearch:{nm}"] = (round(dt, 3), len(h))
 
     # --- r2: warm. Rebuild from a hot page cache, as a per-call subprocess
     # would. The block is dropped first so this is a genuine rebuild.
@@ -394,8 +594,22 @@ def main() -> int:
     warm_call = t_reuse               # retained consumer: compute only
     speedup = cold_call / warm_call if warm_call > 0 else float("inf")
     activation_share = t_warm / cold_call if cold_call > 0 else 0.0
+    # The compute-INDEPENDENT metrics (s/GB, expansion) are single numbers; the
+    # compute-DEPENDENT ones are a dict keyed by the compute, because there is
+    # no such thing as "the" activation share.
+    share_by_compute = {k: round(t_warm / (t_warm + v[0]), 4)
+                        for k, v in computes.items() if t_warm + v[0] > 0}
+    speedup_by_compute = {k: round((t_warm + v[0]) / v[0], 2)
+                          for k, v in computes.items() if v[0] > 0}
     verdict = {
         "rung": "VERDICT",
+        "compute_s_by_compute": {k: v[0] for k, v in computes.items()},
+        "n_hits_by_compute": {k: v[1] for k, v in computes.items()},
+        "activation_share_by_compute": share_by_compute,
+        "retention_speedup_by_compute": speedup_by_compute,
+        "activation_share_range": ([min(share_by_compute.values()),
+                                    max(share_by_compute.values())]
+                                   if share_by_compute else None),
         "load_cold_s": round(t_cold, 3),
         "load_warm_s": round(t_warm, 3),
         "compute_s": round(t_reuse, 3),
