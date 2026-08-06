@@ -158,9 +158,27 @@ def assert_budget_is_safe(budget_gb: float, simulate: bool) -> None:
             f"make a run fit.")
 
 
-# --- the schedule ------------------------------------------------------------
+# --- schedules ----------------------------------------------------------------
 # ("need", resource) | ("compute", seconds)
-DEFAULT_SCHEDULE = [
+#
+# ⚠️ THE HAND-WRITTEN SCHEDULE BELOW IS NOT REALISTIC AND MUST NOT CARRY A CLAIM.
+# Measured from 37 real exp3 trials, the gaps BETWEEN resource needs -- which are
+# the windows a prefetch has to hide inside -- are:
+#
+#       median 6.5 s     p75 36.7 s     >=60 s: 9% of gaps     >=300 s: 1%
+#
+# Every compute window in the hand-written schedule (60-566 s) sits in the top 9%
+# of real gaps and most sit in the top 1%. A model cold boot is 440-765 s, so in
+# the real workload a prefetch essentially never has room to hide -- which is the
+# same `no_window` result the stall taxonomy reported for chemgraph_swap.
+#
+# Real need ORDER is also strongly structured: 15 distinct orders across 37
+# trials, the most common appearing 9 times, versus uniform-random over 4
+# resources in the synthetic generator.
+#
+# So: HAND_SCHEDULE is a demonstration fixture for validating scheduler logic.
+# schedule_from_traces() is what any reported number must be built on.
+HAND_SCHEDULE = [
     ("need", "qwen_72b"), ("compute", 120),
     ("need", "uniref90"), ("compute", 300),
     ("need", "qwen_32b"), ("compute", 120),
@@ -168,6 +186,128 @@ DEFAULT_SCHEDULE = [
     ("need", "qwen_72b"), ("compute", 60),
     ("need", "uniref50"),
 ]
+DEFAULT_SCHEDULE = HAND_SCHEDULE     # overridden by --from-traces
+
+
+def synthetic_schedule(n_needs: int = 10, window_scale: float = 1.0,
+                       zipf_a: float = 0.8, seed: int = 0,
+                       resources: list[str] | None = None) -> list:
+    """A synthetic need sequence with every parameter's provenance stated.
+
+    WHY A SYNTHETIC GENERATOR IS LEGITIMATE HERE. The exp3 traces are a fixed
+    pre-scripted experiment: their windows are small because the workflow does
+    little real computation between LLM calls. That is a property of THAT
+    benchmark, not of agentic workflows generally -- tool-heavy workflows with
+    genuine simulation between calls, and longer LLM iteration cycles, produce
+    much larger windows. `window_scale` is the knob for asking what happens as
+    workflows move in that direction, and it is a SENSITIVITY AXIS to be swept
+    and reported, not a number to be picked once and buried.
+
+    WHAT AN EARLIER VERSION OF THIS GOT WRONG, so it is not repeated. The first
+    synthetic generator lived inline in a throwaway script -- unversioned and
+    uninspectable -- and drew need order UNIFORMLY over the resources and windows
+    UNIFORMLY from four round numbers I chose. Measured against 37 real trials
+    that is wrong in three ways, all of them flattering to a prefetcher:
+
+      order       real traces show 15 distinct orders across 37 trials with one
+                  appearing 9 times -- strongly structured, not uniform. Zipf
+                  popularity (zipf_a, default 0.8 as in sweep_policy_regime.py)
+                  plus repeat-bias reproduces the clustering.
+      windows     real gaps are BIMODAL -- median 16.3 s, p90 964 s -- not four
+                  round numbers. Short gaps are the agent thinking; long gaps are
+                  real computation. Drawn here as a mixture.
+      correlation 43 of 45 real gaps >=300 s follow a MODEL need, because the
+                  window IS the agent running inference. Long windows are
+                  therefore emitted after model needs, not uniformly.
+
+    Returns one schedule; call repeatedly with different seeds for a population.
+    """
+    import random as _random
+    rng = _random.Random(seed)
+    names = resources or list(CATALOGUE)
+    weights = [1.0 / ((k + 1) ** zipf_a) for k in range(len(names))]
+
+    sched = []
+    prev = None
+    for k in range(n_needs):
+        # Repeat-bias: real sequences revisit a resource far more often than
+        # uniform draws do (qwen_72b appears 3x in the dominant real order).
+        if prev is not None and rng.random() < 0.35:
+            pick = prev
+        else:
+            pick = rng.choices(names, weights=weights, k=1)[0]
+        sched.append(("need", pick))
+        prev = pick
+        if k + 1 == n_needs:
+            break
+        # Bimodal gap. The long mode is emitted mostly after MODEL needs, since
+        # in the real traces the long window is the agent doing inference.
+        is_model = CATALOGUE[pick]["cls"] == "model"
+        long_p = 0.45 if is_model else 0.05
+        if rng.random() < long_p:
+            gap = rng.lognormvariate(6.4, 0.6)      # ~600 s median, heavy tail
+        else:
+            gap = rng.lognormvariate(2.6, 1.1)      # ~13 s median, matches 16.3
+        sched.append(("compute", round(gap * window_scale, 1)))
+    return sched
+
+
+def schedule_from_traces(pattern: str, data_map: dict | None = None,
+                         min_needs: int = 4) -> list[list]:
+    """Build schedules from the REALIZED need sequences in exp3 metrics CSVs.
+
+    Preserves what the synthetic generator destroyed: the real order of needs and
+    the real idle gap between them. Gaps become ("compute", seconds) steps, so a
+    prefetch gets exactly as much room to hide as the workload actually gave it.
+
+    `data_map` renames trace data resources onto catalogue entries (the traces
+    carry LAMMPS potentials; the pivot substitutes UniProt databases). That
+    substitution is a MODELLING CHOICE and must be reported as one -- the timing
+    of the surrounding sequence is real, the identity of the data artifact is not.
+    """
+    import csv as _csv
+    import datetime as _dt
+    import glob as _glob
+
+    data_map = data_map or {}
+    out = []
+    for f in sorted(_glob.glob(pattern)):
+        try:
+            rows = list(_csv.DictReader(open(f)))
+        except OSError:
+            continue
+        if not rows:
+            continue
+        try:
+            t0 = _dt.datetime.fromisoformat(rows[0]["timestamp"])
+        except Exception:
+            continue
+        seq = []
+        for r in rows:
+            ph = r["phase"]
+            if not (ph.startswith("model_load:") or ph.startswith("lammps:")):
+                continue
+            try:
+                dur = float(r["duration_s"] or 0)
+                end = (_dt.datetime.fromisoformat(r["timestamp"]) - t0).total_seconds()
+            except Exception:
+                continue
+            raw = ph.split(":", 1)[1].split("/")[0]
+            name = data_map.get(raw, raw)
+            if name in CATALOGUE:
+                seq.append((end - dur, name, dur))
+        if len(seq) < min_needs:
+            continue
+        seq.sort()
+        sched = []
+        for k, (start, name, dur) in enumerate(seq):
+            sched.append(("need", name))
+            if k + 1 < len(seq):
+                gap = seq[k + 1][0] - (start + dur)
+                if gap > 0.5:
+                    sched.append(("compute", round(gap, 1)))
+        out.append(sched)
+    return out
 
 
 class Backend:
@@ -279,10 +419,12 @@ class Backend:
 class Arbiter:
     def __init__(self, policy: str, budget_gb: float, prefetch: bool,
                  schedule, backend: Backend, log,
-                 predict_accuracy: float = 1.0, seed: int = 0):
+                 predict_accuracy: float = 1.0, seed: int = 0,
+                 optimal_selection: bool = False):
         import random as _random
         self.rng = _random.Random(seed)
         self.predict_accuracy = predict_accuracy
+        self.optimal_selection = optimal_selection
         self.policy = policy
         self.budget = budget_gb
         self.prefetch = prefetch
@@ -294,6 +436,10 @@ class Arbiter:
         self.events = []
         self.prefetch_hits = 0
         self.prefetch_wasted = 0
+        # True while a model occupies the GPUs, i.e. from the moment a model
+        # need is served until it is parked or evicted. A model prefetch during
+        # that period cannot happen at tp=4 with M=1.
+        self.gpu_busy = False
 
     # -- the value function ---------------------------------------------------
     def _next_use(self, name: str, i: int) -> float:
@@ -375,9 +521,74 @@ class Arbiter:
 
         raise ValueError(self.policy)
 
+    # -- ONE CURRENCY FOR BOTH ACTIONS ---------------------------------------
+    def action_rate(self, kind: str, name: str, i: int) -> float:
+        """Stall-seconds avoided per GB-second of budget consumed.
+
+        THIS IS THE UNIFICATION. Retaining and prefetching produce the SAME
+        good -- a resource ready at its next need -- and differ only in their
+        cost profile, so they can and should be ranked against each other in one
+        number instead of being two mechanisms that merely share a budget.
+
+            RETAIN x    benefit = cold(x) - ready(x)      the whole rebuild avoided
+                        cost    = size(x) * dt            held from now to next use
+
+            PREFETCH y  benefit = min(load(y), dt)        can only hide as much as
+                                                          the window actually allows
+                        cost    = size(y) * dt            occupied from now to need
+
+        The `min(load, dt)` term is what makes this honest about the measured
+        workload: real gaps between needs are median 6.5 s against 440-765 s cold
+        boots, so for models the benefit term collapses to dt and prefetching a
+        model is nearly worthless -- the value function now SAYS that rather than
+        our having to remember it.
+        """
+        r = CATALOGUE[name]
+        dt = self._hold_seconds(name, i)
+        if dt == float("inf"):
+            return float("-inf")
+        cost = r["held_gb"] * dt
+        if kind == "retain":
+            benefit = r["cold_s"] - r["ready_s"]
+        elif kind == "prefetch":
+            benefit = min(r["cold_s"] - r["ready_s"], dt)
+        else:
+            raise ValueError(kind)
+        return benefit / max(cost, 1e-9)
+
     def _held(self, extra: str | None = None) -> float:
         names = set(self.retained) | ({extra} if extra else set())
         return sum(CATALOGUE[n]["held_gb"] for n in names)
+
+    def _best_set(self, candidates: dict, i: int) -> set:
+        """The highest-value subset that fits. EXACT for small catalogues.
+
+        Greedy single-victim eviction solves the wrong problem: it can only evict
+        WHOLE items, so it frees 117-130 GB to make room for 36 GB, and it admits
+        the newcomer unconditionally. On our own resources that costs 32.7% of
+        retainable value in a concrete case -- optimal holds {qwen_32b, uniref90}
+        = 811.8 s, while greedy's best after admitting uniref50 is 546.3 s.
+
+        With a handful of resources the subset problem is 2^n and simply solvable,
+        so the approximation is not worth its error here. `optimal_selection=False`
+        keeps the greedy behaviour for comparison.
+        """
+        import itertools
+        names = list(candidates)
+        if not self.optimal_selection or len(names) > 16:
+            return None                      # caller falls back to greedy
+        best, best_v = set(), -1.0
+        for r in range(len(names), -1, -1):
+            for combo in itertools.combinations(names, r):
+                if sum(CATALOGUE[x]["held_gb"] for x in combo) > self.budget:
+                    continue
+                v = sum(self.action_rate("retain", x, i)
+                        * CATALOGUE[x]["held_gb"] * self._hold_seconds(x, i)
+                        for x in combo
+                        if self._hold_seconds(x, i) != float("inf"))
+                if v > best_v:
+                    best, best_v = set(combo), v
+        return best
 
     def _make_room_for(self, name: str, i: int) -> bool:
         """Evict until `name` fits. False if it cannot fit even alone."""
@@ -406,6 +617,32 @@ class Arbiter:
     def _start_prefetch(self, name: str, i: int) -> None:
         if name in self.inflight or name in self.retained:
             return
+        # A prefetch competes with the RETAINED set in the same currency. If
+        # holding what is already there is worth more per GB-second, do not
+        # displace it -- the two actions now trade off inside one value
+        # function rather than merely sharing a budget.
+        # GPUs ARE NOT THE BUDGET, AND A MODEL PREFETCH NEEDS THEM.
+        # Every model declares gpus=[0,1,2,3] at tp=4, so M=1: only one model can
+        # be resident on the GPUs at a time. The windows we prefetch into are
+        # overwhelmingly the agent doing 72B inference (43 of 45 gaps >=300 s
+        # follow a qwen_72b need), and during that window the GPUs are BUSY --
+        # loading another model onto them is physically impossible, not merely
+        # expensive. Data is unaffected: it lands in host RAM and needs no GPU.
+        #
+        # At 256 GB this never fired because a 279 GB model cannot fit the budget
+        # anyway, so the right behaviour emerged by accident. It would not at
+        # larger budgets, and an accident is not a constraint.
+        if CATALOGUE[name]["cls"] == "model" and self.gpu_busy:
+            self.events.append({"step": i, "op": "prefetch_impossible_gpus_busy",
+                                "resource": name})
+            return
+        rate = self.action_rate("prefetch", name, i)
+        rivals = [self.action_rate("retain", x, i) for x in self.retained]
+        need_gb = CATALOGUE[name]["held_gb"]
+        if rivals and self._held(name) > self.budget and rate <= min(rivals):
+            self.events.append({"step": i, "op": "prefetch_declined_low_value",
+                                "resource": name, "rate": round(rate, 6)})
+            return
         if not self._make_room_for(name, i):
             self.events.append({"step": i, "op": "prefetch_skipped_no_room",
                                 "resource": name})
@@ -428,6 +665,76 @@ class Arbiter:
             if name is None or n == name:
                 t.join()
                 self.inflight.pop(n, None)
+
+    # -- analytic run: simulated clock, no sleeping ---------------------------
+    def run_analytic(self) -> dict:
+        """Stall seconds on a SIMULATED clock, honouring how long loads take.
+
+        THE DRY-RUN ACCOUNTING WAS FICTITIOUS AND OVERSTATED PREFETCH. In the
+        thread-based path a stub backend returns instantly, so `_join_prefetch`
+        never waits and EVERY prefetch counted as a hit -- even a 372.6 s
+        UniRef90 load issued into a 5 s window. The tell was a window_scale sweep
+        that returned identically +24.6% at 0.5x, 1x, 2x, 4x and 8x: if window
+        size genuinely did not matter, prefetching would be free, which it is not.
+
+        Here a prefetch issued at simulated time t completes at t + cold(y). If
+        the need arrives first, only the elapsed portion was hidden and the
+        remainder is still paid. That is the whole point of a window.
+        """
+        clock = 0.0
+        stall = 0.0
+        inflight: dict[str, float] = {}       # name -> completion time
+        hits = {"retain": 0, "prefetch": 0}
+        wasted = 0
+
+        for i, (kind, val) in enumerate(self.schedule):
+            if kind == "compute":
+                if self.prefetch:
+                    nxt = self._predicted_next(i)
+                    if nxt and nxt not in inflight and nxt not in self.retained:
+                        if not (CATALOGUE[nxt]["cls"] == "model" and self.gpu_busy):
+                            cand = dict(self.retained); cand[nxt] = i
+                            if sum(CATALOGUE[x]["held_gb"] for x in cand) <= self.budget:
+                                inflight[nxt] = clock + CATALOGUE[nxt]["cold_s"]
+                clock += val
+                continue
+
+            name = val
+            r = CATALOGUE[name]
+            if name in self.retained:
+                stall += r["ready_s"]; clock += r["ready_s"]
+                hits["retain"] += 1
+                del self.retained[name]
+            elif name in inflight:
+                remaining = max(0.0, inflight.pop(name) - clock)
+                # Fully hidden only if the load finished before the need.
+                cost = remaining if remaining > 0 else r["ready_s"]
+                if remaining <= 0:
+                    hits["prefetch"] += 1
+                stall += cost; clock += cost
+            else:
+                stall += r["cold_s"]; clock += r["cold_s"]
+
+            if r["cls"] == "model":
+                self.gpu_busy = True
+            if self.policy != "never_retain":
+                cand = dict(self.retained); cand[name] = i
+                keep = self._best_set(cand, i)
+                if keep is None:
+                    keep = set(cand)
+                    while sum(CATALOGUE[x]["held_gb"] for x in keep) > self.budget:
+                        vic = [x for x in keep if x != name]
+                        if not vic:
+                            keep.discard(name); break
+                        keep.discard(min(vic, key=lambda x: self._rank(x, i)))
+                self.retained = {x: i for x in keep}
+                if name in keep and r["cls"] == "model":
+                    self.gpu_busy = False
+            # anything still in flight that will never be used is waste
+        wasted = len(inflight)
+        return {"stall_s": round(stall, 2), "sim_wall_s": round(clock, 2),
+                "retained_hits": hits["retain"], "prefetch_hits": hits["prefetch"],
+                "prefetch_unused": wasted}
 
     # -- run ------------------------------------------------------------------
     def run(self) -> dict:
@@ -460,11 +767,33 @@ class Arbiter:
             self.events.append({"step": i, "op": "need", "resource": name,
                                 "retained": was_retained, "stall_s": round(stall, 3)})
 
+            if CATALOGUE[name]["cls"] == "model":
+                self.gpu_busy = True
+
             if self.policy == "never_retain":
                 self.be.evict(name)
                 self.retained.pop(name, None)
+                if CATALOGUE[name]["cls"] == "model":
+                    self.gpu_busy = False
             else:
-                if self._make_room_for(name, i):
+                cand = dict(self.retained)
+                cand[name] = i
+                keep = self._best_set(cand, i)
+                if keep is not None:
+                    # EXACT selection: choose the best subset, which may decline
+                    # to admit the newcomer at all. Greedy cannot express that.
+                    for x in list(self.retained):
+                        if x not in keep:
+                            self.be.evict(x); del self.retained[x]
+                    if name in keep:
+                        self.retained[name] = i
+                        self.be.park(name)     # parking frees the GPUs
+                        if CATALOGUE[name]["cls"] == "model":
+                            self.gpu_busy = False
+                    else:
+                        self.be.evict(name)
+                        self.retained.pop(name, None)
+                elif self._make_room_for(name, i):
                     self.retained[name] = i
                     self.be.park(name)
                 else:
