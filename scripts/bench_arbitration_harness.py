@@ -26,15 +26,26 @@ They draw on the SAME budget, so choosing to prefetch X may mean evicting
 retained Y. One value function, two actions. That is the design claim, and the
 arms below are built to separate it:
 
-    never_retain      every need pays full cold cost            (baseline)
-    retain_lru        retention only, recency-ranked            (the realizable baseline)
-    retain_vd         retention only, value-density-ranked
-    retain_vd_prefetch  retention + speculative loading during compute windows
+    never_retain              every need pays full cold cost         baseline
+    retain_lru                recency only, PAST information only    REALIZABLE baseline
+    retain_vd_pred            cost-aware, predictor-driven           REALIZABLE system
+    retain_vd_pred_prefetch   the same, plus speculative loading     REALIZABLE, both actions
+    retain_belady             furthest-next-use                      ORACLE bound
+    retain_vd_oracle          cost-aware with TRUE next use          ORACLE bound
 
-The prefetch arm is the only one that needs a prediction, and it is the one the
-project's earlier negative result speaks to: 45-62% predictor accuracy was
-disqualifying for prefetching but adequate for retention. `--predict-accuracy`
-exists to test exactly that.
+ORACLE VS REALIZABLE IS A DISTINCTION THIS FILE ONCE GOT WRONG. An earlier
+version computed the next use by reading ahead in the schedule and handed that
+to `value_density` -- making the "system" arm depend on Belady-grade knowledge
+no deployed scheduler has. It also gave LRU an "is this ever used again?"
+shortcut from the same source, so the baseline was not LRU either. Both arms were
+stronger than reality, in opposite directions, and their comparison meant
+nothing. The oracle arms are now labelled as BOUNDS and the realizable arms see
+only the past or a predictor.
+
+`--predict-accuracy` (default 0.55, the middle of this project's measured 45-62%)
+tests the standing claim that such accuracy is disqualifying for PREFETCHING but
+adequate for RETENTION -- because a retention decision is made at eviction time,
+when the past is already known, and only the horizon is guessed.
 
 WHY COMPUTE WINDOWS ARE IN THE SCHEDULE
 ---------------------------------------
@@ -267,7 +278,11 @@ class Backend:
 # --- the scheduler -----------------------------------------------------------
 class Arbiter:
     def __init__(self, policy: str, budget_gb: float, prefetch: bool,
-                 schedule, backend: Backend, log):
+                 schedule, backend: Backend, log,
+                 predict_accuracy: float = 1.0, seed: int = 0):
+        import random as _random
+        self.rng = _random.Random(seed)
+        self.predict_accuracy = predict_accuracy
         self.policy = policy
         self.budget = budget_gb
         self.prefetch = prefetch
@@ -282,24 +297,82 @@ class Arbiter:
 
     # -- the value function ---------------------------------------------------
     def _next_use(self, name: str, i: int) -> float:
+        """Schedule POSITION of the next need for `name`. Oracle: reads ahead."""
         for j in range(i + 1, len(self.schedule)):
             k, v = self.schedule[j]
             if k == "need" and v == name:
                 return j
         return float("inf")
 
+    def _seconds_between(self, i: int, j: float) -> float:
+        """Wall-SECONDS from position i to position j.
+
+        FIXES A UNITS BUG. This used to be `j - i`, a count of schedule
+        POSITIONS, while the value function divides by it as though it were
+        time held. A one-step gap containing a 566 s hmmsearch scored identically
+        to a one-step gap containing a 60 s compute -- so the ranking was wrong
+        exactly when compute windows vary, which is the regime this whole
+        experiment is about.
+
+        Intervening needs are priced at their COLD cost: we are estimating how
+        long the resource must be held, and at ranking time we do not know
+        whether those needs will hit or miss.
+        """
+        if j == float("inf"):
+            return float("inf")
+        t = 0.0
+        for k in range(i + 1, int(j)):
+            kind, val = self.schedule[k]
+            t += val if kind == "compute" else CATALOGUE[val]["cold_s"]
+        return max(t, 1e-6)
+
+    def _hold_seconds(self, name: str, i: int) -> float:
+        """How long we believe `name` must be held. ORACLE vs REALIZABLE split.
+
+        The oracle variants read the true next use out of the schedule. That is
+        Belady-grade information and NOT something a deployed scheduler has --
+        an earlier version of this file gave it to `value_density` and to `lru`
+        alike, which made both stronger than reality and made their comparison
+        meaningless.
+
+        The realizable variant asks a predictor that is right `predict_accuracy`
+        of the time; when wrong it returns some other resource's horizon, which
+        is what a confusion between resources actually looks like. This is the
+        knob that tests the project's standing claim -- 45-62% accuracy was
+        disqualifying for PREFETCHING but might be adequate for RETENTION,
+        because a retention decision is made at eviction time when the past is
+        already known.
+        """
+        true_s = self._seconds_between(i, self._next_use(name, i))
+        if not self.policy.endswith("_pred"):
+            return true_s
+        if self.rng.random() < self.predict_accuracy:
+            return true_s
+        others = [self._seconds_between(i, self._next_use(o, i))
+                  for o in CATALOGUE if o != name]
+        others = [o for o in others if o != float("inf")]
+        return self.rng.choice(others) if others else true_s
+
     def _rank(self, name: str, i: int) -> float:
         """Lower rank is evicted first."""
-        nu = self._next_use(name, i)
-        if nu == float("inf"):
-            return float("-inf")
+        # REAL LRU SEES ONLY THE PAST. It gets no "this is never used again"
+        # shortcut -- that is future knowledge, and handing it to the baseline
+        # was the other half of the contaminated comparison.
         if self.policy == "lru":
             return self.retained.get(name, -1)
-        if self.policy == "value_density":
+
+        if self.policy == "belady":
+            nu = self._next_use(name, i)
+            return float("-inf") if nu == float("inf") else -nu
+
+        if self.policy in ("value_density", "value_density_pred"):
+            held = self._hold_seconds(name, i)
+            if held == float("inf"):
+                return float("-inf")      # believed dead -> evict first
             r = CATALOGUE[name]
             saved = r["cold_s"] - r["ready_s"]
-            held = max(nu - i, 1e-6)
             return saved / (r["held_gb"] * held)
+
         raise ValueError(self.policy)
 
     def _held(self, extra: str | None = None) -> float:
@@ -414,15 +487,27 @@ def main() -> int:
     ap.add_argument("--speedup", type=float, default=1.0,
                     help="simulate-mode time compression (e.g. 50 = 50x faster)")
     ap.add_argument("--budgets", default="150,256,400,560")
-    ap.add_argument("--arms", default="never_retain,retain_lru,retain_vd,retain_vd_prefetch")
+    ap.add_argument("--arms",
+                    default="never_retain,retain_lru,retain_vd_pred,"
+                            "retain_vd_pred_prefetch,retain_belady,retain_vd_oracle")
+    ap.add_argument("--predict-accuracy", type=float, default=0.55,
+                    help="accuracy of the retention predictor for the *_pred "
+                         "arms. Default 0.55 is the middle of this project's "
+                         "measured 45-62%% predictor accuracy. 1.0 makes them "
+                         "oracle-equivalent.")
+    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="results/bench_arbitration_harness.json")
     args = ap.parse_args()
 
+    # ORACLE arms read the true next use out of the schedule and are BOUNDS,
+    # not systems. REALIZABLE arms see only the past, or a predictor.
     ARMS = {
-        "never_retain":       ("never_retain",  False),
-        "retain_lru":         ("lru",           False),
-        "retain_vd":          ("value_density", False),
-        "retain_vd_prefetch": ("value_density", True),
+        "never_retain":        ("never_retain",         False),   # baseline
+        "retain_lru":          ("lru",                  False),   # realizable baseline
+        "retain_vd_pred":      ("value_density_pred",   False),   # REALIZABLE system
+        "retain_vd_pred_prefetch": ("value_density_pred", True),  # REALIZABLE, both actions
+        "retain_belady":       ("belady",               False),   # ORACLE bound (hit count)
+        "retain_vd_oracle":    ("value_density",        False),   # ORACLE bound (cost aware)
     }
 
     print("resource catalogue (s/GB retained is the ranking key):")
@@ -443,7 +528,8 @@ def main() -> int:
             policy, pf = ARMS[arm]
             be = Backend(args.simulate, print)
             be.speedup = args.speedup if args.simulate else 1.0
-            arb = Arbiter(policy, budget, pf, DEFAULT_SCHEDULE, be, print)
+            arb = Arbiter(policy, budget, pf, DEFAULT_SCHEDULE, be, print,
+                          predict_accuracy=args.predict_accuracy, seed=args.seed)
             print(f"  -- {arm}")
             try:
                 res = arb.run()
