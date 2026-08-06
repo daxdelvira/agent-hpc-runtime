@@ -458,6 +458,13 @@ class Arbiter:
         # need is served until it is parked or evicted. A model prefetch during
         # that period cannot happen at tp=4 with M=1.
         self.gpu_busy = False
+        # HOW MANY MODELS MAY BE RESIDENT AT ONCE. exp3 has M=1: every model
+        # declares gpus=[0,1,2,3] at tp=4, so one model occupies the whole node
+        # and a model prefetch during inference is impossible. More GPUs, or
+        # smaller models, give M>=2 -- a QUALITATIVE change, because it is the
+        # difference between model prefetch being available and forbidden.
+        self.gpu_slots = 1
+        self._models_resident: set = set()
 
     # -- the value function ---------------------------------------------------
     def _next_use(self, name: str, i: int) -> float:
@@ -710,7 +717,8 @@ class Arbiter:
                 if self.prefetch:
                     nxt = self._predicted_next(i)
                     if nxt and nxt not in inflight and nxt not in self.retained:
-                        if not (CATALOGUE[nxt]["cls"] == "model" and self.gpu_busy):
+                        _needs_slot = CATALOGUE[nxt]["cls"] == "model"
+                        if not (_needs_slot and self.gpu_busy):
                             cand = dict(self.retained); cand[nxt] = i
                             if sum(CATALOGUE[x]["held_gb"] for x in cand) <= self.budget:
                                 inflight[nxt] = clock + CATALOGUE[nxt]["cold_s"]
@@ -734,7 +742,8 @@ class Arbiter:
                 stall += r["cold_s"]; clock += r["cold_s"]
 
             if r["cls"] == "model":
-                self.gpu_busy = True
+                self._models_resident.add(name)
+                self.gpu_busy = len(self._models_resident) >= self.gpu_slots
             if self.policy != "never_retain":
                 cand = dict(self.retained); cand[name] = i
                 keep = self._best_set(cand, i)
@@ -755,7 +764,9 @@ class Arbiter:
                 # reads back through self.retained -- is reproducible too.
                 self.retained = {x: i for x in sorted(keep)}
                 if name in keep and r["cls"] == "model":
-                    self.gpu_busy = False
+                    # Parking frees this model's GPUs; occupancy drops.
+                    self._models_resident.discard(name)
+                    self.gpu_busy = len(self._models_resident) >= self.gpu_slots
             # anything still in flight that will never be used is waste
         wasted = len(inflight)
         return {"stall_s": round(stall, 2), "sim_wall_s": round(clock, 2),
