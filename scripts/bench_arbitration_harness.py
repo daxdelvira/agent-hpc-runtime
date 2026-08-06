@@ -94,12 +94,30 @@ sys.path.insert(0, os.path.join(REPO, "workloads", "AtomAgents"))
 # model_load durations from the exp3 traces. Wakes are E4-derived.
 # Data: activated sizes and load times from the real UniProt runs.
 CATALOGUE = {
-    "qwen_32b":      dict(cls="model", held_gb=129.7, cold_s=440.2, ready_s=1.03),
-    "qwen_72b":      dict(cls="model", held_gb=279.0, cold_s=765.3, ready_s=2.21),
+    "qwen_32b":      dict(cls="model", held_gb=129.7, cold_s=495.2, ready_s=1.03),
+    "qwen_72b":      dict(cls="model", held_gb=279.0, cold_s=800.5, ready_s=2.21),
+    # THE THIRD MODEL, restored 2026-08-06. Omitting it dropped 50 of 275 real
+    # needs and, worse, removed 276.3 GB of parked footprint from an experiment
+    # whose entire subject is memory pressure. All three parked is 685 GB, which
+    # is exactly why atomagents_exp3.py defaults to sleep level 2 in production.
+    "qwen_72b_text": dict(cls="model", held_gb=276.3, cold_s=770.3, ready_s=2.19),
     "uniref50":      dict(cls="data",  held_gb=36.08, cold_s=107.1, ready_s=0.0,
                           path="/storage/scratch1/7/avandevoorde3/p1/data/uniref50.fasta"),
     "uniref90":      dict(cls="data",  held_gb=117.20, cold_s=372.6, ready_s=0.0,
                           path="/storage/scratch1/7/avandevoorde3/p1/data/uniref90.fasta"),
+}
+
+# The three LAMMPS phases in the traces -- lattice_constant, screw_initial and
+# relax_screw -- are three invocations against the SAME activated potential.
+# They must map to ONE data resource: that identity IS the redundancy the
+# persistent worker removes ("3 invocations, 1 activated structure"). Mapping
+# only lattice_constant, as an earlier version did, silently discarded two
+# thirds of the data-side reuse and made retention look worthless on the data
+# axis. Model cold costs above are medians over 45-109 real observations.
+TRACE_DATA_MAP = {
+    "lattice_constant": "uniref90",
+    "screw_initial":    "uniref90",
+    "relax_screw":      "uniref90",
 }
 
 
@@ -574,7 +592,7 @@ class Arbiter:
         keeps the greedy behaviour for comparison.
         """
         import itertools
-        names = list(candidates)
+        names = sorted(candidates)
         if not self.optimal_selection or len(names) > 16:
             return None                      # caller falls back to greedy
         best, best_v = set(), -1.0
@@ -595,10 +613,10 @@ class Arbiter:
         if CATALOGUE[name]["held_gb"] > self.budget:
             return False
         while self._held(name) > self.budget:
-            victims = [x for x in self.retained if x != name]
+            victims = sorted(x for x in self.retained if x != name)
             if not victims:
                 return False
-            v = min(victims, key=lambda x: self._rank(x, i))
+            v = min(victims, key=lambda x: (self._rank(x, i), x))
             self.be.evict(v)
             del self.retained[v]
             self.events.append({"step": i, "op": "evict", "resource": v})
@@ -723,11 +741,19 @@ class Arbiter:
                 if keep is None:
                     keep = set(cand)
                     while sum(CATALOGUE[x]["held_gb"] for x in keep) > self.budget:
-                        vic = [x for x in keep if x != name]
+                        # TIE-BREAK BY NAME, DETERMINISTICALLY. Iterating a set
+                        # of strings depends on hash randomisation, which varies
+                        # PER PROCESS -- so equal-ranked victims were chosen
+                        # differently every run and the same computation returned
+                        # 95404 / 90952 / 112506 stall seconds on three
+                        # consecutive invocations. A 23% spread from PYTHONHASHSEED.
+                        vic = sorted(x for x in keep if x != name)
                         if not vic:
                             keep.discard(name); break
-                        keep.discard(min(vic, key=lambda x: self._rank(x, i)))
-                self.retained = {x: i for x in keep}
+                        keep.discard(min(vic, key=lambda x: (self._rank(x, i), x)))
+                # sorted() so the retained dict's insertion order -- which LRU
+                # reads back through self.retained -- is reproducible too.
+                self.retained = {x: i for x in sorted(keep)}
                 if name in keep and r["cls"] == "model":
                     self.gpu_busy = False
             # anything still in flight that will never be used is waste
