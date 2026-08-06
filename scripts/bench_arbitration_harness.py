@@ -760,9 +760,17 @@ class Arbiter:
                         if not vic:
                             keep.discard(name); break
                         keep.discard(min(vic, key=lambda x: (self._rank(x, i), x)))
-                # sorted() so the retained dict's insertion order -- which LRU
-                # reads back through self.retained -- is reproducible too.
-                self.retained = {x: i for x in sorted(keep)}
+                # PRESERVE EACH RESOURCE'S OWN LAST-USE STEP. Re-stamping every
+                # retained item with the current step `i` -- which this line used
+                # to do -- gives them all identical timestamps, so _rank() returns
+                # the same value for every candidate, LRU has NO recency
+                # information at all, and the alphabetical tie-break silently
+                # becomes the eviction policy. The baseline was "evict whichever
+                # name sorts first", not LRU, for every comparison this harness
+                # has produced. Only the resource just needed gets a new stamp.
+                _prev = dict(self.retained)
+                self.retained = {x: (i if x == name else _prev.get(x, i))
+                                 for x in sorted(keep)}
                 if name in keep and r["cls"] == "model":
                     # Parking frees this model's GPUs; occupancy drops.
                     self._models_resident.discard(name)
