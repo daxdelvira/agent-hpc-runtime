@@ -597,6 +597,36 @@ class Arbiter:
         With a handful of resources the subset problem is 2^n and simply solvable,
         so the approximation is not worth its error here. `optimal_selection=False`
         keeps the greedy behaviour for comparison.
+
+        *** OBJECTIVE BUG, FOUND AND FIXED 2026-08-07. *** This used to score a
+        combination as
+
+            sum( action_rate(x) * held_gb(x) * hold_seconds(x) )
+
+        and `action_rate` is `benefit / (held_gb * hold_seconds)` -- so the
+        denominator cancelled *exactly* and the objective collapsed to
+        `sum(cold_s - ready_s)`. Verified numerically: {qwen_32b, uniref50} and
+        {qwen_32b, uniref90} both scored 494.17, identical to the bare sum of
+        (cold - ready). The selector was therefore BLIND TO WHEN THE REUSE
+        HAPPENS: a resource needed again in 10 s and one needed again in 10,000 s
+        were interchangeable, and the time term the whole value function exists to
+        express was multiplied straight back out. The tell was non-monotonicity --
+        the arm beat LRU by 18.16% on 24-need schedules and LOST to it by 0.81% on
+        48-need ones, which no genuinely better selector can do.
+
+        THE FIX. Hold the budget constraint in GB (that is what the cgroup limits)
+        and score value per unit of TIME the space is tied up:
+
+            value  = benefit / hold_seconds        weight = held_gb
+
+        This also makes the exact solver consistent with the greedy one, whose
+        ranking `benefit / (held_gb * hold_seconds)` is precisely value/weight for
+        this pair -- i.e. the fractional-knapsack density of the same problem. The
+        two arms now differ only in 0/1-vs-fractional, which is the comparison the
+        arm was built to make.
+
+        STILL NOT A BOUND. This is an exact solve of a ONE-STEP surrogate, not an
+        offline optimum over the whole schedule. Do not label it "oracle."
         """
         import itertools
         names = sorted(candidates)
@@ -607,10 +637,13 @@ class Arbiter:
             for combo in itertools.combinations(names, r):
                 if sum(CATALOGUE[x]["held_gb"] for x in combo) > self.budget:
                     continue
-                v = sum(self.action_rate("retain", x, i)
-                        * CATALOGUE[x]["held_gb"] * self._hold_seconds(x, i)
-                        for x in combo
-                        if self._hold_seconds(x, i) != float("inf"))
+                v = 0.0
+                for x in combo:
+                    dt = self._hold_seconds(x, i)
+                    if dt == float("inf"):
+                        continue             # never used again: worth nothing
+                    r_ = CATALOGUE[x]
+                    v += (r_["cold_s"] - r_["ready_s"]) / max(dt, 1e-9)
                 if v > best_v:
                     best, best_v = set(combo), v
         return best
