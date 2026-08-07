@@ -154,6 +154,54 @@ o_fits = V2.Sim(CAT, sd10b, 130.0, 1, "greedy", prefetch=True).run()
 check("a budget that does fit it allows the prefetch",
       abs(o_fits["stall"]) < 1e-6, f"stall={o_fits['stall']:.1f}")
 
+# --- A10b: prefetch and retention genuinely compete for one budget ---------
+print("\nA10b  a prefetch can OUTBID a retained resource (not just use slack)")
+# uniref50 (36.1 GB) is parked and never needed again; uniref90 (117.2 GB) is
+# needed right after a long window. Budget 130 GB holds only one of them.
+sd11 = [("need", "uniref50"), ("compute", 5.0), ("need", "qwen_32b"),
+        ("compute", 600.0), ("need", "uniref90")]
+lg = []
+V2.Sim(CAT, sd11, 130.0, 1, "greedy", prefetch=True, log=lg).run()
+evicted = [e["resource"] for e in lg if e["kind"] == "evict_for_prefetch"]
+issued = [e["resource"] for e in lg if e["kind"] == "prefetch"]
+check("a retained resource is evicted to make room for a prefetch",
+      "uniref50" in evicted and issued,
+      f"evicted={evicted}, prefetched={issued}")
+
+# The budget holds only ONE of these at a time, so the two prefetches must be
+# issued at DIFFERENT windows: qwen_32b into the 5 s window (hiding 5 s of a
+# 495.2 s load -- all the window allows), then uniref90 into the 600 s window
+# (hiding all 372.6 s). Residual stall is therefore 495.2 - 5 = 490.2.
+# An earlier version of this check asserted uniref90 was starved; that was
+# wrong -- it read only the FIRST arbitration and assumed the loser was
+# permanently blocked, when it is simply re-evaluated at the next window.
+o_slack = V2.Sim(CAT, sd11, 130.0, 1, "greedy", prefetch=True).run()
+check("both prefetches are issued, each at the window that fits it",
+      issued == ["qwen_32b", "uniref90"] and abs(o_slack["stall"] - 490.2) < 1e-3,
+      f"issued={issued}, stall={o_slack['stall']:.1f} (expect 490.2)")
+
+# --- A10c: a model prefetch may take an occupied GPU slot ------------------
+print("\nA10c  a model prefetch may displace a GPU occupant (proactive swap)")
+# slots=1: qwen_32b is resident and never needed again; qwen_72b is needed after
+# a long window. Only a displacing prefetch can hide that load.
+sd12 = [("need", "qwen_32b"), ("compute", 900.0), ("need", "qwen_72b")]
+o_nopf = V2.Sim(CAT, sd12, 400.0, 1, "greedy", prefetch=False).run()
+o_pf = V2.Sim(CAT, sd12, 400.0, 1, "greedy", prefetch=True).run()
+check("at slots=1 a model prefetch still happens by taking the slot",
+      abs(o_nopf["stall"] - 800.5) < 1e-6 and o_pf["stall"] < 1.0,
+      f"no-pf={o_nopf['stall']:.1f}, pf={o_pf['stall']:.1f}")
+
+# --- horizon cap: nothing is ever labelled "never again" -------------------
+print("\nhorizon cap  removes the dead/alive distinction symmetrically")
+s_cap = V2.Sim(CAT, sd, 400.0, 1, "greedy", accuracy=0.55, seed=1,
+               horizon_cap=3000.0)
+never = [n for n in CAT if s_cap._true_hold(n, 0) == float("inf")]
+check("with a cap, no resource reports an infinite horizon", not never,
+      f"{len(never)} still infinite")
+s_nocap = V2.Sim(CAT, sd, 400.0, 1, "greedy", accuracy=0.55, seed=1)
+check("without a cap, some resource does report infinite",
+      any(s_nocap._true_hold(n, 0) == float("inf") for n in CAT))
+
 # --- controls ---------------------------------------------------------------
 print("\ncontrols")
 sd_c = [("need", "qwen_72b"), ("compute", 10.0), ("need", "qwen_72b"),

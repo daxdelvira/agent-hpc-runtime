@@ -80,11 +80,24 @@ below is numbered against the List-A audit of 2026-08-07.
       t + cold_s; if the need arrives first, only the elapsed portion is hidden
       and the remainder is still paid -- so a 372.6 s UniRef90 load into a 5 s
       window hides 5 s, not 372.6.
-      PHYSICAL CONSTRAINT: prefetching a MODEL requires a free GPU slot. vLLM's
-      L1 park state only exists for an engine that has already been started on a
-      GPU, so "stage the weights to host RAM without touching the GPU" is not an
-      available action. Data has no such constraint (E3: eight concurrent
-      background parses cost the foreground nothing measurable).
+      PHYSICAL CONSTRAINT: a MODEL prefetch needs a GPU slot. vLLM's L1 park
+      state only exists for an engine already started on a GPU, so "stage the
+      weights to host RAM without touching the GPU" is not an available action.
+      Data has no such constraint (E3: eight concurrent background parses cost
+      the foreground nothing measurable).
+      A candidate may TAKE the slot of the occupant whose predicted next use is
+      furthest away, and only if the candidate is needed sooner. Requiring a
+      *free* slot made model prefetch impossible at slots=1 -- yet that is
+      exactly the action `tool_resources.json` already configures as
+      `proactive_swap`: during a LAMMPS window the resident model is idle, so
+      stopping it and loading the next costs no inference time.
+
+      A10-COMPLETION (2026-08-07). The first version admitted a prefetch only if
+      it fit ALONGSIDE everything held, and its cleanup only dropped in-flight
+      items -- so a retained resource could never be outbid and prefetch ran
+      purely on slack. That is retention with a leftovers policy, not
+      arbitration, and it cannot express the trade the system is about. Retain
+      and prefetch candidates now enter ONE knapsack in ONE currency.
 
   A11 ERROR IS MODELLED ON THE QUANTITY ACTUALLY CONSUMED. Every resource gets a
       predicted horizon at every decision, so identity is implicit -- "which
@@ -153,11 +166,21 @@ class Sim:
     """One schedule, one policy, one budget. Call .run()."""
 
     def __init__(self, cat, sched, budget, slots, policy,
-                 accuracy=1.0, prefetch=False, seed=0, log=None):
+                 accuracy=1.0, prefetch=False, seed=0, log=None,
+                 horizon_cap=None):
         self.cat, self.sched = cat, sched
         self.budget, self.slots = budget, slots
         self.policy, self.accuracy = policy, accuracy
         self.prefetch, self.seed, self.log = prefetch, seed, log
+        # HORIZON CAP. Without it, `inf` means "never appears again in this
+        # schedule" -- which is an artifact of simulating a FINITE trace, and it
+        # hands both the oracle and the predictor a "this is definitively dead"
+        # signal no bounded-lookahead predictor could ever emit. With a cap, a
+        # resource not needed within `cap` seconds simply reports `cap`, so the
+        # dead/alive distinction disappears for everyone symmetrically and the
+        # remaining ranking is purely relative. Set it to model a predictor that
+        # can see H seconds ahead and says nothing beyond that.
+        self.horizon_cap = horizon_cap
         self.gpu: list[str] = []              # models resident on GPU, MRU last
         self.ram: dict[str, int] = {}         # parked models + activated data
         self.inflight: dict[str, float] = {}  # name -> completion clock (A10)
@@ -194,12 +217,12 @@ class Sim:
                 j = k
                 break
         if j is None:
-            return float("inf")
+            return float("inf") if self.horizon_cap is None else self.horizon_cap
         t = 0.0
         for k in range(i + 1, j):
             kind, val = self.sched[k]
             t += val if kind == "compute" else self._cost_if_needed_now(val)
-        return t
+        return t if self.horizon_cap is None else min(t, self.horizon_cap)
 
     # -- the predictor (A1-A4, A11) ----------------------------------------
     def _predict_hold(self, name, i):
@@ -240,6 +263,15 @@ class Sim:
         cat, budget = self.cat, self.budget
         fits = lambda s: sum(cat[x]["held_gb"] for x in s) <= budget
 
+        # THE TRUE FLOOR: no L1 parking, no persistent data worker, no prefetch.
+        # A displaced model falls all the way to disk and a data artifact is
+        # re-activated on every use. This is vLLM's default (exp3 runs sleep
+        # level 2, which DISCARDS weights) plus fork-per-call data loading, and
+        # it is the honest denominator -- LRU is already a system, so quoting a
+        # policy gain against LRU hides how much of the win is just retention.
+        if self.policy == "never":
+            return set()
+
         if self.policy == "lru":
             keep = set(cands)
             while not fits(keep):
@@ -271,7 +303,8 @@ class Sim:
         return best
 
     def _settle_ram(self, cands: dict, i: int):
-        hor = self._horizons(cands, i) if self.policy != "lru" else {}
+        hor = ({} if self.policy in ("lru", "never")
+               else self._horizons(cands, i))
         keep = self._choose_ram(cands, hor)
         if self.log is not None and cands:
             self.log.append(dict(kind="ram", step=i, kept=sorted(keep),
@@ -284,46 +317,124 @@ class Sim:
     def _gpu_victim(self, i):
         """Slots are uniform in size, so furthest-next-use is the right rule for
         the cost-aware arms; LRU keeps its own past-only rule."""
-        if self.policy == "lru":
+        if self.policy in ("lru", "never"):
             return self.gpu[0]                       # oldest slot occupant
         hor = self._horizons(self.gpu, i)
         return max(sorted(self.gpu), key=lambda x: (hor[x], x))
 
-    # -- prefetch (A10) -----------------------------------------------------
-    def _maybe_prefetch(self, i, window):
-        if not self.prefetch or self.policy == "lru":
+    # -- retain-vs-prefetch arbitration against ONE budget (A10, completed) ---
+    def _arbitrate(self, i, window):
+        """Choose what occupies host RAM over this compute window.
+
+        WHAT THIS REPLACES, AND WHY IT WAS WRONG. The first version admitted a
+        prefetch only if it fit ALONGSIDE everything already held, and its
+        cleanup only ever dropped in-flight items. So a retained resource could
+        never be outbid, and a prefetch ran purely on slack -- "held in the
+        aether," in the project owner's words. That is not arbitration; it is
+        retention with a leftovers policy, and it cannot express the trade the
+        whole system is about.
+
+        NOW: retained items and prefetch candidates are scored in ONE currency
+        (stall-seconds avoided per GB-second) and compete for one budget. A
+        prefetch that is worth more than something currently parked evicts it.
+
+            retain x    benefit = cold(x) - ready(x)     the whole rebuild avoided
+            prefetch y  benefit = min(cold(y) - ready(y), dt)
+                                                          can only hide as much as
+                                                          the window actually gives
+
+        MODEL PREFETCH MAY DISPLACE A GPU OCCUPANT. Requiring a free slot meant
+        no model prefetch was ever possible at slots=1 -- yet that is precisely
+        the action `tool_resources.json` already configures as `proactive_swap`:
+        during a LAMMPS window the resident model is idle, so stopping it and
+        loading the next one is free of any inference cost. A candidate may take
+        the slot of the occupant whose predicted next use is furthest away, and
+        only if the candidate is needed sooner. The displaced model is then a
+        park candidate in this same arbitration.
+        """
+        if not self.prefetch or self.policy in ("lru", "never"):
             return
         hor = self._horizons(self.cat, i)
-        cands = []
-        for n, dt in hor.items():
-            if dt == float("inf") or n in self.gpu or n in self.ram \
-               or n in self.inflight:
+
+        # -- who may take a GPU slot? -------------------------------------
+        gpu_free = self.slots - len(self.gpu)
+        displaceable = None
+        if gpu_free <= 0 and self.gpu:
+            worst = max(sorted(self.gpu), key=lambda x: (hor[x], x))
+            displaceable = worst
+
+        items = {}          # name -> (rate, gb, kind)
+        for n in self.ram:                                   # retain candidates
+            dt = hor[n]
+            if dt == float("inf"):
                 continue
-            # THE CURRENT COMPUTE STEP IS PART OF THE HORIZON. `_true_hold(n, i)`
-            # sums steps AFTER i, which is right for a retention decision taken
-            # just after need i -- but during compute step i, that step IS the
-            # window we are prefetching into. Omitting it made every horizon 0
-            # for a resource needed immediately after the window, so
-            # benefit = min(load, 0) = 0 and no prefetch was ever issued.
+            r = self.cat[n]
+            items[n] = ((r["cold_s"] - r["ready_s"]) / max(r["held_gb"] * dt, 1e-9),
+                        r["held_gb"], "retain")
+
+        for n, dt in hor.items():                            # prefetch candidates
+            if dt == float("inf") or n in self.ram or n in self.inflight \
+               or n in self.gpu:
+                continue
+            # The current compute step IS the window being prefetched into;
+            # `_true_hold` sums steps strictly after i, so add it back.
             dt = dt + window
             r = self.cat[n]
-            # A model prefetch needs a free GPU slot: L1 park state only exists
-            # for an engine already started on a GPU.
-            if r["cls"] == "model" and len(self.gpu) >= self.slots:
-                continue
+            if r["cls"] == "model":
+                if gpu_free <= 0 and (displaceable is None
+                                      or hor[n] >= hor[displaceable]):
+                    continue
             benefit = min(r["cold_s"] - r["ready_s"], dt)
             if benefit <= 0:
                 continue
-            cands.append((benefit / max(r["held_gb"] * dt, 1e-9), n))
-        for _rate, n in sorted(cands, reverse=True):
-            if self._occupied(extra=(n,)) > self.budget:
+            items[n] = (benefit / max(r["held_gb"] * dt, 1e-9),
+                        r["held_gb"], "prefetch")
+
+        if not items:
+            return
+        keep = self._knapsack(items)
+
+        for n in sorted(set(self.ram) - keep):               # outbid -> evicted
+            self.ram.pop(n)
+            if self.log is not None:
+                self.log.append(dict(kind="evict_for_prefetch", step=i, resource=n))
+        for n in sorted(keep):
+            if items[n][2] != "prefetch":
                 continue
-            self.inflight[n] = self.clock + self.cat[n]["cold_s"]
             if self.cat[n]["cls"] == "model":
-                self.gpu.append(n)               # holds the slot while loading
+                if len(self.gpu) >= self.slots and displaceable is not None:
+                    self.gpu.remove(displaceable)
+                    self.inflight.pop(displaceable, None)
+                    if self._occupied(extra=(displaceable,)) <= self.budget:
+                        self.ram[displaceable] = i          # park the displaced
+                    displaceable = None
+                elif len(self.gpu) >= self.slots:
+                    continue
+                self.gpu.append(n)                          # holds slot while loading
+            self.inflight[n] = self.clock + self.cat[n]["cold_s"]
             if self.log is not None:
                 self.log.append(dict(kind="prefetch", step=i, resource=n,
                                      done_at=round(self.inflight[n], 1)))
+
+    def _knapsack(self, items: dict) -> set:
+        """Highest total value that fits, over retain AND prefetch candidates."""
+        if self.policy == "greedy":
+            keep, used = set(), 0.0
+            for n in sorted(items, key=lambda x: (-items[x][0], x)):
+                if used + items[n][1] <= self.budget:
+                    keep.add(n); used += items[n][1]
+            return keep
+        pool = sorted(items)
+        best, best_v, best_gb = set(), -1.0, float("inf")
+        for r in range(len(pool), -1, -1):
+            for combo in itertools.combinations(pool, r):
+                gb = sum(items[x][1] for x in combo)
+                if gb > self.budget:
+                    continue
+                v = sum(items[x][0] * items[x][1] for x in combo)
+                if v > best_v or (v == best_v and gb < best_gb):
+                    best, best_v, best_gb = set(combo), v, gb
+        return best
 
     # -- main loop ----------------------------------------------------------
     def run(self):
@@ -331,7 +442,7 @@ class Sim:
                            if t == "need"), None)
         for i, (kind, val) in enumerate(self.sched):
             if kind == "compute":
-                self._maybe_prefetch(i, val)
+                self._arbitrate(i, val)
                 self.clock += val
                 self.compute += val
                 continue

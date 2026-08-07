@@ -117,7 +117,7 @@ def popularity_order(cat):
 # ---------------------------------------------------------------------------
 # The two-level simulator.
 # ---------------------------------------------------------------------------
-def simulate(cat, sched, budget, slots, policy, accuracy=1.0, seed=0):
+def simulate(cat, sched, budget, slots, policy, accuracy=1.0, seed=0, log=None):
     """Return (wall, stall) with the first model spin-up free in every arm.
 
     policy: 'lru'    drop least-recently-used from host RAM (the baseline)
@@ -177,6 +177,21 @@ def simulate(cat, sched, budget, slots, policy, accuracy=1.0, seed=0):
 
     def choose_ram(cands, i):
         """cands: dict name -> last-use step. Return the set to keep."""
+        keep = _choose_ram(cands, i)
+        if log is not None and cands:
+            log.append(dict(kind="ram_decision", step=i, policy=policy,
+                            budget=budget,
+                            candidates={x: dict(gb=cat[x]["held_gb"],
+                                                last_use=cands[x],
+                                                dt=hold_seconds(x, i),
+                                                density=density(x, i))
+                                        for x in sorted(cands)},
+                            kept=sorted(keep),
+                            dropped=sorted(set(cands) - set(keep)),
+                            gb_kept=round(sum(cat[x]["held_gb"] for x in keep), 1)))
+        return keep
+
+    def _choose_ram(cands, i):
         fits = lambda s: sum(cat[x]["held_gb"] for x in s) <= budget
         if policy == "lru":
             keep = set(cands)
@@ -220,26 +235,43 @@ def simulate(cat, sched, budget, slots, policy, accuracy=1.0, seed=0):
         if r["cls"] == "model":
             if name in gpu:
                 cost = 0.0                        # live: nothing to pay
+                where = "GPU"
                 gpu.remove(name); gpu.append(name)
             else:
+                displaced = None
                 if len(gpu) >= slots:             # displace LRU from the GPU
                     out = gpu.pop(0)
+                    displaced = out
                     ram[out] = i                  # becomes a park candidate
-                    ram = {k: v for k, v in ram.items()
-                           if k in choose_ram(dict(ram), i)}
+                    # CALL choose_ram EXACTLY ONCE. Putting it in the
+                    # comprehension's condition ran it once PER KEY, and with
+                    # accuracy<1 every call re-draws the predictor's randomness,
+                    # so different keys were filtered against different decisions.
+                    _keep = choose_ram(dict(ram), i)
+                    ram = {k: v for k, v in ram.items() if k in _keep}
+                where = "RAM" if name in ram else "disk"
                 cost = r["ready_s"] if name in ram else r["cold_s"]
                 ram.pop(name, None)               # leaves host RAM for the GPU
                 gpu.append(name)
+                if log is not None and displaced:
+                    log.append(dict(kind="gpu_displace", step=i,
+                                    displaced=displaced,
+                                    parked=displaced in ram))
         else:
+            where = "RAM" if name in ram else "disk"
             cost = r["ready_s"] if name in ram else r["cold_s"]
             ram.pop(name, None)
+        if log is not None:
+            log.append(dict(kind="need", step=i, resource=name, cls=r["cls"],
+                            where=where, cost=round(cost, 1)))
 
         stall += cost
         clock += cost
 
         if r["cls"] == "data":                    # data re-enters host RAM
             cand = dict(ram); cand[name] = i
-            ram = {k: v for k, v in cand.items() if k in choose_ram(cand, i)}
+            _keep = choose_ram(cand, i)           # once, not once per key
+            ram = {k: v for k, v in cand.items() if k in _keep}
 
     return clock, stall
 
