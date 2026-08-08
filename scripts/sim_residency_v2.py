@@ -128,31 +128,106 @@ REAL_DATA = [("uniref90", 117.20, 372.6, 0.0),
 TRACE_POP = {"qwen_72b": 99, "uniref90": 71, "qwen_72b_text": 47, "qwen_32b": 27}
 
 
-def build_catalogue(n_models: int, n_data: int) -> dict:
+def build_catalogue(n_models: int, n_data: int, proportional_data=False) -> dict:
+    """Catalogue of n_models + n_data resources.
+
+    The first 3 models and first 2 data entries are MEASURED (see
+    bench_arbitration_harness.py for provenance). Beyond those it extrapolates,
+    and the extrapolation is where three defects lived until 2026-08-07:
+
+    (a) ready_s WAS gb / (16.6 * 4), dividing the PARKED FOOTPRINT by wake
+        bandwidth. But a wake moves the WEIGHTS, and held_gb is weights x 1.90
+        (the measured L1 park ratio), so every synthetic model got a wake 1.9x
+        too large. Check against measurement: qwen_72b is 279.0 GB parked with a
+        measured 2.21 s wake; 279.0/66.4 = 4.20 s, while (279.0/1.90)/66.4 =
+        2.21 s exactly. Now divides the weights.
+
+    (b) MODELS GREW WITHOUT BOUND -- 930 GB parked at n_models=16, roughly 245B
+        parameters at fp16, larger than anything this project can obtain. Sizes
+        now cycle a realistic band anchored on the three measured models.
+
+    (c) SYNTHETIC DATA HAD cold = gb * 3.1 EXACTLY, so cost was strictly
+        proportional to size -- provably the regime where value density reduces
+        to Belady's ranking, i.e. the one configuration guaranteed to show no
+        benefit from cost-awareness. The MEASURED spread across real formats is
+        65x (results/bench_format_activation.csv: ascii 22.0, npz 6.2, EAM
+        2.5-5.8, raw_f32 0.45, npy/hdf5 0.34), so synthetic data now spans that
+        measured range. Pass proportional_data=True to restore the degenerate
+        behaviour as a control.
+
+    MODELS KEEP A NARROW s/GB BAND ON PURPOSE, and that is physics rather than a
+    modelling shortcut: model load is dominated by moving weights at roughly
+    fixed bandwidth (74-81% of a boot is movement), so seconds-per-GB is
+    near-constant across models. The measured three span only 2.78-3.81. Data is
+    transformation-bound, so its s/GB is set by the format's decoder and varies
+    enormously. That asymmetry is Insight A, and the generator should express it.
+    """
     cat = {}
+    # parked footprints for synthetic models: a realistic band, cycled rather
+    # than grown, anchored on the measured 129.7 / 276.3 / 279.0 GB.
+    MODEL_GB = [160.0, 210.0, 340.0, 400.0, 470.0, 560.0]
+    # s/GB for synthetic data, from the measured format sweep. Ordered so the
+    # early entries stay near the real UniRef values (2.97-3.18).
+    DATA_SPG = [3.10, 2.50, 6.20, 0.45, 22.0, 0.34, 5.80, 12.0, 0.37, 8.4]
+    DATA_GB = [85.0, 130.0, 60.0, 175.0, 45.0, 220.0, 100.0, 265.0, 70.0, 150.0]
+
     for k in range(n_models):
         if k < len(REAL_MODELS):
             n, gb, cold, ready = REAL_MODELS[k]
         else:
-            j = k - len(REAL_MODELS) + 1
-            gb = 150.0 + 60.0 * j
-            cold = 500.0 + 150.0 * j
-            ready = gb / (16.6 * 4)
-            n = f"model_syn{k}"
+            j = k - len(REAL_MODELS)
+            gb = MODEL_GB[j % len(MODEL_GB)] * (1.0 + 0.15 * (j // len(MODEL_GB)))
+            gb = round(gb, 1)
+            weights = gb / 1.90                  # measured L1 park ratio
+            ready = round(weights / (16.6 * 4), 2)   # measured wake bandwidth
+            cold = round(125.0 + 2.5 * gb, 1)    # affine: fixed init + movement
+            n = f"model_syn{k:02d}"
         cat[n] = dict(cls="model", held_gb=gb, cold_s=cold, ready_s=ready)
+
     for k in range(n_data):
         if k < len(REAL_DATA):
             n, gb, cold, ready = REAL_DATA[k]
         else:
-            j = k - len(REAL_DATA) + 1
-            gb = 40.0 + 45.0 * j
-            cold, ready, n = gb * 3.1, 0.0, f"data_syn{k}"
+            j = k - len(REAL_DATA)
+            gb = DATA_GB[j % len(DATA_GB)] * (1.0 + 0.20 * (j // len(DATA_GB)))
+            gb = round(gb, 1)
+            spg = 3.1 if proportional_data else DATA_SPG[j % len(DATA_SPG)]
+            cold = round(gb * spg, 1)
+            ready = 0.0
+            n = f"data_syn{k:02d}"
         cat[n] = dict(cls="data", held_gb=gb, cold_s=cold, ready_s=ready)
     return cat
 
 
-def popularity_order(cat):
-    return sorted(cat, key=lambda n: (-TRACE_POP.get(n, 0), n))
+def popularity_order(cat, seed: int = 0) -> list:
+    """Rank resources most-requested first; synthetic_schedule Zipf-weights by
+    POSITION in this list, so this function decides which resources dominate.
+
+    THE MEASURED FOUR keep the order the exp3 traces actually show (qwen_72b 99
+    requests, uniref90 71, qwen_72b_text 47, qwen_32b 27).
+
+    EVERYTHING ELSE IS SHUFFLED DETERMINISTICALLY BY `seed`, and that is the fix
+    for a defect that survived two rounds. The fallback used to be alphabetical,
+    which at n_models=16/n_data=12 produced:
+
+        - uniref50, a MEASURED resource, ranked LAST of 28 (it is absent from
+          TRACE_POP, so it fell into the fallback);
+        - every data_syn* ranked above every model_syn*, because "d" < "m";
+        - syn10/syn11 above syn2..syn9, because string sort, so the two LARGEST
+          data artifacts drew the highest synthetic popularity.
+
+    Rank was therefore correlated with class and with size for no reason but
+    string collation -- the same defect already fixed once for the 5-resource
+    catalogue, reintroduced at scale by repairing only the lookup table and not
+    the fallback. We do not know the popularity of hypothetical resources, so the
+    honest treatment is to average results over several seeds rather than to
+    pick one arbitrary assignment.
+    """
+    measured = [n for n in sorted(cat, key=lambda x: -TRACE_POP.get(x, 0))
+                if n in TRACE_POP]
+    rest = sorted(n for n in cat if n not in TRACE_POP)
+    rest.sort(key=lambda n: _u01("pop", seed, n))     # deterministic shuffle
+    return measured + rest
 
 
 def _u01(*parts) -> float:
