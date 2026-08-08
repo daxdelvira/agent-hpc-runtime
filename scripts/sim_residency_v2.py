@@ -402,6 +402,14 @@ class Sim:
         """
         if not self.prefetch or self.policy in ("lru", "never"):
             return
+        # PREFETCH SCOPE. True/"all" stages both classes; "data" stages only
+        # activated data. The asymmetry is physical, not a tuning choice: a model
+        # prefetch must DISPLACE a live GPU occupant (vLLM's L1 park state only
+        # exists for an engine already on a GPU), so a wrong one destroys a
+        # resident model AND wastes a several-hundred-second load. A wrong data
+        # prefetch only wastes RAM and bandwidth -- and E3 measured background
+        # activation as free (8 concurrent parses, foreground slowdown 1.000).
+        data_only = (self.prefetch == "data")
         hor = self._horizons(self.cat, i)
 
         # -- who may take a GPU slot? -------------------------------------
@@ -427,6 +435,8 @@ class Sim:
             # `_true_hold` sums steps strictly after i, so add it back.
             dt = dt + window
             r = self.cat[n]
+            if data_only and r["cls"] == "model":
+                continue
             if r["cls"] == "model":
                 if gpu_free <= 0 and (displaceable is None
                                       or hor[n] >= hor[displaceable]):
