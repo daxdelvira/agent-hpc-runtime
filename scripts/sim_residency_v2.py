@@ -167,7 +167,8 @@ class Sim:
 
     def __init__(self, cat, sched, budget, slots, policy,
                  accuracy=1.0, prefetch=False, seed=0, log=None,
-                 horizon_cap=None, objective="rate", H=600.0):
+                 horizon_cap=None, objective="rate", H=600.0,
+                 retain="all"):
         self.cat, self.sched = cat, sched
         self.budget, self.slots = budget, slots
         self.policy, self.accuracy = policy, accuracy
@@ -184,6 +185,12 @@ class Sim:
         # WHICH OBJECTIVE RANKS RETAIN AGAINST PREFETCH. See _value().
         self.objective = objective
         self.H = H
+        # WHICH CLASSES MAY BE HELD IN HOST RAM. This exists to separate what a
+        # vLLM flag gives from what this project adds. "models" = L1 sleep only,
+        # which is what --enable-sleep-mode plus a loop provides; activated data
+        # is rebuilt on every use because vLLM has no notion of it. "all" adds
+        # the persistent consumer worker. "none" is the true floor.
+        self.retain = retain
         self.gpu: list[str] = []              # models resident on GPU, MRU last
         self.ram: dict[str, int] = {}         # parked models + activated data
         self.inflight: dict[str, float] = {}  # name -> completion clock (A10)
@@ -308,8 +315,16 @@ class Sim:
         return self._value(name, dt, kind) / max(self.cat[name]["held_gb"], 1e-9)
 
     # -- host-RAM selection -------------------------------------------------
+    def _retainable(self, name) -> bool:
+        if self.retain == "all":
+            return True
+        if self.retain == "none":
+            return False
+        return self.cat[name]["cls"] == self.retain.rstrip("s")
+
     def _choose_ram(self, cands: dict, hor: dict) -> set:
         cat, budget = self.cat, self.budget
+        cands = {k: v for k, v in cands.items() if self._retainable(k)}
         fits = lambda s: sum(cat[x]["held_gb"] for x in s) <= budget
 
         # THE TRUE FLOOR: no L1 parking, no persistent data worker, no prefetch.
@@ -409,7 +424,11 @@ class Sim:
         # resident model AND wastes a several-hundred-second load. A wrong data
         # prefetch only wastes RAM and bandwidth -- and E3 measured background
         # activation as free (8 concurrent parses, foreground slowdown 1.000).
-        data_only = (self.prefetch == "data")
+        data_only = self.prefetch in ("data", "slack_data")
+        # SLACK-ONLY: a prefetch may use leftover budget but may never outbid a
+        # retained resource. Costs a wrong prediction only space nothing else
+        # wanted, which is why it is near-insensitive to predictor accuracy.
+        slack_only = self.prefetch in ("slack", "slack_data")
         hor = self._horizons(self.cat, i)
 
         # -- who may take a GPU slot? -------------------------------------
@@ -463,6 +482,14 @@ class Sim:
         if not items:
             return
         keep = self._knapsack(items)
+        if slack_only:
+            held = {n for n, (_v, _g, k) in items.items() if k == "retain"}
+            keep |= held                      # retentions are untouchable
+            used = sum(items[n][1] for n in keep)
+            pf = sorted((n for n in keep if items[n][2] == "prefetch"),
+                        key=lambda x: items[x][0] / max(items[x][1], 1e-9))
+            while used > self.budget and pf:      # shed prefetches, worst first
+                n = pf.pop(0); keep.discard(n); used -= items[n][1]
 
         for n in sorted(set(self.ram) - keep):               # outbid -> evicted
             self.ram.pop(n)
