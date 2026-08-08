@@ -202,6 +202,27 @@ s_nocap = V2.Sim(CAT, sd, 400.0, 1, "greedy", accuracy=0.55, seed=1)
 check("without a cap, some resource does report infinite",
       any(s_nocap._true_hold(n, 0) == float("inf") for n in CAT))
 
+# --- no gratuitous eviction when the budget is not under pressure ----------
+print("\nA10d  prefetch must not evict a retention when there is free budget")
+sd13 = [("need", "uniref50"), ("compute", 50.0), ("need", "qwen_32b"),
+        ("compute", 50.0), ("need", "uniref50")]
+# 4000 GB against an 838 GB total footprint: nothing can possibly compete.
+# Assert on the REUSE at step 4 specifically -- total stall also contains
+# qwen_32b's legitimate first cold load at step 2, which is not the first need
+# of the schedule and so is correctly charged. An earlier version of this check
+# asserted on total stall and failed for that reason, not for a real defect.
+bad = []
+for seed in range(12):
+    for pf in (False, "data", True):
+        lg = []
+        V2.Sim(CAT, sd13, 4000.0, 1, "greedy", 0.55, pf, seed=seed,
+               objective="horizon", H=60.0, log=lg).run()
+        reuse = [e for e in lg if e["kind"] == "need" and e["step"] == 4][0]
+        if reuse["cost"] > 0.01:
+            bad.append((seed, pf, reuse["cost"]))
+check("with 4000 GB free, a parked resource is never evicted by any arm",
+      not bad, f"{len(bad)}/36 cases re-loaded it, e.g. {bad[:3]}")
+
 # --- controls ---------------------------------------------------------------
 print("\ncontrols")
 sd_c = [("need", "qwen_72b"), ("compute", 10.0), ("need", "qwen_72b"),

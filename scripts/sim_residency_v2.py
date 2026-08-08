@@ -419,13 +419,28 @@ class Sim:
             worst = max(sorted(self.gpu), key=lambda x: (hor[x], x))
             displaceable = worst
 
-        items = {}          # name -> (rate, gb, kind)
+        items = {}          # name -> (value, gb, kind)
         for n in self.ram:                                   # retain candidates
-            dt = hor[n]
-            if dt == float("inf"):
-                continue
+            # EVERY retained resource enters the knapsack, INCLUDING one believed
+            # dead (dt=inf -> _value returns 0.0).
+            #
+            # BUG FIXED 2026-08-07. This used to `continue` past dt=inf, so a
+            # predicted-dead retention was absent from `items`, therefore absent
+            # from `keep`, and the eviction loop `set(self.ram) - keep` DROPPED IT
+            # -- with no regard for whether the budget was under any pressure at
+            # all. Demonstrated with a 4000 GB budget against an 838 GB total
+            # footprint: uniref50, parked and genuinely reused, was evicted on 3
+            # of 12 seeds at 0.55 accuracy, turning a 0.0 s park hit into a
+            # 107.1 s cold load. Nothing was competing for the space.
+            #
+            # This is the A6 defect in its opposite form. In _choose_ram,
+            # excluding dead items from the pool is right -- the pool IS the
+            # keep-set. Here `items` is scored against an eviction loop, so
+            # excluding an item silently evicts it. A value of 0.0 gives the
+            # intended semantics: kept when there is room, dropped first when
+            # there is not.
             r = self.cat[n]
-            items[n] = (self._value(n, dt, "retain"), r["held_gb"], "retain")
+            items[n] = (self._value(n, hor[n], "retain"), r["held_gb"], "retain")
 
         for n, dt in hor.items():                            # prefetch candidates
             if dt == float("inf") or n in self.ram or n in self.inflight \
