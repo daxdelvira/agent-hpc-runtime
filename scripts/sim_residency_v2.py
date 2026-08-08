@@ -167,7 +167,7 @@ class Sim:
 
     def __init__(self, cat, sched, budget, slots, policy,
                  accuracy=1.0, prefetch=False, seed=0, log=None,
-                 horizon_cap=None):
+                 horizon_cap=None, objective="rate", H=600.0):
         self.cat, self.sched = cat, sched
         self.budget, self.slots = budget, slots
         self.policy, self.accuracy = policy, accuracy
@@ -181,6 +181,9 @@ class Sim:
         # remaining ranking is purely relative. Set it to model a predictor that
         # can see H seconds ahead and says nothing beyond that.
         self.horizon_cap = horizon_cap
+        # WHICH OBJECTIVE RANKS RETAIN AGAINST PREFETCH. See _value().
+        self.objective = objective
+        self.H = H
         self.gpu: list[str] = []              # models resident on GPU, MRU last
         self.ram: dict[str, int] = {}         # parked models + activated data
         self.inflight: dict[str, float] = {}  # name -> completion clock (A10)
@@ -251,12 +254,58 @@ class Sim:
         """A1: ONE dict per decision. Every policy reads this same dict."""
         return {n: self._predict_hold(n, i) for n in sorted(names)}
 
-    @staticmethod
-    def _density(cat, name, dt):
+    # -- THE OBJECTIVE: how a candidate's worth is scored --------------------
+    def _value(self, name, dt, kind):
+        """Absolute worth of holding/staging `name` given predicted horizon `dt`.
+
+        Weight is always held_gb (the budget is an instantaneous GB ceiling), so
+        the knapsack maximises sum(_value) and greedy ranks by _value/held_gb.
+
+        THE PROBLEM THESE VARIANTS EXIST TO SOLVE. Retain and prefetch have
+        benefit functions of DIFFERENT SHAPE in dt:
+
+            retain    benefit = cold - ready            constant in dt
+            prefetch  benefit = min(cold - ready, dt)   grows, then saturates
+
+        Both occupy GB x dt. So dividing by dt decays retain's score as 1/dt
+        while leaving prefetch's at a FLAT 1/GB whenever the window is smaller
+        than the load -- which is every interesting case here, gaps being seconds
+        against loads of hundreds of seconds. Verified: uniref50's prefetch rate
+        came out 0.02772 = exactly 1/36.08 GB. The curves therefore cross at a dt
+        set by the algebra rather than by the workload, and past that crossing a
+        5-second prefetch outranks and EVICTS a 798-second retention.
+
+          "rate"      value = benefit / dt        the original. Broken as above.
+          "total"     value = benefit             absolute stall avoided. Ranks
+                      the two actions correctly, but two retentions of equal size
+                      and cost score identically whether they are needed in 10 s
+                      or 10,000 s -- the exact defect fixed in _best_set on
+                      2026-08-07, reintroduced. No anti-hoarding pressure.
+          "horizon"   value = benefit * H / max(dt, H)
+                      Absolute benefit inside a planning horizon H, decaying like
+                      1/dt beyond it. Near field: prefetch and retain are directly
+                      comparable in seconds, so 798 beats 5 as it must. Far field:
+                      a resource needed in 10,000 s at H=600 scores 6% of one
+                      needed within the horizon, so hoarding is still penalised.
+                      H is a real knob and must be swept, not picked.
+        """
+        r = self.cat[name]
+        full = r["cold_s"] - r["ready_s"]
         if dt == float("inf"):
-            return float("-inf")
-        r = cat[name]
-        return (r["cold_s"] - r["ready_s"]) / max(r["held_gb"] * dt, 1e-9)
+            return 0.0                      # believed dead: worth nothing
+        benefit = full if kind == "retain" else min(full, dt)
+        if self.objective == "rate":
+            return benefit / max(dt, 1e-9)
+        if self.objective == "total":
+            return benefit
+        if self.objective == "horizon":
+            return benefit * (self.H / max(dt, self.H))
+        raise ValueError(self.objective)
+
+    def _density(self, name, dt, kind="retain"):
+        if dt == float("inf"):
+            return float("-inf")            # evicted before anything finite
+        return self._value(name, dt, kind) / max(self.cat[name]["held_gb"], 1e-9)
 
     # -- host-RAM selection -------------------------------------------------
     def _choose_ram(self, cands: dict, hor: dict) -> set:
@@ -282,7 +331,7 @@ class Sim:
             keep = set(cands)
             while not fits(keep):
                 keep.discard(min(sorted(keep),
-                                 key=lambda x: (self._density(cat, x, hor[x]), x)))
+                                 key=lambda x: (self._density(x, hor[x]), x)))
             return keep
 
         # exact. A6: dead resources are EXCLUDED, not scored as zero -- keeping
@@ -294,8 +343,7 @@ class Sim:
                 gb = sum(cat[x]["held_gb"] for x in combo)
                 if gb > budget:
                     continue
-                v = sum((cat[x]["cold_s"] - cat[x]["ready_s"]) / max(hor[x], 1e-9)
-                        for x in combo)
+                v = sum(self._value(x, hor[x], "retain") for x in combo)
                 # A6: ties break toward the SMALLER footprint, so equal value
                 # never costs extra budget.
                 if v > best_v or (v == best_v and gb < best_gb):
@@ -369,8 +417,7 @@ class Sim:
             if dt == float("inf"):
                 continue
             r = self.cat[n]
-            items[n] = ((r["cold_s"] - r["ready_s"]) / max(r["held_gb"] * dt, 1e-9),
-                        r["held_gb"], "retain")
+            items[n] = (self._value(n, dt, "retain"), r["held_gb"], "retain")
 
         for n, dt in hor.items():                            # prefetch candidates
             if dt == float("inf") or n in self.ram or n in self.inflight \
@@ -384,11 +431,9 @@ class Sim:
                 if gpu_free <= 0 and (displaceable is None
                                       or hor[n] >= hor[displaceable]):
                     continue
-            benefit = min(r["cold_s"] - r["ready_s"], dt)
-            if benefit <= 0:
+            if min(r["cold_s"] - r["ready_s"], dt) <= 0:
                 continue
-            items[n] = (benefit / max(r["held_gb"] * dt, 1e-9),
-                        r["held_gb"], "prefetch")
+            items[n] = (self._value(n, dt, "prefetch"), r["held_gb"], "prefetch")
 
         if not items:
             return
@@ -420,7 +465,8 @@ class Sim:
         """Highest total value that fits, over retain AND prefetch candidates."""
         if self.policy == "greedy":
             keep, used = set(), 0.0
-            for n in sorted(items, key=lambda x: (-items[x][0], x)):
+            # rank by DENSITY (value per GB); the budget is a GB ceiling
+            for n in sorted(items, key=lambda x: (-items[x][0] / max(items[x][1], 1e-9), x)):
                 if used + items[n][1] <= self.budget:
                     keep.add(n); used += items[n][1]
             return keep
@@ -431,7 +477,7 @@ class Sim:
                 gb = sum(items[x][1] for x in combo)
                 if gb > self.budget:
                     continue
-                v = sum(items[x][0] * items[x][1] for x in combo)
+                v = sum(items[x][0] for x in combo)
                 if v > best_v or (v == best_v and gb < best_gb):
                     best, best_v, best_gb = set(combo), v, gb
         return best
