@@ -28,6 +28,37 @@ WHAT IS MEASURED, in order, each from a cold page cache:
 assumes LAMMPS's read runs at the same rate as a bare sequential read, which is
 not guaranteed: LAMMPS reads through formatted C++ stream extraction, not read(2).
 
+WHAT THE 2026-08-09 REVISION ADDS, and why the two-way split was not enough
+--------------------------------------------------------------------------
+"activation = load_warm" is a RESIDUAL, not a mechanism: it is whatever survives
+once the disk leg is paid, so it silently includes byte movement that never
+touched the disk -- the kernel materialising the activated structure into the
+process address space. bench_format_activation.py, which DOES record getrusage,
+shows that residual is not negligible in general: its system time is a
+format-INDEPENDENT ~0.35 s per GB of output array, and for npy/hdf5 that copy is
+96-99% of the whole "activation" bucket. Those two formats do essentially no
+transformation at all, yet the two-way split reports them as 72-77% activation.
+
+So each LAMMPS rung now records the child's own resource usage, splitting the
+warm bucket a second time:
+
+    utime  -> transformation proper: lexing ASCII to doubles and building the
+              spline coefficients. Work that CHANGES the representation.
+    stime  -> kernel time: page faults, zeroing and copying to materialise the
+              activated structure. Byte movement that happens to be RAM->RAM.
+
+Only the utime share supports the paper's claim that no byte-oriented tier can
+address this cost. The stime share is movement -- a byte mover still cannot
+capture it (it is anonymous memory, not a file range), but it is not evidence
+that the cost is transformation, and it must not be counted as such.
+
+ru_maxrss additionally gives the activated footprint from the same run, which
+independently checks the 5.10x expansion measured by bench_activated_residency.py.
+
+Usage is read via os.wait4() on the LAMMPS child, so the numbers are that
+child's alone -- not RUSAGE_CHILDREN, which accumulates over every reaped child
+and would fold the cold rung into the warm one.
+
 Cold caches use posix_fadvise(DONTNEED), the same primitive the runtime uses.
 NOTE the known limitation: on Lustre, fadvise was measured leaving 56.2% of a
 file resident, so a "cold" rung on Lustre understates the true cold cost. The
@@ -123,18 +154,44 @@ run 0
 """
 
 
-def run_lammps(lmp: str, potential: str, workdir: Path) -> tuple[float, str]:
+def run_lammps(lmp: str, potential: str, workdir: Path) -> tuple[float, str, dict]:
+    """Run the load-only LAMMPS input and return (wall, note, rusage-of-child).
+
+    os.wait4() rather than subprocess.run() so the usage belongs to THIS child
+    and nothing else; RUSAGE_CHILDREN accumulates across every child the process
+    has reaped, which would make the warm rung read as cold+warm. stdout/stderr
+    go to files rather than pipes so there is no reason to drain them before
+    waiting, and the LAMMPS log survives for inspection.
+    """
     style = "eam/fs" if potential.endswith(".fs") else "eam/alloy"
     workdir.mkdir(parents=True, exist_ok=True)
     (workdir / "in.bench").write_text(
         LAMMPS_IN.format(style=style, potential=potential))
+
     t0 = time.perf_counter()
-    p = subprocess.run([lmp, "-in", "in.bench"], cwd=str(workdir),
-                       capture_output=True, text=True, timeout=7200)
+    with open(workdir / "stdout.log", "wb") as so, \
+         open(workdir / "stderr.log", "wb") as se:
+        p = subprocess.Popen([lmp, "-in", "in.bench"], cwd=str(workdir),
+                             stdout=so, stderr=se)
+        _, status, ru = os.wait4(p.pid, 0)
     el = time.perf_counter() - t0
+    # Tell Popen the child is already reaped so __del__ does not warn or re-wait.
+    p.returncode = os.waitstatus_to_exitcode(status)
+
+    usage = {
+        "utime_s": round(ru.ru_utime, 3),
+        "stime_s": round(ru.ru_stime, 3),
+        "cpu_per_wall": round((ru.ru_utime + ru.ru_stime) / el, 4) if el else None,
+        "maxrss_kb": ru.ru_maxrss,
+        "minflt": ru.ru_minflt,          # page faults served without disk I/O
+        "majflt": ru.ru_majflt,          # faults that DID go to disk
+        "inblock": ru.ru_inblock,
+    }
     if p.returncode != 0:
-        return el, f"FAILED rc={p.returncode}: {(p.stderr or p.stdout)[-500:]}"
-    return el, "ok"
+        tail = (workdir / "stderr.log").read_text(errors="replace")[-500:] \
+            or (workdir / "stdout.log").read_text(errors="replace")[-500:]
+        return el, f"FAILED rc={p.returncode}: {tail}", usage
+    return el, "ok", usage
 
 
 def main() -> int:
@@ -173,15 +230,30 @@ def main() -> int:
     # --- 2. LAMMPS, cold ---
     evict(pot)
     frac = resident_fraction(pot)
-    lc, note = run_lammps(args.lmp, pot, Path("results/_potbench_cold"))
+    lc, note, ru_cold = run_lammps(args.lmp, pot, Path("results/_potbench_cold"))
     rec(rung="lammps_cold", elapsed_s=round(lc, 2),
-        resident_frac_before=round(frac, 4), note=note)
+        resident_frac_before=round(frac, 4), note=note, **ru_cold)
 
     # --- 3. LAMMPS, warm (cache left hot by rung 2) ---
     frac = resident_fraction(pot)
-    lw, note = run_lammps(args.lmp, pot, Path("results/_potbench_warm"))
+    lw, note, ru_warm = run_lammps(args.lmp, pot, Path("results/_potbench_warm"))
     rec(rung="lammps_warm", elapsed_s=round(lw, 2),
-        resident_frac_before=round(frac, 4), note=note)
+        resident_frac_before=round(frac, 4), note=note, **ru_warm)
+
+    # A failed LAMMPS run still produces a wall time, a utime and a stime, and
+    # the summary below would render them as a perfectly plausible split -- the
+    # smoke test on a potential with no matching element printed "21.1%
+    # transformation" for a run that never parsed a single table. Refuse.
+    failures = [r for r in rows if str(r.get("note", "ok")).startswith("FAILED")]
+    if failures:
+        print("\n" + "!" * 70)
+        print("NO SPLIT REPORTED -- a LAMMPS rung failed, so every number below")
+        print("would be startup cost wearing the costume of an activation split.")
+        for r in failures:
+            print(f"  {r['rung']}: {r['note'][:300]}")
+        print("!" * 70)
+        print(f"\nwrote {out}  (rows kept for diagnosis)")
+        return 1
 
     print("\n" + "=" * 70)
     print("POTENTIAL ACTIVATION SPLIT")
@@ -196,8 +268,31 @@ def main() -> int:
               f"({100*io_share/lc:.1f}% of the cold load)")
         print(f"  activation     = warm        = {lw:8.2f} s "
               f"({100*lw/lc:.1f}% of the cold load)")
-        print("\n  The activation share is the part no prefetcher can remove by")
-        print("  moving bytes earlier -- it is work in the consumer process.")
+
+        # Split the residual again: transformation vs RAM->RAM movement.
+        u, s = ru_warm["utime_s"], ru_warm["stime_s"]
+        rss_gb = ru_warm["maxrss_kb"] / 1e6
+        print("\n" + "-" * 70)
+        print("  THREE-WAY SPLIT of the cold load (the warm bucket decomposed)")
+        print("-" * 70)
+        print(f"  disk -> RAM        {io_share:8.2f} s  {100*io_share/lc:5.1f}%"
+              "   movement a byte tier CAN address")
+        print(f"  RAM -> process     {s:8.2f} s  {100*s/lc:5.1f}%"
+              "   movement it CANNOT (anonymous memory)")
+        print(f"  transformation     {u:8.2f} s  {100*u/lc:5.1f}%"
+              "   parse + spline build")
+        print(f"  unaccounted        {lc-io_share-s-u:8.2f} s  "
+              f"{100*(lc-io_share-s-u)/lc:5.1f}%   wall not on CPU (I/O wait, sched)")
+        print(f"\n  activated footprint (ru_maxrss)  {rss_gb:6.2f} GB"
+              f"   = {rss_gb/(size/1e9):.2f}x the file")
+        print(f"  stime per GB of activated struct {s/max(rss_gb,1e-9):6.2f} s/GB"
+              "   (format-independent ~0.35 in bench_format_activation)")
+        print(f"  cpu_per_wall (warm)              "
+              f"{ru_warm['cpu_per_wall']}   <1 means the parse is I/O-bound or "
+              "stalled; >1 means threaded")
+        print("\n  Only the TRANSFORMATION row is evidence that the cost is not")
+        print("  byte movement. The RAM->process row is movement, and counting")
+        print("  it as activation is what overstated npy/hdf5 as 72-77%.")
     print(f"\nwrote {out}")
     return 0
 
