@@ -156,7 +156,10 @@ physically plausible 16.6 GB/s per GPU across two PCIe links.
 
 | # | claim | instrument | artifact | trust |
 |---|---|---|---|---|
-| D1 | EAM potential: **98.1% activation, 1.9% I/O** | `bench_potential_activation.py`, `mincore`-verified at every rung | `results/bench_potential_activation_*.json` | **A** |
+| D1 | EAM potential: **93.0% transformation, 3.9% RAM→process, 2.0% disk→I/O** | `bench_potential_activation.py`, `mincore`-verified at every rung, `getrusage` via `os.wait4` | `results/bench_potential_activation_rusage_atl1-1-02-003-25-1.json` | **A** |
+| D1a | ⛔ **SUPERSEDED 2026-08-09: "98.1% activation, 1.9% I/O."** Not wrong, but a two-way split whose "activation" bucket is a *residual* and therefore includes the kernel materialising 17.95 GB into the process. Decomposing it moves the transformation share to **93.0%**. Cite D1. | same | `results/bench_potential_activation_atl1-1-03-004-2-1*.json` | — |
+| D1b | s/GB floor to materialise anything into a process: **0.322 s/GB** (range 0.285–0.355 over npy/hdf5/raw_f32/npz, same node as D1). Page-size dependent — the potential achieves 0.22 s/GB at ~750 KB/fault, consistent with THP | `bench_format_activation.py`, same job as D1 | `results/bench_format_activation_atl1-1-02-003-25-1.json.csv` | **B** — THP attribution is a hypothesis, not measured directly |
+| D1c | The EAM parse is **single-threaded**: `cpu_per_wall` 0.9885 | same as D1 | same as D1 | **A** |
 | D2 | retention **42.83 s → 4.78 s (9.0×)**; activated **16.93 GB = 5.10× expansion** | `bench_activated_residency.py` | `results/bench_activated_residency_BIG.json` | **A** |
 | D3 | LAMMPS does **not** memoise (`r4_repeat_coeff` 42.84 s ≈ full re-parse) | same | same | **A** |
 | D4 | 8 background parsers cost the foreground **0.0%** | `bench_preactivation_interference.py` | `results/bench_preactivation_interference.json` | **A** — verified by loadavg 7.25 and 46.41 CPU-s in 6 s wall |

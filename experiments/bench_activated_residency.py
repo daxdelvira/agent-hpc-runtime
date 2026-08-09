@@ -6,8 +6,11 @@ at rung R3 (activated, inside a live consumer) instead of re-paying for it?
 WHY THIS EXISTS
 ---------------
 experiments/bench_potential_activation.py established the cost SPLIT for
-w_eam4_big.fs (3.32 GB): 1.87 s of byte movement (1.9%) against 98.23 s of
-parse + spline construction (98.1%). That says a byte-oriented prefetcher can
+w_eam4_big.fs (3.32 GB). Re-measured with getrusage on 2026-08-09, the cold load
+splits three ways: 2.0% disk->RAM, 3.9% RAM->process (kernel materialising the
+17.95 GB structure -- movement, not transformation), and 93.0% parse + spline
+construction. The older "1.9% / 98.1%" two-way split folded the middle row into
+activation; cite 93.0%. That says a byte-oriented prefetcher can
 recover at most 1.9% of the cost, but it does NOT say what the alternative is
 worth, because it measured only fresh processes.
 

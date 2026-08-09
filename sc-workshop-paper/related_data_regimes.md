@@ -23,7 +23,7 @@ Confidence tags: **MEASURED** (a timing exists), **STATED** (format/size given, 
 
 | # | Workload | Artifact | Format | Size | Regime | Activation hardware | Confidence | Source |
 |---|---|---|---|---|---|---|---|---|
-| 1 | AtomAgents (ours) | EAM potential `w_eam4_big.fs` | LAMMPS `setfl` ASCII | 3,320,490,868 B (3.32 GB) | **Activation-bound, 98.1%** | CPU (LAMMPS formatted C++ stream extraction + spline build) — thread count UNKNOWN | MEASURED | `potbench_11653714.log`; `results/bench_potential_activation_atl1-1-03-004-2-1.pace.gatech.edu.json` |
+| 1 | AtomAgents (ours) | EAM potential `w_eam4_big.fs` | LAMMPS `setfl` ASCII | 3,320,490,868 B (3.32 GB) | **Transformation-bound, 93.0%** (+3.9% RAM→process, 2.0% disk) | CPU (LAMMPS formatted C++ stream extraction + spline build) — **single-threaded, `cpu_per_wall` 0.9885** | MEASURED | `potbench_rusage_11769935.log`; `results/bench_potential_activation_rusage_atl1-1-02-003-25-1.json` |
 | 2 | AtomAgents (ours) | same file, raw sequential read | bytes | 3.32 GB | I/O leg only: 4.78 s @ 695.3 MB/s | n/a | MEASURED | same json, rung `raw_read_cold` |
 | 3 | AtomAgents (upstream, native) | EAM/MEAM/MTP potentials actually shipped | `setfl` `.eam.alloy`/`.eam.fs`, `.meam`, `.mtp` | 62 B – 9,300,295 B (9.3 MB); 14 files | Activation-bound by format, but **too small to matter** | CPU | STATED (sizes are `ls` of the tree) | `workloads/AtomAgents/potential_repository/` |
 | 4 | ChemGraph (ours + upstream) | MACE-MP-0 "medium" foundation model | `torch.save` pickle (`.model`) | 44,422,970 B (44.42 MB) | **Activation-bound, 99.4%** (warm `torch.load` 23.07 s vs warm raw read 0.147 s) | CPU — `torch.load` unpickle, single Python thread | MEASURED (this survey, `envs/chemgraph` python, warm cache) | measurement below; file `~/.cache/mace/20231203mace128L1_epoch199model` |
@@ -47,16 +47,51 @@ Confidence tags: **MEASURED** (a timing exists), **STATED** (format/size given, 
 
 ### 1–3. AtomAgents / LAMMPS `setfl` EAM — the anchor activation-bound case
 
-Measured on `atl1-1-03-004-2-1`, three rungs from a cold page cache
-(`experiments/bench_potential_activation.py`):
+Measured on `atl1-1-02-003-25-1`, three rungs from a cold page cache, with the
+LAMMPS child's own `getrusage` (`experiments/bench_potential_activation.py`):
 
 ```
-raw sequential read (cold)     4.78 s   <- byte movement (695.3 MB/s)
-LAMMPS load (cold cache)     100.10 s
-LAMMPS load (warm cache)      98.23 s   <- I/O already paid
-I/O share  = cold - warm =      1.87 s (1.9%)
-activation = warm        =     98.23 s (98.1%)
+raw sequential read (cold)     4.55 s   <- byte movement (729.2 MB/s)
+LAMMPS load (cold cache)      99.67 s
+LAMMPS load (warm cache)      97.70 s   <- I/O already paid
+
+THREE-WAY SPLIT of the cold load
+  disk -> RAM            1.97 s   2.0%   movement a byte tier CAN address
+  RAM -> process         3.92 s   3.9%   movement it CANNOT (anonymous memory)
+  transformation        92.66 s  93.0%   parse + spline build (utime)
+  unaccounted            1.12 s   1.1%   wall not on CPU
+
+activated footprint (ru_maxrss)  17.95 GB = 5.41x the file
 ```
+
+**Cite 93.0%, not 98.1%.** The older two-way split is not wrong, but its
+"activation" figure is a *residual* — everything left once the disk leg is paid —
+so it silently counts the kernel materialising 17.95 GB of anonymous memory as
+activation. That matters because the same residual is 96–99% of the whole bucket
+for `npy` and `hdf5` (rows below), which do essentially no transformation at all
+yet were reported as "72–77% activation". Only the `utime` row is evidence that a
+cost is not byte movement.
+
+**The cold and warm rungs validate the definition directly.** Transformation is
+claimed to be invariant to where the bytes came from; movement is not. Across the
+two rungs — identical work, page cache empty vs full:
+
+| | cold | warm | delta |
+|---|---|---|---|
+| `utime` (transformation) | 92.676 s | 92.664 s | **0.012 s (0.01%)** |
+| `stime` (movement) | 4.694 s | 3.920 s | 0.774 s (16.5%) |
+
+The transformation term is reproducible to one part in 7,700 while the movement
+term moves 16.5%, in a single run on a single node with nothing else varying.
+That is the cleanest evidence available that the two buckets are measuring
+different things rather than partitioning one thing arbitrarily.
+
+Two further checks fell out of the same run: `ru_maxrss` 17.95 GB = 5.41×
+the file, confirming the 5.10× expansion that row D2 measured by a completely
+different method (RSS delta); and `cpu_per_wall` 0.9885, which is the first
+direct confirmation that this parse is single-threaded — E3's "background staging
+is free" argument assumed exactly one core per staging task and had never checked
+it on this artifact.
 
 **Two honesty caveats that must survive into the paper:**
 
