@@ -1,30 +1,5 @@
 \section{Introduction}
 
-% FLOAT PLACED FIRST, DELIBERATELY. LaTeX can only carry a float FORWARD from
-% where it is declared, so a figure declared after the paragraph that cites it
-% can never appear before that paragraph. This one is declared ahead of all
-% body text and asks for [!t], which suspends the usual limits on how much of
-% a page may be float, so it lands at the top of page 1.
-\begin{figure}[!t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-intro-behavior.pdf)
-%   two stacked timelines. Top: a traditional HPC workflow, phases with
-%   declared inputs, staging bars for phase $n{+}1$ overlapping computation
-%   of phase $n$, no exposed stall. Bottom: an agentic workflow, where the
-%   data need for phase $n{+}1$ becomes visible only after the agent's
-%   decision point, so the staging bar starts late and a stall band is
-%   exposed. Mark the agent decision points explicitly --- the late arrival
-%   of the need is the whole figure.
-\includegraphics[width=\columnwidth]{figures/fig-intro-behavior}
-\caption{Why phase-based staging works for traditional HPC workflows and
-fails for agentic ones. In the traditional case the data need is known before
-the phase begins and retrieval overlaps the preceding computation; in the
-agentic case the need becomes visible only after a steering decision, leaving
-too little window to hide the transfer.}
-\label{fig:intro-behavior}
-\end{figure}
-
 Agentic workflows based on artificial intelligence (AI) are quickly
 revolutionizing high-performance computing (HPC), making it possible for
 machine learning algorithms to control the flow of HPC workflows and allowing
@@ -64,6 +39,36 @@ instead made at runtime. Not only does this revive the memory-wall problem
 faced by all HPC workflows, but the various specialized LLMs backing different
 agents within a workflow add further memory pressure, since the parameters for
 each model can occupy hundreds of gigabytes.
+
+% DECLARED HERE ON PURPOSE -- TARGET IS THE TOP OF COLUMN 2, PAGE 1.
+% A float goes to the top of the first column built AFTER its declaration, so
+% declaring it before any body text put it at the top of column 1 and pushed
+% the abstract down. Column 1 holds the abstract plus roughly the first two
+% paragraphs, so declaring it here sends it to column 2 instead.
+%
+% THIS IS THE KNOB. If it still lands in column 1, move this block one
+% paragraph later; if it slips to page 2, move it one paragraph earlier. The
+% right point shifts when the abstract is written, since the abstract is what
+% consumes the top of column 1 -- re-check after writing it.
+\begin{figure}[tb]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-intro-behavior.pdf)
+%   two stacked timelines. Top: a traditional HPC workflow, phases with
+%   declared inputs, staging bars for phase $n{+}1$ overlapping computation
+%   of phase $n$, no exposed stall. Bottom: an agentic workflow, where the
+%   data need for phase $n{+}1$ becomes visible only after the agent's
+%   decision point, so the staging bar starts late and a stall band is
+%   exposed. Mark the agent decision points explicitly --- the late arrival
+%   of the need is the whole figure.
+\includegraphics[width=\columnwidth]{figures/fig-intro-behavior}
+\caption{Why phase-based staging works for traditional HPC workflows and
+fails for agentic ones. In the traditional case the data need is known before
+the phase begins and retrieval overlaps the preceding computation; in the
+agentic case the need becomes visible only after a steering decision, leaving
+too little window to hide the transfer.}
+\label{fig:intro-behavior}
+\end{figure}
 
 In traditional HPC workflows, prior solutions leveraged predictable
 phase-based execution to expose a unified memory-and-storage hierarchy to the

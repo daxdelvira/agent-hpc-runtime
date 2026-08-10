@@ -24,7 +24,7 @@ policies competing for the same memory.
 \sysname{} can hold a resource in one of three states, and the arbitrator's job
 is to choose one per resource (Table~\ref{tab:states}).
 
-\begin{table}[t]
+\begin{table}[tb]
 \centering\small
 \begin{tabular}{@{}lll@{}}
 \toprule
@@ -105,7 +105,7 @@ in one currency (Section~\ref{sec:prefetch}).
 % counter, so this block is numbered in the figure sequence.
 % ONE-LINE ALTERNATIVE, if independent numbering is wanted: add
 % \usepackage{algorithm} to the preamble and restore \begin{algorithm}[t].
-\begin{figure}[t]
+\begin{figure}[tb]
 \renewcommand{\figurename}{Algorithm}
 \small
 \begin{algorithmic}[1]
@@ -187,6 +187,43 @@ worth its host memory or should be released outright.
 \subsection{The Opportunistic Prefetcher}
 \label{sec:prefetch}
 
+% EVALUATION FLOATS, DECLARED EARLY AND DELIBERATELY OUT OF SECTION.
+% These belong to the evaluation and are cited there. They are
+% declared here because a float cannot move backwards, and the evaluation
+% opens partway down a page whose top is already committed by then --
+% which is why that page previously carried no figure at all. Declared in
+% this section's text, they can take that page's top slots. Per author
+% preference, a reader flipping back one page beats figures piling up
+% pages later.
+\begin{figure}[tb]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-stall-ladder.pdf)
+%   grouped bars, stall seconds per arm (\textsc{Never}, \textsc{Lru}, 
+%   \sysname) at 256~GB/1 slot and 560~GB/2 slots. Annotate each \sysname{} 
+%   bar with its reduction over \textsc{Lru}.
+\includegraphics[width=\columnwidth]{figures/fig-stall-ladder}
+\caption{Stall attributable to resource residency, by policy and
+configuration. \sysname{} removes 11.55\% of the stall \textsc{Lru} leaves at
+the production allocation and 50.69\% at a larger budget.}
+\label{fig:stall-ladder}
+\end{figure}
+\begin{figure*}[t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-budget-sweep.pdf)
+%   two panels, one per device-slot count. $x$ = budget (200--838~GB). 
+%   Lines: \textsc{Lru} and \sysname, both as \% reduction vs 
+%   \textsc{Never}. Twin right-hand axis: binding \% (share of decisions 
+%   that forced an eviction), shaded. Mark the packing thresholds at 283, 
+%   445, 562 and 838~GB with vertical rules --- the step structure is the 
+%   point.
+\includegraphics[width=0.95\textwidth]{figures/fig-budget-sweep}
+\caption{Wall-time reduction versus budget and device capacity, at one and
+two device slots.}
+\label{fig:budget-sweep}
+\end{figure*}
+
 The arbitrator acts on resources the workflow has already used. The prefetcher
 acts on resources it has not: drawing on the same horizon estimates
 (Section~\ref{sec:horizon}), it moves a resource toward residency before the
@@ -218,6 +255,7 @@ a conventional prefetcher's value scales with accuracy, slack staging's does
 not, because the memory it uses had no competing claim.
 
 \subsubsection{The Outbid Path}
+
 
 Restricting staging to slack forgoes cases where a stage genuinely is worth
 more than an incumbent. \sysname{} permits displacement, but only when every one

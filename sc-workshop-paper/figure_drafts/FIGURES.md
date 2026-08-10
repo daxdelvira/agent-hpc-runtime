@@ -166,6 +166,43 @@ a correlation the data does not contain. The `.tex` figure specs, now kept as
 comments above each `\includegraphics`, still describe the twin-axis version
 and should be updated to match.
 
+## Size and placement
+
+**`theme.HSCALE` is the space knob.** Every figure's height is multiplied by
+it; widths are untouched, since a figure narrower than the column just wastes
+margin. Currently **0.85**, which took the figure budget from 2.69 to 2.38
+pages. Raise it toward 1.0 if the plots read cramped; below about 0.75 the
+axis labels start colliding. Type sizes are set for the current value.
+
+**Floats are declared where they need to LAND, not where they are cited.** A
+LaTeX float only ever moves forward, so three rules apply:
+
+1. Each float is declared at the head of its subsection, ahead of the citing
+   paragraph. 0 of 17 are declared late.
+2. `fig:stall-ladder` and `fig:budget-sweep` are declared **inside the design
+   section**, two subsections before the evaluation that cites them. The
+   evaluation opens partway down a page whose top is already committed by
+   then, so this is the only way they can reach that page's top. Per author
+   preference, flipping back one page beats figures piling up pages later.
+3. `fig:intro-behavior` is declared after the second introduction paragraph,
+   targeting the top of **column 2, page 1** — declaring it earlier put it at
+   the top of column 1 and displaced the abstract. **That declaration point is
+   a knob**: one paragraph later if it lands in column 1, one earlier if it
+   slips to page 2. Re-check it once the abstract is written, since the
+   abstract is what fills column 1.
+
+Single-column floats take `[tb]`; page bottoms roughly double the available
+slots. `figure*` keeps `[t]` — LaTeX does not accept `b` for double-column
+floats, and a `figure*` can never be placed on the page it is declared on,
+which is why both are declared early.
+
+**Float counters are raised in `sections/00_macros.tex`.** Stock LaTeX allows
+2 top floats and 3 per page and refuses any page over 70% float; a queue this
+dense cannot drain under those limits, and the overflow is what gets flushed
+to the end of the document.
+
+---
+
 **`fig-sgb-spread` is dots, not bars.** On a log axis a bar's length is not
 proportional to its value, which would misstate the 65x spread the figure
 exists to show.

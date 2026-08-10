@@ -86,7 +86,7 @@ def legend(ax, **kw):
 # ------------------------------------------------------------------ 1 -------
 def fig_intro_behavior():
     """Schematic: why phase-based staging works traditionally and fails here."""
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.55), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.55 * theme.HSCALE), sharex=True)
     for ax in axes:
         ax.grid(False)
         ax.set_ylim(-0.2, 2.6)
@@ -139,7 +139,7 @@ def fig_replacement_loss():
              (1967.7, 2661.4, "72B"), (2687.6, 3422.9, "72B"),
              (3436.0, 4189.6, "72B-t"), (4245.4, 5254.4, "72B")]
     wall = 5288.5
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.5), sharex=True,
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.5 * theme.HSCALE), sharex=True,
                              gridspec_kw={"height_ratios": [1, 1.25]})
 
     ax = axes[0]
@@ -202,7 +202,7 @@ def fig_sgb_spread():
               "npz_deflate": "compressed binary", "raw_f32": "raw f32",
               "npy": "mmap-able binary", "hdf5": "HDF5"}
 
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.35))
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.35 * theme.HSCALE))
     y = np.arange(len(data))
     # Dots, not bars: on a log axis a bar's LENGTH is not proportional to its
     # value, so bars would misstate the 65x spread this figure exists to show.
@@ -239,7 +239,7 @@ def fig_scale_sweep():
     oracle = [num(r[5]) for r in rows]
     stage = [num(r[6]) for r in rows]
 
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 3.0), sharex=True,
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 3.0 * theme.HSCALE), sharex=True,
                              gridspec_kw={"height_ratios": [1.35, 1]})
     a = axes[0]
     a.plot(n, retain, marker=M[0], color=C[0], label="retention")
@@ -276,7 +276,7 @@ def _budget_series():
 def fig_topology_budget():
     """Motivating view: contention vanishes as the budget grows."""
     d = _budget_series()
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.1))
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.1 * theme.HSCALE))
     for i, slots in enumerate((1, 2)):
         ax.plot(d[slots]["budget"], d[slots]["binding"], marker=M[i], color=C[i],
                 label=f"{slots} device slot" + ("s" if slots > 1 else ""))
@@ -293,7 +293,7 @@ def fig_topology_budget():
 def fig_budget_sweep():
     """Result view: performance vs budget, one panel per device-slot count."""
     d = _budget_series()
-    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, 2.5), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, 2.5 * theme.HSCALE), sharey=True)
     for ax, slots in zip(axes, (1, 2)):
         s = d[slots]
         ax.plot(s["budget"], s["lru"], marker=M[1], color=C[1], label="recency-ranked")
@@ -315,7 +315,7 @@ def fig_stall_ladder():
     configs = [("256 GB, 1 slot", 1, 256.0), ("560 GB, 2 slots", 2, 560.0)]
     compute = {1: 10.8, 2: 10.8}
 
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.2))
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.2 * theme.HSCALE))
     width, gap = 0.26, 0.04
     xs = np.arange(len(configs))
     arms = ["no retention", "recency-ranked", "Tandem"]
@@ -347,7 +347,7 @@ def fig_compute_sweep():
     comp = [num(r[1]) for r in rows]
     wall = [num(r[6]) for r in rows]
     stall = [num(r[7]) for r in rows]
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.2))
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.2 * theme.HSCALE))
     ax.plot(comp, wall, marker=M[0], color=C[0], label="wall-time reduction")
     ax.plot(comp, stall, marker=M[1], color=C[1], label="stall reduction")
     ax.axvline(5.3, color=theme.MUTED, lw=0.8)
@@ -373,7 +373,7 @@ def fig_ablation():
              "+ cost-aware arbitration", "+ slack staging"]
     vals = [num(r[2]) for r in rows]
 
-    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, 2.35),
+    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, 2.35 * theme.HSCALE),
                              gridspec_kw={"width_ratios": [1.75, 1]})
     a = axes[0]
     y = np.arange(len(names))
@@ -424,7 +424,7 @@ def fig_prefetch_variants():
     cols = ["retain only", "data, outbid", "data, slack", "all, outbid", "all, slack"]
     vals = [num(rows[i][j]) for j in range(1, 6)]
     order = [0, 2, 1, 4, 3]
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.15))
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.15 * theme.HSCALE))
     x = np.arange(len(order))
     colors = [theme.MUTED, C[0], C[1], C[0], C[1]]
     ax.bar(x, [vals[o] for o in order], 0.62,
@@ -456,7 +456,7 @@ def fig_cpu_interference():
     lo = [r.get("fg_min_s", m) for r, m in zip(rows, med)]
     hi = [r.get("fg_max_s", m) for r, m in zip(rows, med)]
 
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.7), sharex=True,
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.7 * theme.HSCALE), sharex=True,
                              gridspec_kw={"height_ratios": [1.3, 1]})
     a = axes[0]
     a.plot(n, med, marker=M[0], color=C[0])
@@ -484,7 +484,7 @@ def fig_h_sweep():
     H = [num(r[0]) for r in rows]
     retain = [num(r[1]) for r in rows]
     stage = [num(r[2]) for r in rows]
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.15))
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.15 * theme.HSCALE))
     ax.plot(H, retain, marker=M[0], color=C[0], label="retention")
     ax.plot(H, stage, marker=M[1], color=C[1], label="retention + staging")
     ax.axvspan(30, 120, color=theme.MUTED, alpha=0.14, zorder=0)
@@ -508,7 +508,7 @@ def fig_accuracy_sweep():
     retain = [num(r[1]) for r in rows]
     slack = [num(r[3]) for r in rows]
     outbid = [num(r[4]) for r in rows]
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.25))
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.25 * theme.HSCALE))
     ax.axhline(0, color=theme.INK, lw=0.7)
     ax.plot(acc, retain, marker=M[0], color=C[0], label="retention")
     ax.plot(acc, slack, marker=M[1], color=C[1], label="staging, slack only")
@@ -554,7 +554,7 @@ def fig_tool_relationships():
         print("  SKIP fig_tool_relationships: no offset-keyed transitions found")
         return
     x = np.linspace(0.0, 1.0, 201)
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.0))
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.0 * theme.HSCALE))
     for i, k in enumerate(offsets):
         share = [(g[:, i] >= t).mean() * 100 for t in x]
         ax.plot(x, share, color=C[i], label=f"$k{{=}}{k}$", lw=1.9)
@@ -580,7 +580,7 @@ def fig_tool_relationships_heatmap():
         return
     from matplotlib.colors import LinearSegmentedColormap
     cmap = LinearSegmentedColormap.from_list("seq", theme.SEQUENTIAL)
-    fig, ax = plt.subplots(figsize=(theme.COL, 0.28 * len(tools) + 1.1))
+    fig, ax = plt.subplots(figsize=(theme.COL, (0.28 * len(tools) + 1.1) * theme.HSCALE))
     im = ax.imshow(g, cmap=cmap, vmin=0, vmax=1, aspect="auto")
     ax.set_xticks(range(len(offsets)))
     ax.set_xticklabels([f"$k{{=}}{k}$" for k in offsets])

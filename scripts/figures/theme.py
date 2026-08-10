@@ -66,12 +66,12 @@ def apply() -> None:
         "font.family": "serif",
         "font.serif": SERIF,
         "mathtext.fontset": "stix",
-        "font.size": 9,
-        "axes.titlesize": 9.5,
-        "axes.labelsize": 9,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "legend.fontsize": 8,
+        "font.size": 8,
+        "axes.titlesize": 8.5,
+        "axes.labelsize": 8,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "legend.fontsize": 7.5,
 
         "figure.facecolor": SURFACE,
         "axes.facecolor": SURFACE,
@@ -98,8 +98,8 @@ def apply() -> None:
         "axes.spines.top": False,
         "axes.spines.right": False,
 
-        "lines.linewidth": 1.9,
-        "lines.markersize": 5.0,
+        "lines.linewidth": 1.7,
+        "lines.markersize": 4.2,
 
         "legend.frameon": False,
         "legend.handlelength": 1.6,
@@ -115,6 +115,19 @@ def apply() -> None:
 
 # Single-column and double-column widths for a two-column article, inches.
 COL, WIDE = 3.35, 7.0
+
+# Global height scale, applied to every figure. THIS IS THE SPACE KNOB: the
+# paper is figure-dense, and shrinking heights is the only way to recover page
+# space that does not remove a figure or a sentence. Widths are untouched --
+# a figure narrower than the column would just waste the margin.
+#
+# Font sizes below are set for this scale. `savefig.bbox="tight"` trims the
+# canvas to about 3.11in, which LaTeX then scales up to the 3.35in column, so
+# rendered type is roughly 1.08x the sizes given here.
+#
+# Raise HSCALE toward 1.0 if the plots read cramped; lower it to buy more
+# space. Below about 0.75 the axis labels start colliding.
+HSCALE = 0.85
 
 # Marker shapes, used as SECONDARY encoding so identity never rests on hue
 # alone. Same fixed order as CATEGORICAL.
