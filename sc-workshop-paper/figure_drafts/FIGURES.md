@@ -105,43 +105,49 @@ belongs in its caption.
 fallbacks are metric-compatible Times clones, so a machine with the real face
 picks it up and nothing else moves.
 
-**Colour: stock Gruvbox, unmodified hex**, biased to the less-saturated
-"faded" family because the surface is white. Assigned in this fixed order,
-never cycled:
+**Colour: stock Gruvbox REGULAR (neutral) accents, unmodified hex.** The
+standard set, not the darker "faded" variants an earlier revision used.
+Assigned in this fixed order, never cycled:
 
 | slot | hex | hue | used by |
 |---|---|---|---|
-| 1 | `#076678` | faded blue | every figure |
-| 2 | `#9d0006` | faded red | every keyed comparison |
-| 3 | `#b57614` | faded yellow | third series / staging bars |
-| 4 | `#8f3f71` | faded purple | `scale-sweep` lower panel only |
-| 5 | `#79740e` | faded green | unused |
-| 6 | `#427b58` | faded aqua | unused |
-| 7 | `#af3a03` | faded orange | unused |
+| 1 | `#458588` | blue | every figure |
+| 2 | `#cc241d` | red | every keyed comparison |
+| 3 | `#d79921` | yellow | third series / staging bars |
+| 4 | `#b16286` | purple | `scale-sweep` lower panel only |
+| 5 | `#98971a` | green | unused |
+| 6 | `#689d6a` | aqua | unused |
+| 7 | `#d65d0e` | orange | unused |
 
-An earlier revision substituted two of these for accessibility. Per request
-the published values are now used verbatim, so the two costs that
-substitution was paying for are stated here instead of hidden:
+Published values are used verbatim, so the costs are stated rather than
+absorbed:
 
-- **Blue `#076678` has OKLCH chroma 0.082**, below the 0.10 floor at which a
+- **Blue `#458588` has OKLCH chroma 0.066**, below the 0.10 floor at which a
   hue stops reading as a hue. It separates from everything else fine; it just
   reads desaturated rather than blue as such.
-- **Two pairs collide for red-green colourblind readers**: yellow vs green
-  (dE 3.9) and blue vs purple (dE 4.0), against a target of 8. Neither pair
-  is ever compared in these figures -- green is unused, and purple appears
-  only in `scale-sweep`'s lower panel, which is a separate axes with no key.
+- **Yellow `#d79921` has only 2.48:1 contrast against white**, below the 3:1
+  threshold. Filled bars are unaffected — there is enough area. Thin lines and
+  small markers are, which is why `lines.linewidth` and `markersize` are set a
+  little heavier than they would otherwise be.
+- **Two pairs collide for red-green colourblind readers**: blue vs purple
+  (slots 1 and 4) and orange vs green (7 and 5). Neither pair shares a frame —
+  purple appears only in `scale-sweep`'s lower panel, a separate axes with no
+  key, and green/aqua/orange are unused.
 
-The set that actually shares a frame is slots 1-3, and it is clean:
+The set that actually shares a frame is slots 1–3, and it is clean:
 
     n=2  worst CVD dE 14.8   normal 26.2
-    n=3  worst CVD dE 14.8   normal 21.7
+    n=3  worst CVD dE 13.9   normal 23.6
 
 against a target of 8 and a normal-vision floor of 15. Marker shape is
-assigned in the same order, so identity never rests on hue alone.
-Re-check with `python3 scripts/validate_palette.py "<hexes>" --surface "#ffffff" --pairs all`.
+assigned in the same order, so identity never rests on hue alone. Re-check
+with `python3 scripts/validate_palette.py "<hexes>" --surface "#ffffff" --pairs all`.
 
-**Do not add a 4th keyed series to one frame without re-validating**, and do
-not use green and orange together.
+**Do not add a 4th keyed series to one frame without re-validating.**
+
+**Text on a filled mark picks its own colour** via `theme.on()`, from the
+fill's luminance — white on the blue, black on the yellow. Hardcoding it broke
+the moment the palette changed.
 
 **Everything that is not data** -- text, axes, ticks, frame -- is black on
 white. Gridlines are solid hairlines (never dashed), top and right spines
