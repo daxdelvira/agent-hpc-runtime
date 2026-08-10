@@ -59,13 +59,16 @@ delayed, incrementally produced, and sporadic.
 
 \begin{figure}[t]
 \centering
-\figspec{5.0cm}{\textbf{fig:intro-behavior} --- two stacked timelines. Top:
-a traditional HPC workflow, phases with declared inputs, staging bars for
-phase $n{+}1$ overlapping computation of phase $n$, no exposed stall. Bottom:
-an agentic workflow, where the data need for phase $n{+}1$ becomes visible
-only after the agent's decision point, so the staging bar starts late and a
-stall band is exposed. Mark the agent decision points explicitly --- the late
-arrival of the need is the whole figure.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-intro-behavior.pdf)
+%   two stacked timelines. Top: a traditional HPC workflow, phases with 
+%   declared inputs, staging bars for phase $n{+}1$ overlapping computation 
+%   of phase $n$, no exposed stall. Bottom: an agentic workflow, where the 
+%   data need for phase $n{+}1$ becomes visible only after the agent's 
+%   decision point, so the staging bar starts late and a stall band is 
+%   exposed. Mark the agent decision points explicitly --- the late arrival 
+%   of the need is the whole figure.
+\includegraphics[width=\columnwidth]{figures/fig-intro-behavior}
 \caption{Why phase-based staging works for traditional HPC workflows and
 fails for agentic ones. In the traditional case the data need is known before
 the phase begins and retrieval overlaps the preceding computation; in the

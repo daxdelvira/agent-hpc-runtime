@@ -2,6 +2,11 @@
 
 Regenerate all: `python3 scripts/figures/make_figures.py`
 One figure: `python3 scripts/figures/make_figures.py --only sgb-spread`
+Drafts only, no install: add `--no-install`
+
+Each run also **copies the PDFs into `paper_ieee/figures/` and
+`paper/figures/`**, which is where the section files resolve
+`\includegraphics{figures/NAME}` from. Regenerating updates the paper.
 
 Each figure is written as **PDF** (drop into LaTeX) and **PNG** (quick viewing).
 Theme lives in `scripts/figures/theme.py`.
@@ -21,31 +26,41 @@ Theme lives in `scripts/figures/theme.py`.
 
 | # | File | LaTeX label | | Source |
 |---|---|---|---|---|
-| 1 | `fig_intro_behavior` | `fig:intro-behavior` | **X** | none — conceptual |
+| 1 | `fig-intro-behavior` | `fig:intro-behavior` | **X** | none — conceptual |
 | 2 | *(you have this)* | `fig:predictability` | — | not generated |
-| 3 | `fig_replacement_loss` | `fig:replacement-loss` | **M**+**X** | model timeline measured; artifact series illustrative — see caveats |
-| 4 | `fig_sgb_spread` | `fig:sgb-spread` | **M** | `results/bench_format_activation_atl1-1-02-003-25-1.json.csv` |
-| 5 | `fig_scale_sweep` | `fig:scale-sweep` | **S** | `results_tables/05_scale_sweep.md` |
-| 6 | `fig_topology_budget` | `fig:topology-budget` | **S** | `results_tables/02_budget_sweep.md` |
-| 7 | `fig_tool_relationships` | `fig:tool-relationships` | **M** | `runtime/predictor/data/learned_transitions.json` |
+| 3 | `fig-replacement-loss` | `fig:replacement-loss` | **M**+**X** | model timeline measured; artifact series illustrative — see caveats |
+| 4 | `fig-sgb-spread` | `fig:sgb-spread` | **M** | `results/bench_format_activation_atl1-1-02-003-25-1.json.csv` |
+| 5 | `fig-scale-sweep` | `fig:scale-sweep` | **S** | `results_tables/05_scale_sweep.md` |
+| 6 | `fig-topology-budget` | `fig:topology-budget` | **S** | `results_tables/02_budget_sweep.md` |
+| 7 | `fig-tool-relationships` | `fig:tool-relationships` | **M** | `runtime/predictor/data/learned_transitions.json` |
 | 8 | *(you have this)* | `fig:plan-accuracy` | — | not generated |
-| 9 | `fig_budget_sweep` | `fig:budget-sweep` | **S** | `results_tables/02_budget_sweep.md` |
-| 10 | `fig_stall_ladder` | `fig:stall-ladder` | **S** | `results_tables/02_budget_sweep.md` |
-| 11 | `fig_compute_sweep` | `fig:compute-sweep` | **S** | `results_tables/03_compute_sweep.md` |
-| 12 | `fig_ablation` | `fig:ablation` | **S** | `results_tables/01_attribution_ladder.md` |
-| 13 | `fig_prefetch_variants` | `fig:prefetch-variants` | **S** | `results_tables/06_prefetch_variants.md` |
-| 14 | `fig_cpu_interference` | `fig:cpu-interference` | **M** | `results/bench_preactivation_interference.json` |
-| 15 | `fig_h_sweep` | `fig:h-sweep` | **S** | `results_tables/07_objective_check.md` |
-| 16 | `fig_accuracy_sweep` | `fig:accuracy-sweep` | **S** | `results_tables/04_accuracy_sweep.md` |
+| 9 | `fig-budget-sweep` | `fig:budget-sweep` | **S** | `results_tables/02_budget_sweep.md` |
+| 10 | `fig-stall-ladder` | `fig:stall-ladder` | **S** | `results_tables/02_budget_sweep.md` |
+| 11 | `fig-compute-sweep` | `fig:compute-sweep` | **S** | `results_tables/03_compute_sweep.md` |
+| 12 | `fig-ablation` | `fig:ablation` | **S** | `results_tables/01_attribution_ladder.md` |
+| 13 | `fig-prefetch-variants` | `fig:prefetch-variants` | **S** | `results_tables/06_prefetch_variants.md` |
+| 14 | `fig-cpu-interference` | `fig:cpu-interference` | **M** | `results/bench_preactivation_interference.json` |
+| 15 | `fig-h-sweep` | `fig:h-sweep` | **S** | `results_tables/07_objective_check.md` |
+| 16 | `fig-accuracy-sweep` | `fig:accuracy-sweep` | **S** | `results_tables/04_accuracy_sweep.md` |
 
-`fig:budget-sweep` is the only `figure*` (full width, two panels). Everything
-else is single-column at 3.35 in.
+`fig:budget-sweep` and `fig:ablation` are `figure*` (full width, two panels
+each); `fig:ablation` was promoted from a single-column float, because its
+two panels are illegible at 3.35 in. Everything else is single-column.
+
+**Filenames use hyphens, not underscores.** An `_` in a graphics filename is
+a live LaTeX hazard and the tex checker flags it; hyphens remove the class of
+problem outright.
+
+**`fig-predictability` and `fig-plan-accuracy` are not generated here** --
+they are yours. The sections already reference `figures/fig-predictability`
+and `figures/fig-plan-accuracy`; drop PDFs with those names into
+`paper_ieee/figures/` and they will resolve.
 
 ---
 
 ## Caveats that need your decision
 
-**`fig_tool_relationships` contradicts the prose in two ways.** The shipped
+**`fig-tool-relationships` contradicts the prose in two ways.** The shipped
 transition table carries **offsets 1, 2 and 3 only** — the predictor's horizon
 is hardcoded to a short window — so the claim of *k* ∈ [0,5] cannot be drawn
 from this artifact. And **17 of 26 tools** have at least one successor above
@@ -53,13 +68,20 @@ from this artifact. And **17 of 26 tools** have at least one successor above
 claims. The figure plots what exists. Either regenerate the table over a wider
 offset range, or soften both claims to match.
 
-**`fig_replacement_loss` has one series that is not measured.** The model
+**`fig-replacement-loss` has one series that is not measured.** The model
 timeline is real — the seven load windows of a representative trial. The
 artifact-residency panel beneath it is *constructed* to show the mechanism,
 because no page-cache-versus-time trace was ever collected. Either instrument
 a run to capture artifact residency, or relabel the figure as a schematic.
 
-**`fig_stall_ladder` assumes a compute share.** Stall is derived as
+> Note the panel renders almost entirely empty, and that is not a plotting
+> bug: the agent-active gaps between model loads are 13–82 s against a 5288 s
+> trial, so under this model the artifact never has time to be rebuilt and
+> stay rebuilt. The figure now states the resident share rather than leaving
+> a flat band unexplained. It is a strong claim resting on a constructed
+> series, which is exactly why it needs the measurement above.
+
+**`fig-stall-ladder` assumes a compute share.** Stall is derived as
 `wall − compute` using the 10.8% compute share from the window-0.1 row, held
 fixed across both configurations. If you keep this figure, the assumption
 belongs in its caption.
@@ -69,45 +91,65 @@ belongs in its caption.
 ## Theme
 
 **Type.** Times New Roman is not installed on this machine. The chain is
-`Times New Roman → Nimbus Roman → Liberation Serif → DejaVu Serif`; the two
+`Times New Roman -> Nimbus Roman -> Liberation Serif -> DejaVu Serif`; the two
 fallbacks are metric-compatible Times clones, so a machine with the real face
 picks it up and nothing else moves.
 
-**Colour.** Gruvbox, biased to the less-saturated faded/neutral families.
-Two seeds could not be used as published:
+**Colour: stock Gruvbox, unmodified hex**, biased to the less-saturated
+"faded" family because the surface is white. Assigned in this fixed order,
+never cycled:
 
-- **Gruvbox blue and aqua sit at chroma 0.066–0.082**, below the 0.10 floor at
-  which a hue stops reading as a hue and starts reading as gray. The blue is
-  snapped to the nearest in-gamut step at the *same* Gruvbox hue angle
-  (215.8°): `#076678 → #008da5`.
-- **Orange is dropped.** Gruvbox orange against Gruvbox green measures ΔE 2.4
-  under protan/deutan simulation — effectively identical to a red-green
-  colourblind reader.
+| slot | hex | hue | used by |
+|---|---|---|---|
+| 1 | `#076678` | faded blue | every figure |
+| 2 | `#9d0006` | faded red | every keyed comparison |
+| 3 | `#b57614` | faded yellow | third series / staging bars |
+| 4 | `#8f3f71` | faded purple | `scale-sweep` lower panel only |
+| 5 | `#79740e` | faded green | unused |
+| 6 | `#427b58` | faded aqua | unused |
+| 7 | `#af3a03` | faded orange | unused |
 
-Fixed assignment order, never cycled:
+An earlier revision substituted two of these for accessibility. Per request
+the published values are now used verbatim, so the two costs that
+substitution was paying for are stated here instead of hidden:
 
-| slot | hex | hue |
-|---|---|---|
-| 1 | `#008da5` | blue (snapped) |
-| 2 | `#9c0006` | faded red |
-| 3 | `#b67717` | faded yellow |
-| 4 | `#8f3f71` | faded purple |
-| 5 | `#79740e` | faded green |
+- **Blue `#076678` has OKLCH chroma 0.082**, below the 0.10 floor at which a
+  hue stops reading as a hue. It separates from everything else fine; it just
+  reads desaturated rather than blue as such.
+- **Two pairs collide for red-green colourblind readers**: yellow vs green
+  (dE 3.9) and blue vs purple (dE 4.0), against a target of 8. Neither pair
+  is ever compared in these figures -- green is unused, and purple appears
+  only in `scale-sweep`'s lower panel, which is a separate axes with no key.
 
-Validated at every prefix by `scripts/validate_palette.py` against a white
-surface — worst-case colourblind separation ΔE 20.9 / 17.4 / 18.2 / 14.3 for
-n = 2/3/4/5, against a target of 8 and a normal-vision floor of 15. All pass.
-Marker shape carries identity alongside hue, so nothing depends on colour alone.
+The set that actually shares a frame is slots 1-3, and it is clean:
 
-**Everything that is not data** — text, axes, ticks, frame — is black on white.
-Gridlines are solid hairlines (never dashed), top and right spines removed.
+    n=2  worst CVD dE 14.8   normal 26.2
+    n=3  worst CVD dE 14.8   normal 21.7
+
+against a target of 8 and a normal-vision floor of 15. Marker shape is
+assigned in the same order, so identity never rests on hue alone.
+Re-check with `python3 scripts/validate_palette.py "<hexes>" --surface "#ffffff" --pairs all`.
+
+**Do not add a 4th keyed series to one frame without re-validating**, and do
+not use green and orange together.
+
+**Everything that is not data** -- text, axes, ticks, frame -- is black on
+white. Gridlines are solid hairlines (never dashed), top and right spines
+removed.
+
+**No key sits on the data.** Bar charts put the legend in the margin above
+the axes (`theme.legend_above`); line charts do the same wherever the panel
+has no title. `scale-sweep`'s upper panel lost its title for this reason --
+the title duplicated the y label and was what forced the key inside the
+frame, where it sat on the oracle line.
 
 **No dual-axis plots.** Three figures originally specified a second y-scale
 (`budget-sweep`, `cpu-interference`, `scale-sweep`); each is now stacked or
-side-by-side panels sharing one axis, because two scales on one frame invent a
-correlation the data does not contain. The `.tex` figure specs still describe
-the twin-axis version and should be updated to match.
+side-by-side panels sharing one axis, because two scales on one frame invent
+a correlation the data does not contain. The `.tex` figure specs, now kept as
+comments above each `\includegraphics`, still describe the twin-axis version
+and should be updated to match.
 
-**`fig_sgb_spread` is dots, not bars.** On a log axis a bar's length is not
-proportional to its value, which would misstate the 65× spread the figure
+**`fig-sgb-spread` is dots, not bars.** On a log axis a bar's length is not
+proportional to its value, which would misstate the 65x spread the figure
 exists to show.

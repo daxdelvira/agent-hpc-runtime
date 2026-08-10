@@ -28,10 +28,13 @@ Functionally, agentic workflows are not deterministic.
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:predictability} --- $x$ = step index, $y$ = share
-of runs taking the modal action at that step, over repeated executions of an
-identical task. Band the 30--60\% region. Optionally overlay a second series
-for a second workflow to show the pattern is not workload-specific.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-predictability.pdf)
+%   $x$ = step index, $y$ = share of runs taking the modal action at that 
+%   step, over repeated executions of an identical task. Band the 30--60\% 
+%   region. Optionally overlay a second series for a second workflow to show 
+%   the pattern is not workload-specific.
+\includegraphics[width=\columnwidth]{figures/fig-predictability}
 \caption{Agreement with the modal action at each step index across repeated
 executions of an identical task. Agreement never exceeds 60\%, so the same
 request produces materially different executions.}
@@ -53,11 +56,14 @@ how typical ``weight-parking'' behavior can cycle useful data out of RAM.
 
 \begin{figure}[t]
 \centering
-\figspec{4.6cm}{\textbf{fig:replacement-loss} --- two aligned panels sharing
-an $x$ axis of wall time. Top: workflow timeline with model-load, model-park
-and tool-invocation spans. Bottom: page-cache hit rate (or resident bytes) for
-the scientific artifact. Annotate the points where a park event is followed by
-a collapse in the artifact's residency and a subsequent re-read.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-replacement-loss.pdf)
+%   two aligned panels sharing an $x$ axis of wall time. Top: workflow 
+%   timeline with model-load, model-park and tool-invocation spans. Bottom: 
+%   page-cache hit rate (or resident bytes) for the scientific artifact. 
+%   Annotate the points where a park event is followed by a collapse in the 
+%   artifact's residency and a subsequent re-read.
+\includegraphics[width=\columnwidth]{figures/fig-replacement-loss}
 \caption{Model parking evicts scientific data. Each parking event coincides
 with a loss of the artifact's residency, which the next tool invocation must
 pay to rebuild.}
@@ -117,11 +123,14 @@ transformation at all, and retaining it buys nothing that placement would not.
 
 \begin{figure}[t]
 \centering
-\figspec{4.4cm}{\textbf{fig:sgb-spread} --- seconds saved per GB retained,
-log $y$, one point per resource. Shade the narrow model band (2.78--3.81) as a
-horizontal strip; scatter the data artifacts across it, from ASCII at 22.0 to
-memory-mappable binary at 0.34. Draw a horizontal rule at the 0.32~s/GB
-materialisation floor. The models-in-the-middle geometry is the reading.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-sgb-spread.pdf)
+%   seconds saved per GB retained, log $y$, one point per resource. Shade 
+%   the narrow model band (2.78--3.81) as a horizontal strip; scatter the 
+%   data artifacts across it, from ASCII at 22.0 to memory-mappable binary 
+%   at 0.34. Draw a horizontal rule at the 0.32~s/GB materialisation floor. 
+%   The models-in-the-middle geometry is the reading.
+\includegraphics[width=\columnwidth]{figures/fig-sgb-spread}
 \caption{Retention value per gigabyte across resources. Models occupy a narrow
 band set by transfer bandwidth; data artifacts span $65\times$ and bracket
 that band on both sides, so no fixed class priority is correct.}
@@ -169,11 +178,13 @@ jointly rather than choosing one.  % RESTORED
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:scale-sweep} --- $x$ = number of distinct
-resources (5, 10, 18, 28). Left axis: advantage over the recency-ranked
-baseline for retention and for staging, as two lines that cross. Right axis:
-first-use share, rising 10.4\% $\rightarrow$ 32.3\%. The crossing is the
-reading.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-scale-sweep.pdf)
+%   $x$ = number of distinct resources (5, 10, 18, 28). Left axis: advantage 
+%   over the recency-ranked baseline for retention and for staging, as two 
+%   lines that cross. Right axis: first-use share, rising 10.4\% 
+%   $\rightarrow$ 32.3\%. The crossing is the reading.
+\includegraphics[width=\columnwidth]{figures/fig-scale-sweep}
 \caption{As the resource population grows at fixed schedule length, first uses
 become a larger share of all needs and the advantage moves from retention to
 staging.}
@@ -182,12 +193,15 @@ staging.}
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:topology-budget} --- $x$ = budget as \% of total
-footprint. $y$ = share of decisions in which memory pressure forced an
-eviction, one line per accelerator-slot count, falling to zero. Mark the
-packing thresholds with vertical rules so the step structure is visible. This
-is the motivating view; Figure~\ref{fig:budget-sweep} shows the same axis with
-performance rather than pressure.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-topology-budget.pdf)
+%   $x$ = budget as \% of total footprint. $y$ = share of decisions in which 
+%   memory pressure forced an eviction, one line per accelerator-slot count, 
+%   falling to zero. Mark the packing thresholds with vertical rules so the 
+%   step structure is visible. This is the motivating view; 
+%   Figure~\ref{fig:budget-sweep} shows the same axis with performance 
+%   rather than pressure.
+\includegraphics[width=\columnwidth]{figures/fig-topology-budget}
 \caption{Contention as a function of budget and accelerator capacity. Above
 roughly 86\% of the total footprint nothing is ever evicted and the
 arbitration problem disappears; below it, budget admits resources in steps
@@ -224,11 +238,14 @@ together.
 
 \begin{figure}[t]
 \centering
-\figspec{4.4cm}{\textbf{fig:tool-relationships} --- heatmap or matrix, source
-tool $\times$ offset $k \in [0,5]$, cell shaded by the confidence of the
-highest-confidence successor at that offset. Two panels: framework level and
-workflow level. Highlight cells in the 0.9--1.0 band. The reading is that
-nearly every row has at least one dark cell.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-tool-relationships.pdf)
+%   heatmap or matrix, source tool $\times$ offset $k \in [0,5]$, cell 
+%   shaded by the confidence of the highest-confidence successor at that 
+%   offset. Two panels: framework level and workflow level. Highlight cells 
+%   in the 0.9--1.0 band. The reading is that nearly every row has at least 
+%   one dark cell.
+\includegraphics[width=\columnwidth]{figures/fig-tool-relationships}
 \caption{High-confidence $k$-offset successor relationships in AtomAgents.
 Nearly every tool has at least one successor at some offset with confidence
 above 0.9, despite workflow-level nondeterminism.}
@@ -237,11 +254,14 @@ above 0.9, despite workflow-level nondeterminism.}
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:plan-accuracy} --- planned tool order versus
-realized tool order. Either (a) a confusion-style plot of planned rank versus
-realized rank, or (b) paired bars for ordering accuracy (95\%) against
-offset-distance accuracy (much lower). Option (b) makes the order-vs-distance
-contrast, which is the point of the paragraph.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-plan-accuracy.pdf)
+%   planned tool order versus realized tool order. Either (a) a 
+%   confusion-style plot of planned rank versus realized rank, or (b) paired 
+%   bars for ordering accuracy (95\%) against offset-distance accuracy (much 
+%   lower). Option (b) makes the order-vs-distance contrast, which is the 
+%   point of the paragraph.
+\includegraphics[width=\columnwidth]{figures/fig-plan-accuracy}
 \caption{Planner-declared orderings are accurate; planner-implied distances
 are not. Agents insert recovery and retry calls, so realized offsets diverge
 from planned ones even when the order is correct.}

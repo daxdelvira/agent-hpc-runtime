@@ -17,16 +17,22 @@
 % brace need no {} and were left alone.
 \newcommand{\sysname}{Tandem}
 
-% Placeholder standing in for an unrendered plot. #1 optional width,
-% #2 box height, #3 the plot specification. Uses only \fbox and \parbox, both
-% LaTeX kernel, so it needs nothing that IEEEtran does not already provide.
-% Every figure in every section calls this. To land a real plot, replace
-%     \figspec{4.2cm}{...spec text...}
-% with
+% Placeholder that used to stand in for an unrendered plot. #1 optional width,
+% #2 box height, #3 the plot specification.
+%
+% AS OF THIS REVISION IT HAS NO CALL SITES. All 16 figures now carry a real
 %     \includegraphics[width=\columnwidth]{figures/NAME}
-% and leave the \caption and \label alone. Note: the authoritative preamble
-% sets no \graphicspath, so use paths relative to main.tex (figures/NAME) or
-% add \graphicspath{{figures/}} at that time. Delete this macro once no call
-% sites remain.
+% (or 0.95\textwidth in the two figure* floats), resolved relative to main.tex
+% -- the authoritative preamble sets no \graphicspath and none is needed. The
+% plot specification each placeholder carried is preserved as a LaTeX comment
+% directly above its \includegraphics, since that text is the only written
+% record of what the figure is meant to show.
+%
+% Two of the sixteen are author-supplied and their PDFs are not in figures/
+% yet: fig-predictability and fig-plan-accuracy. Until those files land, those
+% two floats will emit a "file not found" and the build will stop -- that is
+% intended, so a missing figure cannot be shipped silently.
+%
+% Kept only so an unconverted draft still compiles. Safe to delete.
 \newcommand{\figspec}[3][0.95\columnwidth]{%
   \fbox{\parbox[c][#2][c]{#1}{\centering\footnotesize\itshape #3}}}

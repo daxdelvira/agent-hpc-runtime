@@ -6,24 +6,30 @@ are metric-compatible Times clones -- same widths, same line breaks -- so a
 machine that does have the real face will pick it up first and nothing else
 shifts.
 
-COLOUR. Data marks use Gruvbox hues, biased to the less-saturated faded/neutral
-families. Two of the seeds could not be used as published: Gruvbox's blues and
-aquas sit at chroma 0.066-0.082, below the 0.10 floor at which a hue stops
-reading as a hue and starts reading as gray. The blue is therefore snapped to
-the nearest in-gamut step at the SAME Gruvbox hue angle (215.8 deg), and orange
-is dropped entirely -- orange against green is the classic protan/deutan
-collision and measured dE 2.4, which is invisible to a red-green colourblind
-reader. The surviving order is validated at every prefix length by
-scripts/validate_palette.py:
+COLOUR. Stock Gruvbox, unmodified hex, biased to the less-saturated "faded"
+family because the surface is white. An earlier revision substituted two of
+these for accessibility reasons; per request the published values are now used
+verbatim, and the two costs that substitution was paying for are stated here
+rather than silently absorbed:
 
-    n=2,3 (every pair)     worst CVD dE 20.9 / 17.4    normal 32.3 / 22.1
-    n=4,5 (adjacent pairs) worst CVD dE 18.2 / 14.3    normal 21.7 / 21.5
+  * Gruvbox blue #076678 has OKLCH chroma 0.066 and aqua #427b58 has 0.082,
+    both under the ~0.10 floor at which a hue stops reading as a hue. They
+    still separate fine from the other slots; they just read desaturated
+    rather than blue/green as such.
+  * Orange #af3a03 against green #79740e is dE 2.4 under protan/deutan
+    simulation -- indistinguishable to a red-green colourblind reader. Slots
+    5 and 7 must therefore not be used TOGETHER in one figure. Nothing here
+    does; keep it that way, or facet instead.
 
-against a target of 8 and a normal-vision floor of 15. Assign slots IN ORDER
-and never cycle; a sixth series folds into "other" or becomes a facet.
+Marker shape is assigned alongside hue in the same fixed order, so series
+identity never rests on colour alone and both costs above stay cosmetic.
+Assign slots IN ORDER and never cycle.
 
 Everything that is not data -- text, axes, ticks, frame -- is black on white,
 as requested.
+
+LEGENDS never sit on top of the data. Bar charts use legend_above(), which
+puts the key in the margin over the axes; line charts get explicit headroom.
 """
 from __future__ import annotations
 
@@ -32,11 +38,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # Categorical slots, in fixed assignment order. Do not reorder or cycle.
-BLUE, RED, YELLOW, PURPLE, GREEN = "#008da5", "#9c0006", "#b67717", "#8f3f71", "#79740e"
-CATEGORICAL = [BLUE, RED, YELLOW, PURPLE, GREEN]
+# Stock Gruvbox "faded" accents -- the published hex, unmodified.
+BLUE, RED, YELLOW = "#076678", "#9d0006", "#b57614"
+PURPLE, GREEN = "#8f3f71", "#79740e"
+AQUA, ORANGE = "#427b58", "#af3a03"
+# ORANGE is slot 7 and collides with GREEN (slot 5) for red-green colourblind
+# readers; do not put both in one figure.
+CATEGORICAL = [BLUE, RED, YELLOW, PURPLE, GREEN, AQUA, ORANGE]
 
-# Sequential ramp: ONE hue, light -> dark, for magnitude only (never identity).
-SEQUENTIAL = ["#cfe9ee", "#9ed3dd", "#6bbccb", "#2fa5b8", "#008da5", "#006d80"]
+# Sequential ramp for MAGNITUDE only, never identity. Anchored on the Gruvbox
+# blues (#458588 mid, #076678 dark); the pale end is those hues tinted toward
+# the surface, since Gruvbox ships no light-background ramp of its own.
+SEQUENTIAL = ["#dbe7e9", "#b3ccd0", "#8ab2b7", "#458588", "#1d6f7d", "#076678"]
 
 INK = "#000000"          # text, axes, ticks, frame -- black, as requested
 GRID = "#d9d9d9"         # hairline, solid, one shade off the surface
@@ -103,7 +116,32 @@ COL, WIDE = 3.35, 7.0
 
 # Marker shapes, used as SECONDARY encoding so identity never rests on hue
 # alone. Same fixed order as CATEGORICAL.
-MARKERS = ["o", "s", "^", "D", "v"]
+MARKERS = ["o", "s", "^", "D", "v", "P", "X"]
+
+
+def legend_above(ax, ncol=None, pad=0.02, **kw):
+    """Put the key in the margin ABOVE the axes, never over the data.
+
+    This is the correct default for bar charts: a bar's meaning is its length
+    from the baseline, so a legend floating inside the frame both hides marks
+    and invites the reader to measure a bar against the legend box. Line
+    charts have slack that matplotlib's `loc="best"` can usually find; bars
+    frequently do not.
+    """
+    h, l = ax.get_legend_handles_labels()
+    if not h:
+        return
+    kw.setdefault("frameon", False)
+    kw.setdefault("handlelength", 1.4)
+    kw.setdefault("columnspacing", 1.0)
+    ax.legend(h, l, loc="lower left", bbox_to_anchor=(0.0, 1.0 + pad, 1.0, 0.12),
+              mode="expand", borderaxespad=0.0, ncol=ncol or len(h), **kw)
+
+
+def headroom(ax, frac=0.22):
+    """Grow the top of the y range so an inside legend clears the marks."""
+    lo, hi = ax.get_ylim()
+    ax.set_ylim(lo, lo + (hi - lo) * (1.0 + frac))
 
 
 def finish(fig, path, **kw):

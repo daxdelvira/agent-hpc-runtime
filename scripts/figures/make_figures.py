@@ -72,7 +72,14 @@ def save(fig, name):
 
 
 def legend(ax, **kw):
-    kw.setdefault("loc", "best")
+    """Inside legend for LINE charts, with headroom so it clears the marks.
+
+    Bar charts do not use this -- see theme.legend_above().
+    """
+    room = kw.pop("headroom", 0.20)
+    kw.setdefault("loc", "upper left")
+    if room:
+        theme.headroom(ax, room)
     ax.legend(**kw)
 
 
@@ -122,7 +129,7 @@ def fig_intro_behavior():
     b.set_title("Agentic workflow: the need appears after the decision", pad=4)
 
     fig.tight_layout(h_pad=0.9)
-    save(fig, "fig_intro_behavior")
+    save(fig, "fig-intro-behavior")
 
 
 # ------------------------------------------------------------------ 3 -------
@@ -157,6 +164,15 @@ def fig_replacement_loss():
         tail = (t >= e) & (t < e + 260)
         res[tail] = np.clip((t[tail] - e) / 260.0, 0, 1)
     axes[1].fill_between(t, res, color=C[2], alpha=0.85, linewidth=0)
+    # The panel reads as almost entirely empty, and that IS the reading: the
+    # agent-active gaps between loads are 13-82 s against a 5288 s trial, so
+    # there is never enough time for the artifact to be rebuilt and stay
+    # rebuilt. State the share rather than leaving a flat band unexplained.
+    _trapz = getattr(np, "trapezoid", None) or np.trapz   # numpy <2 compat
+    share = float(_trapz(res, t) / wall) * 100.0
+    axes[1].text(0.985, 0.62, f"resident {share:.0f}% of the trial",
+                 transform=axes[1].transAxes, ha="right", fontsize=6.8,
+                 color=theme.MUTED)
     axes[1].set_ylim(0, 1.05)
     axes[1].set_xlim(0, wall)
     axes[1].set_ylabel("artifact resident")
@@ -165,7 +181,7 @@ def fig_replacement_loss():
     axes[1].set_xlabel("wall-clock time (s)")
     axes[1].set_title("Scientific artifact residency over the same trial", pad=4)
     fig.tight_layout(h_pad=0.8)
-    save(fig, "fig_replacement_loss")
+    save(fig, "fig-replacement-loss")
 
 
 # ------------------------------------------------------------------ 4 -------
@@ -210,7 +226,7 @@ def fig_sgb_spread():
         ax.text(v * 1.16, i, f"{v:.2f}", va="center", fontsize=6.8, color=theme.INK)
     ax.set_xlim(0.24, 70)
     fig.tight_layout()
-    save(fig, "fig_sgb_spread")
+    save(fig, "fig-sgb-spread")
 
 
 # ------------------------------------------------------------------ 5 -------
@@ -230,17 +246,17 @@ def fig_scale_sweep():
     a.plot(n, stage, marker=M[1], color=C[1], label="+ staging")
     a.plot(n, oracle, marker=M[2], color=C[2], ls=(0, (4, 2)), label="retention, oracle")
     a.set_ylabel("wall-time reduction (%)")
-    legend(a, ncol=1)
-    a.set_title("Advantage over the recency-ranked baseline", pad=4)
+    # No panel title here: it duplicated the y label, and it was what forced the
+    # key inside the frame, where it sat on the oracle line.
+    theme.legend_above(a, ncol=3, fontsize=7)
 
     b = axes[1]
     b.plot(n, first, marker=M[3], color=C[3])
     b.set_ylabel("first uses (%)")
     b.set_xlabel("distinct resources in the workflow")
     b.set_xticks(n)
-    b.set_title("Share of needs that are a first use", pad=4)
     fig.tight_layout(h_pad=0.8)
-    save(fig, "fig_scale_sweep")
+    save(fig, "fig-scale-sweep")
 
 
 # ------------------------------------------------------------- 6 and 9 ------
@@ -269,9 +285,9 @@ def fig_topology_budget():
     ax.text(283, 37, "packing thresholds", fontsize=6.8, color=theme.MUTED, ha="left")
     ax.set_xlabel("host-memory budget (GB)")
     ax.set_ylabel("decisions forcing an eviction (%)")
-    legend(ax)
+    theme.legend_above(ax, ncol=2)
     fig.tight_layout()
-    save(fig, "fig_topology_budget")
+    save(fig, "fig-topology-budget")
 
 
 def fig_budget_sweep():
@@ -289,7 +305,7 @@ def fig_budget_sweep():
     axes[0].set_ylabel("wall-time reduction (%)")
     legend(axes[0])
     fig.tight_layout(w_pad=1.2)
-    save(fig, "fig_budget_sweep")
+    save(fig, "fig-budget-sweep")
 
 
 # ------------------------------------------------------------------ 10 ------
@@ -318,9 +334,10 @@ def fig_stall_ladder():
     ax.set_xticklabels([c[0] for c in configs])
     ax.set_ylabel("stall (% of baseline wall)")
     ax.grid(axis="x", visible=False)
-    legend(ax, ncol=1)
+    ax.set_ylim(0, max(ax.get_ylim()[1], 100))
+    theme.legend_above(ax, ncol=3)
     fig.tight_layout()
-    save(fig, "fig_stall_ladder")
+    save(fig, "fig-stall-ladder")
 
 
 # ------------------------------------------------------------------ 11 ------
@@ -334,15 +351,18 @@ def fig_compute_sweep():
     ax.plot(comp, wall, marker=M[0], color=C[0], label="wall-time reduction")
     ax.plot(comp, stall, marker=M[1], color=C[1], label="stall reduction")
     ax.axvline(5.3, color=theme.MUTED, lw=0.8)
-    ax.text(5.8, 2.0, "measured workload", fontsize=6.8, color=theme.MUTED, rotation=90)
+    # Lower-left is the only region both series vacate; horizontal there beats
+    # rotated against the rule, which crowded the leftmost markers.
+    ax.text(5.6, 1.4, "measured workload", fontsize=6.6, color=theme.MUTED,
+            ha="left", va="center")
     ax.set_xscale("log")
     ax.set_xlabel("computation as a share of wall time (%)")
     ax.set_ylabel("reduction vs recency-ranked (%)")
     ax.set_xticks([5, 10, 25, 50, 90])
     ax.set_xticklabels(["5", "10", "25", "50", "90"])
-    legend(ax)
+    theme.legend_above(ax, ncol=2)
     fig.tight_layout()
-    save(fig, "fig_compute_sweep")
+    save(fig, "fig-compute-sweep")
 
 
 # ------------------------------------------------------------------ 12 ------
@@ -389,10 +409,10 @@ def fig_ablation():
     b.set_ylabel("share of retention benefit (%)")
     b.grid(axis="x", visible=False)
     b.set_yticks([0, 25, 50, 75, 100])
-    legend(b, loc="center right", ncol=1)
-    b.set_ylim(0, 118)
+    b.set_ylim(0, 108)
+    theme.legend_above(b, ncol=2)
     fig.tight_layout(w_pad=1.4)
-    save(fig, "fig_ablation")
+    save(fig, "fig-ablation")
 
 
 # ------------------------------------------------------------------ 13 ------
@@ -415,12 +435,14 @@ def fig_prefetch_variants():
     ax.set_xticklabels([cols[o].replace(", ", "\n") for o in order])
     ax.set_ylabel("reduction vs recency-ranked (%)")
     ax.grid(axis="x", visible=False)
-    ax.set_ylim(0, max(vals) * 1.2)
+    ax.set_ylim(0, max(vals) * 1.14)
     handles = [plt.Rectangle((0, 0), 1, 1, color=C[0]),
                plt.Rectangle((0, 0), 1, 1, color=C[1])]
-    ax.legend(handles, ["slack only", "may displace"], loc="upper right")
+    ax.legend(handles, ["slack only", "may displace"], ncol=2, frameon=False,
+              loc="lower left", bbox_to_anchor=(0.0, 1.02, 1.0, 0.12),
+              mode="expand", borderaxespad=0.0, handlelength=1.4)
     fig.tight_layout()
-    save(fig, "fig_prefetch_variants")
+    save(fig, "fig-prefetch-variants")
 
 
 # ------------------------------------------------------------------ 14 ------
@@ -451,7 +473,7 @@ def fig_cpu_interference():
     b.set_title("The workers genuinely ran", pad=4)
     b.grid(axis="x", visible=False)
     fig.tight_layout(h_pad=0.8)
-    save(fig, "fig_cpu_interference")
+    save(fig, "fig-cpu-interference")
 
 
 # ------------------------------------------------------------------ 15 ------
@@ -473,9 +495,9 @@ def fig_h_sweep():
     ax.set_ylabel("wall-time reduction (%)")
     ax.set_xticks(H)
     ax.set_xticklabels([f"{int(h)}" for h in H])
-    legend(ax)
+    theme.legend_above(ax, ncol=2)
     fig.tight_layout()
-    save(fig, "fig_h_sweep")
+    save(fig, "fig-h-sweep")
 
 
 # ------------------------------------------------------------------ 16 ------
@@ -495,9 +517,9 @@ def fig_accuracy_sweep():
     ax.text(0.535, -4.4, "measured\nrange", fontsize=6.6, ha="center", color=theme.MUTED)
     ax.set_xlabel("horizon accuracy")
     ax.set_ylabel("reduction vs recency-ranked (%)")
-    legend(ax, loc="upper left")
+    theme.legend_above(ax, ncol=3, fontsize=7)
     fig.tight_layout()
-    save(fig, "fig_accuracy_sweep")
+    save(fig, "fig-accuracy-sweep")
 
 
 # ------------------------------------------------------------------- 7 ------
@@ -543,7 +565,7 @@ def fig_tool_relationships():
     cb.outline.set_linewidth(0.6)
     ax.set_xlabel("offset")
     fig.tight_layout()
-    save(fig, "fig_tool_relationships")
+    save(fig, "fig-tool-relationships")
 
 
 FIGS = {
@@ -563,9 +585,30 @@ FIGS = {
     "accuracy-sweep": fig_accuracy_sweep,
 }
 
+# The section files say \includegraphics{figures/NAME}, resolved relative to
+# main.tex. Copy the PDFs there so a regeneration lands in the paper rather
+# than only in the draft folder.
+INSTALL = [os.path.join(ROOT, "sc-workshop-paper", d, "figures")
+           for d in ("paper_ieee", "paper")]
+
+
+def install():
+    import shutil
+    for dest in INSTALL:
+        os.makedirs(dest, exist_ok=True)
+        n = 0
+        for f in sorted(os.listdir(OUT)):
+            if f.endswith(".pdf"):
+                shutil.copy2(os.path.join(OUT, f), os.path.join(dest, f))
+                n += 1
+        print(f"  installed {n} PDFs -> {os.path.relpath(dest, ROOT)}/")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default=None)
+    ap.add_argument("--no-install", action="store_true",
+                    help="write drafts only; do not copy into the paper trees")
     a = ap.parse_args()
     todo = {a.only: FIGS[a.only]} if a.only else FIGS
     for name, fn in todo.items():
@@ -575,3 +618,5 @@ if __name__ == "__main__":
         except Exception as e:  # keep going; a missing input should not stop the batch
             print(f"  FAILED: {type(e).__name__}: {e}")
     print(f"\nwrote to {OUT}")
+    if not a.no_install:
+        install()

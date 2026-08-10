@@ -69,10 +69,12 @@ why 320~GB and 400~GB perform almost identically.
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:stall-ladder} --- grouped bars, stall seconds per
-arm (\textsc{Never}, \textsc{Lru}, \sysname) at 256~GB/1 slot and
-560~GB/2 slots. Annotate each \sysname{} bar with its reduction over
-\textsc{Lru}.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-stall-ladder.pdf)
+%   grouped bars, stall seconds per arm (\textsc{Never}, \textsc{Lru}, 
+%   \sysname) at 256~GB/1 slot and 560~GB/2 slots. Annotate each \sysname{} 
+%   bar with its reduction over \textsc{Lru}.
+\includegraphics[width=\columnwidth]{figures/fig-stall-ladder}
 \caption{Stall attributable to resource residency, by policy and
 configuration. \sysname{} removes 11.55\% of the stall \textsc{Lru} leaves at
 the production allocation and 50.69\% at a larger budget.}
@@ -99,12 +101,15 @@ every wall-clock claim.
 
 \begin{figure*}[t]
 \centering
-\figspec[0.95\textwidth]{5.0cm}{\textbf{fig:budget-sweep} --- two panels, one
-per device-slot count. $x$ = budget (200--838~GB). Lines: \textsc{Lru} and
-\sysname, both as \% reduction vs \textsc{Never}. Twin right-hand axis:
-binding \% (share of decisions that forced an eviction), shaded. Mark the
-packing thresholds at 283, 445, 562 and 838~GB with vertical rules --- the
-step structure is the point.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-budget-sweep.pdf)
+%   two panels, one per device-slot count. $x$ = budget (200--838~GB). 
+%   Lines: \textsc{Lru} and \sysname, both as \% reduction vs 
+%   \textsc{Never}. Twin right-hand axis: binding \% (share of decisions 
+%   that forced an eviction), shaded. Mark the packing thresholds at 283, 
+%   445, 562 and 838~GB with vertical rules --- the step structure is the 
+%   point.
+\includegraphics[width=0.95\textwidth]{figures/fig-budget-sweep}
 \caption{Wall-time reduction versus budget and device capacity. The shaded
 series is the fraction of decisions in which memory pressure forced an
 eviction; where it reaches zero the arbitration problem has disappeared and
@@ -114,10 +119,13 @@ retaining everything is correct.}
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:compute-sweep} --- $x$ = compute share of wall
-(5.7\%--95.1\%, log). Two lines vs \textsc{Lru}: wall-clock reduction
-(falling) and stall reduction (rising). Mark the measured workload's operating
-point near 5\%. The crossing behaviour is the reading.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-compute-sweep.pdf)
+%   $x$ = compute share of wall (5.7\%--95.1\%, log). Two lines vs 
+%   \textsc{Lru}: wall-clock reduction (falling) and stall reduction 
+%   (rising). Mark the measured workload's operating point near 5\%. The 
+%   crossing behaviour is the reading.
+\includegraphics[width=\columnwidth]{figures/fig-compute-sweep}
 \caption{The same mechanism reported two ways. Wall-clock reduction is diluted
 by compute; stall reduction improves with it, because a longer window hides
 more of a staging operation.}
@@ -197,24 +205,29 @@ permitting displacement yields $+5.91$\%; restricting scope to data artifacts
 yields $+13.10$\%. The safety rule matters more than the scope restriction,
 and neither is a better predictor---both simply bound the cost of being wrong.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\figspec{4.6cm}{\textbf{fig:ablation} --- horizontal cumulative bar,
-\textsc{Never} $\rightarrow$ +model parking $\rightarrow$ +data retention
-$\rightarrow$ +cost-aware arbitration $\rightarrow$ +slack staging, annotated
-with each marginal contribution. Inset or second panel: Shapley split of the
-retention total at 256~GB and 560~GB, showing the reversal.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-ablation.pdf)
+%   horizontal cumulative bar, \textsc{Never} $\rightarrow$ +model parking 
+%   $\rightarrow$ +data retention $\rightarrow$ +cost-aware arbitration 
+%   $\rightarrow$ +slack staging, annotated with each marginal contribution. 
+%   Inset or second panel: Shapley split of the retention total at 256~GB 
+%   and 560~GB, showing the reversal.
+\includegraphics[width=0.95\textwidth]{figures/fig-ablation}
 \caption{Contribution of each mechanism at 256~GB with one device slot, and
 the order-independent split of the retention total at two budgets.}
 \label{fig:ablation}
-\end{figure}
+\end{figure*}
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:prefetch-variants} --- grouped bars at measured
-accuracy: retain-only, data+slack, data+outbid, all+slack, all+outbid, as \%
-vs \textsc{Lru}. Optionally repeat at two accuracies to show the safety rule's
-stability.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-prefetch-variants.pdf)
+%   grouped bars at measured accuracy: retain-only, data+slack, data+outbid, 
+%   all+slack, all+outbid, as \% vs \textsc{Lru}. Optionally repeat at two 
+%   accuracies to show the safety rule's stability.
+\includegraphics[width=\columnwidth]{figures/fig-prefetch-variants}
 \caption{Two independent restrictions on speculative staging: which classes it
 may stage, and whether it may displace a retained resource.}
 \label{fig:prefetch-variants}
@@ -248,10 +261,13 @@ by this experiment.
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:cpu-interference} --- $x$ = concurrent background
-construction processes (0,1,2,4,8). Left axis: foreground median latency,
-flat. Right axis: CPU-seconds consumed by the workers, rising. Plot both ---
-the flatness is only credible next to evidence the workers ran.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-cpu-interference.pdf)
+%   $x$ = concurrent background construction processes (0,1,2,4,8). Left 
+%   axis: foreground median latency, flat. Right axis: CPU-seconds consumed 
+%   by the workers, rising. Plot both --- the flatness is only credible next 
+%   to evidence the workers ran.
+\includegraphics[width=\columnwidth]{figures/fig-cpu-interference}
 \caption{Foreground latency under concurrent background construction. The
 rising CPU-seconds series is reported alongside the flat latency series
 because a null result and a broken probe are otherwise indistinguishable.}
@@ -293,9 +309,12 @@ Section~\ref{sec:prefetch}.
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:h-sweep} --- $x = H$ (60--3000~s, log). Two
-lines: retention (flat) and retention+staging (declining). Shade the region
-around the workload's median inter-need gap.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-h-sweep.pdf)
+%   $x = H$ (60--3000~s, log). Two lines: retention (flat) and 
+%   retention+staging (declining). Shade the region around the workload's 
+%   median inter-need gap.
+\includegraphics[width=\columnwidth]{figures/fig-h-sweep}
 \caption{Sensitivity to the planning horizon $H$. Retention is insensitive;
 staging degrades once $H$ exceeds the window in which a stage can complete.}
 \label{fig:h-sweep}
@@ -303,10 +322,13 @@ staging degrades once $H$ exceeds the window in which a stage can complete.}
 
 \begin{figure}[t]
 \centering
-\figspec{4.2cm}{\textbf{fig:accuracy-sweep} --- $x$ = horizon accuracy
-(0.15--1.00). Three lines vs \textsc{Lru}: retention (flat), slack staging
-(rising, always $>0$), outbid staging (crossing zero near 0.35). Mark the
-measured accuracy band. The zero crossing is the reading.}
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-accuracy-sweep.pdf)
+%   $x$ = horizon accuracy (0.15--1.00). Three lines vs \textsc{Lru}: 
+%   retention (flat), slack staging (rising, always $>0$), outbid staging 
+%   (crossing zero near 0.35). Mark the measured accuracy band. The zero 
+%   crossing is the reading.
+\includegraphics[width=\columnwidth]{figures/fig-accuracy-sweep}
 \caption{Sensitivity to horizon accuracy. Retention and slack staging remain
 beneficial across the range; only displacement-permitting staging is
 accuracy-critical.}
