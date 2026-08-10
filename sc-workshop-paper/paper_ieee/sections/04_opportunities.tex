@@ -21,37 +21,22 @@ policies competing for the same memory.
 
 \subsection{Residency States}
 
-\sysname{} can hold a resource in one of three states, and the arbitrator's job
-is to choose one per resource (Table~\ref{tab:states}).
+A resource sits in one of three states. \emph{Active} is serving---a model
+answering requests on a device, an artifact activated in a live worker.
+\emph{Released} is the opposite: the process is gone and the next use pays
+full construction. Between them is \emph{held}, the state the arbitrator
+budgets, in which the resource is not serving but the expensive part of making
+it usable has been paid and is being kept. For a model that is parked weights
+with the serving process, device context and allocator still alive, so
+returning to active is a wake rather than a boot---782~s becomes 2.1~s. For an
+artifact it is a resident worker holding the parsed structure across
+invocations.
 
-\begin{table}[tb]
-\centering\small
-\begin{tabular}{@{}lll@{}}
-\toprule
-State & Model & Data artifact \\
-\midrule
-Active   & serving on device      & activated in a live worker \\
-Held     & weights in host memory & activated structure retained \\
-Released & process terminated     & worker terminated \\
-\bottomrule
-\end{tabular}
-\caption{Residency states. \emph{Held} is the state the arbitrator budgets:
-it costs host memory and makes the next use cheap.}
-\label{tab:states}
-\end{table}
-
-For a model, the held state parks weights in host memory while keeping the
-serving process, its device context and its allocator alive; returning to
-active is a wake rather than a boot, and in our deployment reduces a 782~s
-cold start to 2.1~s. For a data artifact, the held state is a resident worker
-process that keeps the parsed, in-memory structure across tool invocations, so
-a subsequent use skips construction entirely.
-
-The two held states are the same kind of object as far as the operating system
-is concerned: anonymous memory belonging to a live process, invisible to any
-file-backed cache and chargeable to one allocation. That is why a single
-arbitrator manages both, and why the choice between them is a real one---a
-parked model and a retained database compete for exactly the same bytes.
+Held is the only state that costs host memory, and its two forms are the same
+object to the operating system: anonymous memory in a live process, invisible
+to any file-backed cache and charged to one allocation. Hence one arbitrator
+for both---a parked model and a retained database compete for exactly the same
+bytes.
 
 \subsection{The Retention Arbitrator}
 

@@ -157,9 +157,8 @@ reporting stall and end-to-end wall time, isolating each mechanism's
 contribution, measuring the CPU cost resident workers impose on foreground
 agent work, and characterizing sensitivity to the planning horizon,
 accelerator topology, and predictor accuracy. We compare against a runtime
-that retains nothing, a recency-ranked policy that already retains both
-resource classes, and a state-of-the-art DMSH system in both naive and
-agentic-framework-adapted form. We report against both baselines throughout,
+that retains nothing and a recency-ranked policy that already retains both
+resource classes. We report against both throughout,
 because retention alone is obtainable from an inference server and a
 persistent worker process; what the recency-ranked baseline lacks is
 value-aware arbitration.
@@ -189,8 +188,9 @@ resource only under strict conditions.
 across representative agentic HPC workflows. Compared to a runtime that
 retains nothing, \sysname{} reduces end-to-end wall time by 34.5--50.8\%;
 compared to a recency-ranked baseline that already retains both classes, by a
-further 10.3--17.1\%. On a workflow where a DMSH baseline instead increases
-wall time by $3.2\times$, \sysname{} is indistinguishable from the unmodified
-baseline.
+further 10.3--17.1\%. We attribute the result to each mechanism separately and
+report where each stops working---retention cannot help a first use, staging
+cannot help without a window, and above roughly 86\% of the total footprint
+neither is needed.
 
 \end{itemize}

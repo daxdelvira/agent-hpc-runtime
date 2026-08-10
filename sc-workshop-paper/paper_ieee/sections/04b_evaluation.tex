@@ -12,11 +12,14 @@
 %
 %   Stall Reduction     -> 02_budget_sweep.md
 %   End-to-End Runtime  -> 02_budget_sweep.md, 03_compute_sweep.md
-%   DMSH comparison     -> results/eval_q1_q4/eval_q1_summary.csv (MEASURED),
-%                          faceted to gpu_name == "NVIDIA L40S"; stall classes
-%                          from eval_stall_taxonomy.csv. The ONLY measured
-%                          end-to-end subsection. Do not let it be pooled
-%                          across accelerator generations.
+%   (The DMSH comparison subsection was REMOVED. Its numbers now appear in
+%    sections/03_problem.tex, supporting the claim made there rather than
+%    occupying an evaluation subsection. Source is unchanged:
+%    results/eval_q1_q4/eval_q1_summary.csv, faceted to
+%    gpu_name == "NVIDIA L40S", stall classes from eval_stall_taxonomy.csv.
+%    Do not let those be pooled across accelerator generations. Removing the
+%    subsection also removed the only MEASURED end-to-end number for this
+%    system -- everything below is simulation except CPU interference.)
 %   Ablations           -> 01_attribution_ladder.md, 06_prefetch_variants.md
 %   CPU interference    -> results/bench_preactivation_interference.json and
 %                          results/bench_potential_activation_rusage_*.json
@@ -68,9 +71,9 @@ Results are trace-driven simulation over measured resource constants. Park
 footprints, cold-boot and wake costs, activated sizes and per-format
 construction rates are measured on hardware; schedules and the clock are
 synthetic. Each reported value averages 3 popularity orderings $\times$ 2
-schedule populations $\times$ 10 schedules of 48 resource needs. The
-comparison against a byte-oriented tiering system
-(Section~\ref{sec:dmsh}) is measured end-to-end and is marked as such.
+schedule populations $\times$ 10 schedules of 48 resource needs. The CPU-cost
+subsection is the exception: it is measured directly on hardware and is marked
+as such.
 
 We report against two baselines. \textsc{Never} retains nothing: a displaced
 model is terminated and a data artifact is reconstructed on every use. It is
@@ -116,58 +119,6 @@ operation. Our measured workload sits near the low-compute end, spending
 280.3~s of a 5288.5~s trial on agent work, so we attach the compute share to
 every wall-clock claim.
 
-
-\subsection{Comparison with Byte-Oriented Tiering}
-\label{sec:dmsh}
-
-Unlike the rest of this section, the results here are measured end-to-end on
-hardware rather than simulated.
-
-We compare against a state-of-the-art DMSH system on a workflow selected for
-contrast: its inter-step gaps are short, so there is structurally very little
-opportunity to overlap staging with computation. The DMSH arms ran only on
-L40S nodes, so every row of Table~\ref{tab:dmsh} is restricted to that
-partition. Pooling accelerator generations is not admissible here---identical
-work has been measured to differ by up to $2.3\times$ across node types---and
-the pooled figure would overstate the contrast.
-
-\begin{table}[tb]
-\centering\small
-\begin{tabular}{@{}lrrrl@{}}
-\toprule
-Configuration & $n$ & Wall (s) & $\times$base & Dominant stall class \\
-\midrule
-Baseline            & 9 & $270.8 \pm 52.3$  & 1.00 & no prefetch \\
-\sysname{}            & 9 & $300.4 \pm 61.8$  & 1.11 & \texttt{no\_window} \\
-DMSH, informed      & 7 & $862.2 \pm 230.9$ & 3.18 & \texttt{window\_too\_small} \\
-DMSH, random        & 7 & $796.4 \pm 90.0$  & 2.94 & \texttt{window\_too\_small} \\
-\bottomrule
-\end{tabular}
-\caption{Measured end-to-end wall time on L40S nodes for the short-window
-workload. The DMSH system's informed and random staging variants are
-statistically indistinguishable from one another.}
-\label{tab:dmsh}
-\end{table}
-
-The DMSH system increases end-to-end wall time by $3.18\times$, and the
-increase is unambiguous ($t = +6.65$). More informative than the magnitude is
-the reason. Every stall it incurs classifies as \texttt{window\_too\_small}:
-the system identified data to stage and began staging it, but the interval
-before the need was too short to complete the transfer. Consistent with that
-diagnosis, replacing its staging decisions with random ones does not make it
-worse---the two variants are statistically indistinguishable ($t = +0.70$).
-The failure is therefore not mis-prediction, which better prediction would
-address, but the absence of a window, which it would not.
-
-The same workload bounds what any staging-based approach can achieve on it:
-an oracle arm with perfect hindsight still classifies 100\% of its stalls as
-\texttt{no\_window}. \sysname{} is not statistically separable from the
-unmodified baseline here ($t = +1.10$, on a point estimate 11\% higher), which
-is the intended behaviour---where there is no window to exploit and little
-reuse to retain, the system should cost approximately nothing rather than pay
-for speculation that cannot repay it. We report this workload precisely
-because it is the adverse case for our own mechanism as well as for the
-baseline we compare against.
 
 \subsection{Ablations}
 

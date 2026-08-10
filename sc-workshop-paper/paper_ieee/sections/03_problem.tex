@@ -56,6 +56,19 @@ share of runs of an identical task that take the modal action at each step
 index. Agreement never exceeds 60\%: the same request produces materially
 different executions, and agentic workflows are functionally nondeterministic.
 
+That nondeterminism removes the window a staging system depends on. Measured
+against a state-of-the-art DMSH system on a workflow with short inter-step
+gaps, wall time rises $3.18\times$ over the unmodified baseline ($t = +6.65$;
+L40S nodes only, unpooled, since identical work differs by up to $2.3\times$
+across node types). Every stall it incurs classifies as
+\texttt{window\_too\_small}: it identified data to stage and began staging, but
+the interval before the need was too short to finish. Replacing its staging
+decisions with random ones does not make it worse ($t = +0.70$), so the
+failure is not mis-prediction---which better prediction would fix---but the
+absence of a window, which it would not. An oracle with perfect hindsight
+still classifies 100\% of its stalls as \texttt{no\_window}, bounding what any
+staging-based approach can recover here.
+
 \paragraph{Agents Add Memory Pressure.}
 The problem is compounded because the agents themselves are
 multi-billion-parameter models occupying 2--200~GB. Loading weights from disk
