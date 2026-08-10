@@ -1,0 +1,214 @@
+//01_intro.tex
+Agentic workflows based on artificial intelligence (AI) are quickly revolutionizing high-performance computing (HPC), making it possible for machine learning algorithms to control the flow of HPC workflows and allowing them to be more accurate and/or flexible. In a standard HPC workflow, a series of program-defined computational phases (modeling, simulation, analysis, visualization, etc.) ingest and produce data toward an end scientific result. An agentic workflow, by contrast, is a computational workflow in which one or more AI agents—software components that use AI to make independent decisions on behalf of users—observe intermediate data results during execution and dynamically select the next phase(s). Agentic workflows have proven beneficial in various scientific fields, such as molecular dynamics, alloy discovery, and computational chemistry. For instance, agents that selectively prune data to limit simulation to high-potential pathways (protein configurations, material models, etc.) lead to significant performance gains, such as in DeepDriveMD, where performance improved by 2.33×. Other agentic workflows increase the flexibility of HPC workflows, allowing them to leverage out-of-domain knowledge to automate processes previously limited to human experts, such as metallic alloy design.
+
+However, agentic workflows fundamentally challenge several key assumptions on which existing memory and storage management in high-performance computing systems are based. In particular, workflow phases are expected to proceed synchronously, reuse predictable data, and have one source of direction or control. This poses a problem because scientific simulations ingest and produce large amounts of data—sometimes more than O(100 TB)—and therefore cannot feasibly hold all the data required for the workflow in CPU RAM or GPU VRAM at once, depending on the compute step. This manifestation of the infamous “memory wall” problem results in longer overall wall time for workflow executions and processing-unit idle time, during which processing units incur energy and financial costs while performing no simulation work. Simply adding DRAM is a costly measure that does not scale easily across scientific workflows. Traditional HPC workflows could have their data needs fully predicted by inserting “hints” into the workflow’s source code. Agentic workflows have no such—or highly limited—source code because decisions that would have been defined in the program’s flow of control are instead made at runtime. Not only does this revive the memory-wall problem faced by all HPC workflows, but the various specialized LLMs backing different agents within a workflow add further memory pressure, since the parameters for each model can occupy hundreds of gigabytes.
+
+In traditional HPC workflows, prior solutions leveraged predictable phase-based execution to expose a unified memory-and-storage hierarchy to the workflow, prefetching relevant data from storage and placing it in memory before the phase in which it was needed. Overlapping data movement for the next phase with computation in the current phase allowed storage to be used as an extension of memory for data-intensive workflows without exposing the overheads of storage access. This “Deep Memory and Storage Hierarchy” (DMSH) could be presented to applications as a massive memory pool without incurring significant performance penalties. As illustrated in Fig. intro_behavior, this approach has worked for traditional HPC workflows because each phase has known inputs and outputs. The required data is therefore known before each phase begins, allowing retrieval to overlap with computation in the preceding phase. In agentic workflows, the inputs for a given phase—or even the ordering of the phases themselves—are not available until a steering model produces control decisions, which may be delayed, incrementally produced, and sporadic.
+
+This means prior work that uses storage to extend memory for non-agentic HPC workflows cannot prefetch the correct data for each step in agentic HPC workflows. These systems must rely on deterministic data-selection policies designed for non-AI-steered workflows. On our tested workloads, every stall these systems incur occurs because the staging window is too small to hide the transfer: the data need becomes visible only after the agent has committed to it. Agentic workflows consequently stall while the required data is fetched from storage into memory. Incorrectly prefetched data also pollutes the memory cache when it is read but not used in the next workflow phase. The result is that a state-of-the-art DMSH system increases end-to-end wall time by 3.2× on our workloads rather than decreasing it as it does for traditional workflows.
+
+Because DMSH solutions are not broadly applicable to agentic workflows, the performance challenges introduced by these workflows translate into economic and sustainability concerns for scientific computing infrastructures. HPC systems operate under strict power, memory, and budget constraints, where idle accelerators and unnecessary data transfers lead to greater operational costs and higher energy consumption. Simply scaling DRAM capacity or storage bandwidth to accommodate dynamic data-access patterns is rarely feasible, especially for research institutions operating fixed on-premise infrastructure or handling sensitive data that cannot be exposed to externally hosted services. Efficient data movement therefore becomes a first-order systems concern rather than a secondary optimization. At the same time, agentic workflows offer the potential to accelerate scientific discovery through adaptive experimentation and automated decision-making. Enabling these workflows to run efficiently within realistic resource constraints therefore represents a systems challenge with broad scientific impact.
+
+Designing a memory and storage management system that enables efficient agentic HPC workflows requires addressing several challenges. First, most of the cost of making scientific data usable is not byte movement: in the artifact we decompose directly, 93.0% of the cost is representation change performed inside the consumer process, and no amount of correctly placed bytes removes it. Second, transformed scientific data structures and the parked weights of the models backing the agents are both anonymous process memory drawn from a single allocation, so they compete directly. A gigabyte of retained memory is not uniformly valuable, with the seconds of stall avoided per gigabyte retained spanning 65× across representations. Third, information about what the workflow will need next is available only at coarse and fine granularities that are individually insufficient and remain imperfect in aggregate. Speculative work must therefore be bounded so that an incorrect prediction cannot destroy a correct retention decision.
+
+To address these challenges, we propose Tandem, a middleware runtime that manages a host-memory budget shared by the models backing an agentic workflow and the scientific data consumed by its tools. Tandem contains (1) a retention arbitrator that decides which models and transformed data structures remain resident between uses and (2) an opportunistic prefetcher that stages resources ahead of need using memory that the arbitrator has not claimed.
+
+The retention arbitrator treats residency as a budgeted choice rather than applying a fixed priority across resource classes. Both classes can be held in a state that makes their next use inexpensive: a model’s weights can be parked in host memory, turning a 782 s cold start into a 2.1 s wake, while a parsed artifact can be retained in a live worker, turning a 93.7 s reconstruction into a 10.6 s reuse. Both charge the same memory allocation. Because held resources cannot be partially surrendered, the arbitrator solves a subset-selection problem rather than evicting one victim at a time. It ranks candidates by the seconds of stall avoided per gigabyte held and discounts each candidate according to the time until it is next required. Relative to a runtime that retains nothing, Tandem reduces end-to-end wall time by 34.5% at our production allocation and by 50.8% with additional accelerator capacity. Relative to a recency-ranked baseline that already retains both resource classes, it reduces wall time by a further 10.3–17.1%. We report both because retention alone is obtainable from an inference server and a persistent worker process; what the recency-ranked baseline lacks is value-aware arbitration.
+
+The opportunistic prefetcher provides what retention structurally cannot: a first use of a resource has nothing to retain. It draws time-to-next-need estimates from a lightweight predictor that combines a planning agent’s declared sequence with learned tool-to-tool succession. By default, it stages resources only into memory that the arbitrator has left unclaimed. This restriction makes speculation safe at realistic prediction quality: a stage that consumes only unclaimed memory cannot displace a more valuable retention, so its downside is bounded by wasted bandwidth rather than a lost retention. Displacement is permitted only under a conjunction of strict conditions. Staging contributes a further 1.6 percentage points at the production allocation, and its share grows with the number of distinct resources a workflow touches.
+
+We evaluate Tandem in terms of stall reduction and end-to-end wall time, isolate the contribution of each mechanism, measure the CPU cost that resident worker processes impose on foreground agent work, and characterize sensitivity to the planning horizon, accelerator topology, and predictor accuracy. We compare against a runtime that retains nothing, a recency-ranked retention policy that already retains both resource classes, and a state-of-the-art DMSH system evaluated both as naively implemented and as adapted to account for agentic framework specifics, using workflows built with the AtomAgents framework.
+
+
+The main contributions of our paper include:
+
+* We conduct a detailed analysis of memory and storage behavior in agentic HPC workflows, showing that assumptions underlying existing deep memory and storage hierarchy (DMSH) systems break down under AI-driven control. We further show that byte placement is the wrong unit of work for these workflows: 93.0% of the cost of making a scientific artifact usable is representation change performed inside the consumer process, and the value of a gigabyte of retained memory varies by 65× across representations.
+
+* We present Tandem, a middleware runtime for agentic HPC workflows that manages agent-backing models and transformed scientific data against a single host-memory budget. Tandem combines a retention arbitrator that treats residency as a subset-selection problem—ranking candidates by stall avoided per gigabyte held, discounted by time to next use—with an opportunistic prefetcher that stages into unclaimed memory and may displace a resident resource only under strict conditions.
+
+* We demonstrate that Tandem reduces stall and end-to-end execution time across representative agentic HPC workflows. Compared to a runtime that retains nothing, Tandem reduces end-to-end wall time by 34.5–50.8%; compared to a recency-ranked baseline that already retains both classes, by a further 10.3–17.1%. On a workflow where a DMSH baseline instead increases wall time by 3.2×, Tandem is indistinguishable from the unmodified baseline.
+
+//02_background.tex
+Background and Related Work
+Traditional vs. Agentic Scientific Workflows
+High Performance Computing workflows consist of multi-stage applications that produce and manipulate data in multiple discrete phases to produce an end result or insight. A phase typically corresponds to a computational task (e.g., a simulation, analysis, or visualization step) that consumes data produced by previous phases and generates data for subsequent ones. For instance, workflow meant to discover new alloys could involve preparing alloy structures in one phase, running Density Functional Theory calculations on each, and then aggregating/visualizing the data. Sometimes these phases may be cyclical, with phases repeating in a set order, where the outputs of one series of phases become the inputs to the next. Common high-impact HPC workflows include protein and alloy discovery, astronomical simulation, and fluid dynamics workflows. The use of these workflows to simulate, analyze, and derive insights from data has led to significant advances in multiple scientific fields, including the discovery of new proteins for medical applications, analysis and identification of cosmological phenomena such as supernovae in massive telescope data streams, and rapid speed-ups of prototyping for fluid-dependent systems in fields such as aerospace engineering.
+Prior Solutions for Memory Bottlenecks
+Despite their advantages for scientific progress, HPC workflows face a key challenge: their operations on massive datasets lead to an imbalance between the efficiency of compute hardware and memory bandwidth. Workflows often involve multi-GB datasets that can balloon quickly as simulation steps produce more data from their initial inputs (e.g., 100,000 atoms having their energy interactions for every 1 ns step simulated by a protein folding program). This data can easily make an HPC workflow’s data “out-of-core” for part or all of a workflow, meaning the data is too large to fit in RAM all at once. This results in data movement costs, and the infamous “memory wall”: HW flops have scaled 60000x in the past 20 years, while DRAM bandwidth has only scaled 100x and interconnect bandwidth 20x in the same timespan. While some HPC sites have addressed this by scaling their DRAM, the financial and energy cost of this scaling makes it unsustainable.
+In recent work, the solution to this issue has come in the form of software distributed shared memory (DSM) systems that present tiered memory and storage resources as an “infinite memory pool”, often referred to as a Deep Memory and Storage Hierarchy (DMSH). This system relies on the predictable phase-based nature of HPC workflows in order to handle both the organization of data across the memory and storage hierarchy and ensure coherency without infeasible overhead. Information about phase intent/accesses allows data to be staged proactively, placed across the hierarchy intelligently, and prefetched while other computation is running to ensure no idle computational resources. For example, if a simulation phase is known to consume a particular trajectory, a DMSH data staging system can begin loading that data from storage while the preceding analysis phase is still executing, hiding most of the I/O latency behind computation. Intent and expected accesses are transmitted to the system via API.
+Workload Description
+AtomAgents. AtomAgents is a multi-agent materials discovery framework built on AutoGen that combines LLM reasoning with physics-based simulation tools such as LAMMPS. Specialized agents collaborate to plan, execute, and refine scientific workflows by invoking simulation tools through function-calling interfaces. Each tool invocation represents a workflow phase whose required simulation inputs, intermediate datasets, and even successor phases are determined only after the agents complete their reasoning.
+
+//03_problem.tex
+Gaps, Insights and Opportunities
+Agents Break Existing HPC DMSH Solutions
+Agents Create Workflow Nondeterminism. Although their impact on scientific goals is significant, AI-steered HPC workflows break a fundamental assumption made by memory-storage software DSM systems about scientific HPC workflows: that of predictable phases and data accesses. AI steering agents make independent choices about which data will be used for computation in an upcoming phase (and in some cases even about which phases will be triggered). As a result, prior systems that treat storage as an extension of memory are unable to prefetch the correct data for each step in agentic HPC workflows because they rely on the definition of deterministic phases in an HPC workflow program. This leads to stalls while the required data is fetched from storage into memory. Figure predictability demonstrates the proportion of runs of the same workflow that deviate from the most common action taken at a given step index. With only 30-60% agreement at any given step, it  exemplifies that even given the exact same task to investigate, agentic frameworks will produce significantly different behavior. Functionally, agentic workflows are not deterministic.
+Agents Add Memory Pressure. To make matters worse, the core problem these solutions address is compounded in AI-steered workflows because AI agents comprise multi-billion-parameter models requiring anything from 2-200GB of space (for most common models). The loading of model weights from disk all the way to GPU VRAM is some of the most expensive loading work in a workflow, and as such agentic workflows typically offload models that may be reused later onto CPU RAM. However, this means models are now in competition with the scientific data they work with for the RAM resources available, exacerbating the memory pressure HPC workflows experience. Figure replacement-loss shows a visual workflow timeline against the page cache hits of a workflow over time, showing how typical “weight-parking” behavior can cycle useful data out of RAM.
+Agents Rely Heavily On Data Transformations. Data used by agentic tools must undergo a representation change. A representation change is work that produces a structure the consumer could not have obtained by placing bytes. In other words, if the in-memory structure the consumer requires is byte-identical to some contiguous range of the file — modulo a header — then making it usable is placement. Otherwise the structure is a computed function of the file, and producing it is a representation change. These representation changes are responsible for 93% on average of the stalls caused by waiting for data staging. Because the product of a representation change is a computed structure rather than a range of a file, it cannot be named, staged, or evicted by a byte-oriented tier at all: it exists only as anonymous memory inside a live consumer process. Parked model weights have the same property, for the same reason. The ceiling on a placement-oriented system is therefore set by which rungs of the cost chain its interface can reach, not by how accurately it predicts — no improvement in prediction moves a cost the interface cannot express. And because the retained structure and the parked model both occupy anonymous memory drawn from a single allocation, the question these workflows pose is not which bytes to fetch but which structures to keep, and — when they cannot all be kept — which of them a gigabyte of memory is better spent on.
+
+
+Not Every GB Retained Is Equally Valuable
+
+If retention is the action, a scheduler needs a price: how many seconds of future stall a gigabyte of held memory buys. That price is not uniform, and it is non-uniform in a way that rules out any fixed policy. Holding logical content fixed — the same array, bit for bit, in six serialisations — the seconds saved per gigabyte retained span 65×, from 22.0 for ASCII numeric text to 0.34 for a memory-mappable binary layout (Figure sgb-spread). Model weights occupy a far narrower band of 2.78–3.81, and for a structural reason: a model's cost is dominated by moving bytes at roughly fixed bandwidth, so it is near-linear in size and its price per gigabyte is nearly constant. Data has no such anchor, because the cost of a representation change is set by the decoder rather than by the byte count.
+
+The consequence is that models land in the middle of the data range rather than above or below it. Some artifacts are worth an order of magnitude more per gigabyte than any model; others are worth almost nothing. A fixed class priority — models first, or data first — is therefore wrong at one end of the range or the other, and the correct ordering is recoverable only by pricing each resource individually.
+
+Two properties make that pricing practical. First, the price is a property of the representation rather than of the instance: across a 4× size range it is flat to within 1.00–1.16×, so it can be measured once per format and reused without profiling. Second, there is a floor. Materialising any structure into a process address space costs roughly 0.32 s/GB regardless of format, so a resource whose price approaches that floor performs no transformation at all, and retaining it buys nothing that placement would not.
+
+Value-Aware Retention vs. Prefetching Depend on Hardware Topology and the Inter-need Gap
+
+Retention and speculative staging are not two implementations of one idea; they serve disjoint populations of stalls. Retention can only help a resource used more than once — a first use has nothing to retain — while staging is the only mechanism that can help a first use at all. Which dominates is therefore set by reuse density: resource needs per distinct resource.
+
+That quantity moves with scale. Holding schedule length fixed and growing the resource population from 5 to 28, the share of needs that are first uses rises from 10.4% to 32.3%, and the advantage shifts correspondingly from retention toward staging (Figure scale-sweep). The shift is structural rather than a matter of prediction quality: an oracle-informed retention policy because the misses it could convert are progressively not there to convert.
+
+Hardware topology moves the balance a second way, and in both directions. Accelerator capacity and host memory are separate budgets, and a model actively resident on an accelerator charges neither. Adding accelerator capacity th models most worth retaining, leaving a less-used remainder to compete for host memory and shrinking what value-aware arbitration can recover. Host memory behaves symmetrically: once the budget is large enough that nothing is ever evicted — in our configuration at roughly 86% of the total problem disappears and retaining everything is correct. Budget also buys value in steps rather than smoothly, since additional memory pays only when it crosses a threshold admitting one more resource (Figure topology-budget).
+
+Finally, the inter-need gap bounds what staging can achieve. A sta construction cost as fits into the window before the need arrives, so the same mechanism captures more as computation between tool calls grows. Retention has no such dependence — its saving is the full construction cost whenever the resource is next used. The two mechanisms are thus that vary in practice, which is the case for arbitrating them jointly rather than choosing one.
+
+Speculative Value-Ranking Opportunities
+Local transition structure survives workflow-level nondeterminism. Agentic workflows are dynamic in the large but structured in the small: tools exhibit high-confidence k-offset successor relationships, in which one tool consistently follows another a fixed number of invocations later. Not every tool has such a successor at every offset, but nearly every tool has one at some offset. Figure~\ref{fig:tool-relationships} shows this for AtomAgents at both framework and workflow level — restricting to $k \in [0,5]$, both workflows contain numerous relationships with empirical confidence between 0.9 and 1.0. Critically, these relationships persist across substantially different prompts and objectives within a framework, so traces from prior, unrelated executions supply useful priors on the first run of a workflow never seen before.
+Plans predict order, not distance. Frameworks organised by a planner agent expose a second, longer-range signal: a natural-language plan naming the tools to be invoked and their intended order. In AtomAgents these plans predict 95% of tool orderings correctly (Figure~\ref{fig:plan-accuracy}), far enough ahead to begin staging resources whose construction would otherwise be exposed. What they do not supply is distance: agents insert additional calls to recover from syntax errors and retry failures, so the observed trace diverges from the planned offsets even when the order is right. Plans therefore reach far but locate poorly, while local transitions locate well but do not reach — which is why the two are used together.
+
+
+//04_system.tex
+Design of sysname
+
+System Overview
+
+Tandem is a runtime that manages a single host-memory budget shared by two kinds of resource: language models backing an agent's reasoning and tool-calling steps, and the scientific data artifacts those tools consume. It has two components.
+
+The retention arbitrator decides which resources remain resident between uses, and at which level. It is the primary component and it acts at every point where memory pressure forces a choice. The opportunistic prefetcher moves resources toward residency ahead of need, and is deliberately subordinate: it consumes memory that retention did not claim, and may displace a resident resource only under a conjunction of strict conditions.
+
+Both components score candidates with one value function, so a decision to stage something and a decision to keep something are directly comparable rather than governed by separate policies competing for the same memory.
+
+Residency states
+
+Tandem can hold a resource in one of three states, and the arbitrator's job is to choose one per resource (Table states).
+
+State | Model | Data artifact
+Active | serving on device | activated in a live worker
+Held | weights in host memory | activated structure retained
+Released | process terminated | worker terminated
+
+Residency states. Held is the state the arbitrator budgets: it costs host memory and makes the next use cheap.
+
+For a model, the held state parks weights in host memory while keeping the serving process, its device context and its allocator alive; returning to active is a wake rather than a boot, and in our deployment reduces a 782 s cold start to 2.1 s. For a data artifact, the held state is a resident worker process that keeps the parsed, in-memory structure across tool invocations, so a subsequent use skips construction entirely.
+
+The two held states are the same kind of object as far as the operating system is concerned: anonymous memory belonging to a live process, invisible to any file-backed cache and chargeable to one allocation. That is why a single arbitrator manages both, and why the choice between them is a real one — a parked model and a retained database compete for exactly the same bytes.
+
+The Retention Arbitrator
+
+At each decision point the arbitrator selects the set of resources to leave in the held state. Let g(r) be the memory r occupies while held, B the budget, and Δt(r) the estimated time until r is next required. Writing cold(r) for the cost of producing r from scratch and ready(r) for the cost of resuming it from the held state, the saving retention buys is cold(r) - ready(r).
+
+Ranking on that saving alone is not enough, because it is indifferent to when the resource is next needed: a resource required in ten seconds and one required in three hours would compete equally for the same memory, and the budget fills with resources that will not be used soon. Ranking on saving per unit of time-to-use is not enough either, since it collapses the difference between a large saving and a small one whenever both are imminent.
+
+Tandem resolves this with an explicit planning horizon H:
+
+v(r) = (cold(r) - ready(r)) · H / max(Δt(r), H)
+
+and ranks by value density v(r)/g(r) — seconds of stall avoided per gigabyte held.
+
+H is what makes the two regimes behave differently, and the system cannot do without it. Inside the horizon, resources are compared on absolute seconds saved: everything in that window is going to be needed soon, so the question is simply which resource saves the most, and a small imminent candidate does not get to outrank a large one merely by being sooner. Outside the horizon, value decays as H/Δt, so a resource that will not be touched for a long time surrenders its memory to one that will. A system without H has to pick one of these behaviours globally and gets the other regime wrong.
+
+H also gives the prefetcher and the arbitrator a shared notion of “soon,” which is what allows staging and retention to be scored in one currency (Section prefetch). It is a tunable, and the natural setting is on the order of the workflow's typical inter-step gap.
+
+Selection under indivisibility
+
+Held resources cannot be partially surrendered. Half a model's weights serve no requests, and a partially retained structure does not answer queries, so release is all-or-nothing. Selection is therefore a subset choice under a capacity constraint rather than a sequence of independent evictions, and Tandem evaluates it as one: it searches for the highest-value set that fits, rather than repeatedly discarding the worst-ranked resident. The distinction matters whenever admitting one large resource requires releasing two smaller ones — a decision single-victim eviction cannot express. Algorithm arb states the resulting decision procedure.
+
+Ties are broken toward the smaller total footprint, so equal value never costs extra budget.
+
+Horizon estimation
+
+The arbitrator's only external input is Δt(r), and Tandem obtains it from two sources at different granularities.
+
+Coarse. Agentic workflows are organised by a planner that commits to a sequence of steps before executing them. That plan is a long-range but incomplete signal: it names the tools the workflow intends to run and their order, which reaches far ahead, but agents routinely execute steps the plan does not enumerate and depart from it under tool failures or intermediate results.
+
+Fine. A transition model built from observed executions supplies the local complement: a distribution over the immediate successors of the current step. This is short-range but covers exactly the region where the plan is silent or has been departed from.
+
+The two are merged into a single predicted step sequence — the plan supplying structure, the transition model filling and correcting it near the present — and each step carries an expected duration. A position in that sequence therefore converts to a time, and Δt(r) is the summed expected duration of the steps between now and the earliest predicted step that requires r. Because the two sources may disagree, each estimate carries a confidence derived from their agreement and from the sharpness of the successor distribution; the arbitrator applies it as a weight, so an uncertain horizon perturbs a ranking rather than forcing a decision.
+
+One property of this estimator is load-bearing for the arbitrator. Lookahead is bounded, so the predictor reports not required within H rather than not required again. The arbitrator treats the two very differently: the first is a low rank that still competes for spare memory, while the second would be licence to discard. Preserving that distinction keeps a resource eligible whenever the budget has room for it, independently of how far ahead the estimate can see.
+
+Residency decision
+
+Input: candidates R, budget B, horizons Δt(·)
+
+For each r ∈ R currently held or active:
+wᵣ ← v(r) (Equation value, retention)
+
+For each r ∈ StageCandidates:
+wᵣ ← vstage(r) (same currency)
+
+S ← arg max ∑r ∈ S wᵣ subject to ∑r ∈ S g(r) ≤ B
+
+Release held \ S; hold S \ held.
+
+Device capacity
+
+A model actively serving on an accelerator holds its weights in device memory and does not charge the host budget. The arbitrator therefore treats device residency as a separate, smaller capacity, and considers for host retention only what has been displaced from it. The two capacities are managed together: releasing a model from the device is what creates a candidate for the held state, and the arbitrator decides in the same step whether that candidate is worth its host memory or should be released outright.
+
+The Opportunistic Prefetcher
+
+The arbitrator acts on resources the workflow has already used. The prefetcher acts on resources it has not: drawing on the same horizon estimates (Section horizon), it moves a resource toward residency before the need arrives, so that construction or transfer overlaps computation rather than blocking it.
+
+Staging is scored in the same currency as retention, with one difference in how the saving is computed. Retention saves the full cold(r) - ready(r) whenever the resource is next used, because the work is already done. Staging saves only as much of that cost as fits in the interval before the need — a stage that gets halfway leaves the remainder exposed. Its benefit is therefore capped by Δt(r), and Equation value applies to that capped quantity. Sharing H across both is what puts them on one scale: within the horizon they are compared as seconds saved, so a small imminent stage cannot outrank a large retention simply for being nearer.
+
+Slack first
+
+The prefetcher's default is to consume only slack: memory the arbitrator has left unclaimed. If the resource does not fit in unused budget, the stage is abandoned rather than funded by displacing something resident.
+
+This is the operating mode for the large majority of staging decisions, and it is what makes speculation safe here. A stage that consumes only slack has its downside bounded by wasted bandwidth — it cannot cost a retention that would have been worth more — so its expected value stays positive across a wide range of horizon quality rather than requiring precision to break even. Where a conventional prefetcher's value scales with accuracy, slack staging's does not, because the memory it uses had no competing claim.
+
+The outbid path
+
+Restricting staging to slack forgoes cases where a stage genuinely is worth more than an incumbent. Tandem permits displacement, but only when every one of the following holds:
+
+1. Margin, not tie. The stage's value density must exceed the incumbent's by a configured margin, so that estimation noise alone cannot reorder them.
+
+2. Completable. The predicted window must be long enough to finish the stage before the need. A stage that cannot complete converts a certain retention into a partial, speculative saving.
+
+3. Incumbent not imminent. The displaced resource's own horizon must lie beyond H — outside the window in which the system compares candidates on absolute savings.
+
+4. Confidence. The horizon estimate must carry confidence above a threshold, since displacement is the one staging action whose cost is not bounded by slack.
+
+The conditions are conjunctive and deliberately conservative. Their combined effect is that the prefetcher behaves as a slack consumer under normal conditions and acquires the ability to displace only when the evidence is strong and the incumbent is demonstrably idle — so the arbitrator, not speculation, remains in control of the budget.
+
+
+
+//05_evaluation.tex
+Stall Reduction
+
+At the production 256 GB allocation with a single device slot, LRU removes 26.97% of the Never baseline's wall time and the full system removes 34.49%, eliminating a further 11.55% of the stall LRU leaves behind (Figure stall-ladder). The margin widens as the budget admits more of the working set: at 560 GB with two slots the system removes 50.69% of LRU's residual stall. Figure budget-sweep shows the effect across the full budget range, together with the fraction of decisions in which memory pressure actually forced an eviction. That fraction is the more informative axis: it falls from 35.2% at 200 GB to 0.0% by 720 GB, and where it reaches zero the correct policy is to retain everything and no arbitration is required. Budget also buys performance in steps rather than smoothly, since additional memory is only useful when it crosses a threshold admitting one more resource — which is why 320 GB and 400 GB perform almost identically.
+
+End-to-End Runtime
+
+The system reduces end-to-end wall time by 34.49% against Never and 10.30% against LRU at 256 GB with one slot, rising to 50.81% and 17.09% with two (Figure budget-sweep).
+
+These wall-clock figures are a function of how much real computation the workload performs between tool invocations, and we report that dependence rather than a single number (Figure compute-sweep). Holding the mechanism fixed and varying only the inter-need gap, the wall-clock reduction over LRU falls from 10.56% at 5.7% compute to 6.99% at 54.9% compute and 0.89% at 95.1%, purely because the denominator grows. The stall reduction moves the opposite way over the same sweep — 11.21% to 15.49% to 18.24% — because a larger compute window hides more of each staging operation. Our measured workload sits near the low-compute end, spending 280.3 s of a 5288.5 s trial on agent work, so we report the compute share alongside every wall-clock claim.
+
+Ablations
+
+We decompose the result by adding one mechanism at a time (Figure ablation). At 256 GB with one slot, parking models alone accounts for 5.64%; adding the persistent data worker reaches 26.97%; cost-aware arbitration adds 5.90 points to 32.87%; and slack staging adds a further 1.62 to 34.49%. Because marginal credit depends on insertion order, we also report an order-independent Shapley decomposition of the retention total: at this budget the model-parking mechanism accounts for 2% and data retention for 98%, since neither of the two largest models fits the budget at all. At 560 GB the same decomposition gives 61% and 39%, so the split is a property of the allocation rather than of the system.
+
+A second ablation varies what a wrong staging decision is permitted to destroy (Figure prefetch-variants). At measured predictor accuracy, restricting staging to slack yields +10.30% over LRU while permitting displacement yields +5.91%; restricting scope to data artifacts yields +13.10%. The safety rule matters more than the scope restriction, and neither is a better predictor — both simply bound the cost of being wrong.
+
+Performance Penalties of Processes on CPU for Foreground Work
+
+Retention and staging both consume CPU in resident worker processes, so we measured whether that work degrades the foreground agent (Figure cpu-interference). With 0, 1, 2, 4 and 8 concurrent background construction processes, foreground median latency was 0.618, 0.618, 0.617, 0.618 and 0.618 s — a slowdown of 1.000, 0.999, 0.997, 1.000 and 1.000. Because a flat curve is also the signature of a probe that silently did nothing, we instrumented the run: eight workers were alive, load average reached 7.25, and the workers consumed 46.41 CPU-seconds in 6 s of wall time. They genuinely ran.
+
+The result follows from construction being single-threaded, which we confirm directly: a full potential parse consumes 0.9885 CPU-seconds per second of wall time. Each staging task is therefore exactly one core, and staging tasks do not contend with one another. The practical consequence is that the arbitrator budgets memory only, which is what makes value per gigabyte a complete decision variable rather than one term of a two-resource trade-off.
+
+This holds where tested and we state the boundary. All levels measured were under-subscribed — at most nine active processes on twelve cores — with working sets of roughly 78 MB. Memory-bandwidth contention at the scale of a fully activated artifact, which is three orders of magnitude larger, is not exercised by this experiment.
+
+Sensitivity Sweeps
+
+Horizon. Retention is insensitive to H across a wide range, varying by 0.14 points between H=60 and H=600, while staging degrades steadily above the workload's typical inter-need gap: from 67.75% at H=60 to 62.19% at H=600 and 55.07% at H=3000 (Figure h-sweep). The asymmetry is expected — H exists to keep near-term candidates comparable on absolute savings, and enlarging it past the window in which staging can complete admits candidates that cannot pay off. Setting H near the observed inter-step gap is sufficient; no tuning beyond that order of magnitude was required.
+
+Topology. We sweep device slots against budget (Figure budget-sweep). A second slot substantially raises absolute performance but reduces the value of host-memory arbitration, because the models worth retaining are already resident on the device and what competes for host memory is the less-used remainder. Arbitration therefore matters most where device capacity is scarce relative to the number of distinct models.
+
+Predictor accuracy. Figure accuracy-sweep sweeps horizon accuracy from 0.15 to 1.00. Retention is essentially flat (+7.50% to +7.99% over LRU), since horizon error perturbs a ranking rather than forcing a selection. Slack staging degrades gracefully, from +5.65% to +18.72%, remaining positive throughout: a staging operation that consumes only unclaimed memory cannot destroy a retention worth more, so its downside is bounded by wasted bandwidth. Permitting displacement removes that bound, and the same sweep runs from -6.22% at 0.15 accuracy to +19.67% at 1.00 — which is why the outbid path carries the conjunctive conditions of Section prefetch.
+
+
+
+
+

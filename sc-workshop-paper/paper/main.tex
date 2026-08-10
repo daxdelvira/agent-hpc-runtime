@@ -1,0 +1,59 @@
+% main.tex -- top-level document. Compile this.
+%
+%   pdflatex main && pdflatex main      (twice, for \ref resolution)
+%
+% Each section lives in its own file and is \input below. Sections contain no
+% preamble and no \documentclass; everything shared lives here.
+%
+% FIGURES. Every figure is currently a \figspec placeholder: a framed box
+% carrying its own plot specification, so this document compiles with an empty
+% figures/ directory. To land a real plot, replace
+%     \figspec{4.2cm}{...spec text...}
+% with
+%     \includegraphics[width=\columnwidth]{figures/NAME}
+% and leave the \caption and \label alone. Delete the \figspec macro once no
+% call sites remain.
+%
+% NOT COMPILED -- no LaTeX toolchain was available where this was assembled.
+% Checked statically for brace/environment balance, escaping, dangling
+% references and table column counts. Treat the first build as proofreading.
+
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xspace}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+
+% ---------------------------------------------------------------- macros ---
+\newcommand{\sysname}{Tandem\xspace}   % system name; change here only
+
+% Placeholder standing in for an unrendered plot. #1 optional width,
+% #2 box height, #3 the plot specification.
+\newcommand{\figspec}[3][0.95\columnwidth]{%
+  \fbox{\parbox[c][#2][c]{#1}{\centering\footnotesize\itshape #3}}}
+
+\title{\sysname: Arbitrating Model and Data Residency\\
+       for Agentic HPC Workflows}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\input{01_intro}
+\input{02_background}
+\input{03_problem}
+\input{04_system}
+\input{05_evaluation}
+
+\end{document}
