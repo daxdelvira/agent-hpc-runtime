@@ -47,14 +47,14 @@ Writing $\mathrm{cold}(r)$ for the cost of producing $r$ from scratch and
 $\mathrm{ready}(r)$ for the cost of resuming it from the held state, the
 saving retention buys is $\mathrm{cold}(r) - \mathrm{ready}(r)$.
 
-Ranking on that saving alone is not enough, because it is indifferent to when
-the resource is next needed: a resource required in ten seconds and one
-required in three hours would compete equally for the same memory, and the
-budget fills with resources that will not be used soon. Ranking on saving per
-unit of time-to-use is not enough either, since it collapses the difference
-between a large saving and a small one whenever both are imminent.
-
-\sysname{} resolves this with an explicit planning horizon $H$:
+Neither obvious ranking of that saving works on its own. Ranking on the saving
+itself is indifferent to when the resource is next needed, so one required in
+ten seconds and one required in three hours compete equally and the budget
+fills with what will not be used soon. Ranking on saving per unit of
+time-to-use collapses the difference between a large saving and a small one
+whenever both are imminent. Each is correct in exactly the regime where the
+other fails, so \sysname{} applies them conditionally, on either side of an
+explicit planning horizon $H$:
 
 \begin{equation}
 v(r) \;=\; \bigl(\mathrm{cold}(r) - \mathrm{ready}(r)\bigr)
@@ -62,17 +62,13 @@ v(r) \;=\; \bigl(\mathrm{cold}(r) - \mathrm{ready}(r)\bigr)
 \label{eq:value}
 \end{equation}
 
-\noindent and ranks by \emph{value density} $v(r)/g(r)$---seconds of stall
-avoided per gigabyte held.
-
-$H$ is what makes the two regimes behave differently, and the system cannot do
-without it. Inside the horizon, resources are compared on absolute seconds
-saved: everything in that window is going to be needed soon, so the question is
-simply which resource saves the most, and a small imminent candidate does not
-get to outrank a large one merely by being sooner. Outside the horizon, value
-decays as $H/\Delta t$, so a resource that will not be touched for a long time
-surrenders its memory to one that will. A system without $H$ has to pick one
-of these behaviours globally and gets the other regime wrong.
+\noindent ranking by \emph{value density} $v(r)/g(r)$---seconds of stall
+avoided per gigabyte held. Inside $H$ the discount is~1 and candidates are
+compared on absolute seconds saved, so a small imminent resource cannot
+outrank a large one merely by being sooner; outside it value decays as
+$H/\Delta t$, so a resource that will not be touched for a long time surrenders
+its memory to one that will. A system without $H$ must choose one of these
+behaviours globally and gets the other regime wrong.
 
 $H$ is a tunable, and the natural setting is on the order of the workflow's
 typical inter-step gap. It is also what lets staging and retention be scored
@@ -80,33 +76,6 @@ in one currency (Section~\ref{sec:prefetch}).
 
 \subsubsection{Selection Under Indivisibility}
 
-% ALGORITHM FLOAT. The authoritative preamble loads `algorithmic' only, which
-% supplies the pseudocode body but NO `algorithm' float wrapper (that comes
-% from algorithm.sty / float.sty, neither of which is loaded). A float IS
-% required here -- the block must not break across the column -- so it is
-% carried by the class-provided `figure' float. \figurename is renamed inside
-% the float's group only, so the caption prints "Algorithm N" and the prose's
-% "Algorithm~\ref{alg:arb}" stays consistent. N is drawn from the figure
-% counter, so this block is numbered in the figure sequence.
-% ONE-LINE ALTERNATIVE, if independent numbering is wanted: add
-% \usepackage{algorithm} to the preamble and restore \begin{algorithm}[t].
-\begin{figure}[tb]
-\renewcommand{\figurename}{Algorithm}
-\small
-\begin{algorithmic}[1]
-\STATE \textbf{input:} candidates $\mathcal{R}$, budget $B$, horizons $\Delta t(\cdot)$
-\FOR{$r \in \mathcal{R}$ currently held or active}
-  \STATE $w_r \gets v(r)$ \COMMENT{Eq.~\ref{eq:value}, retention}
-\ENDFOR
-\FOR{$r \in$ \textsc{StageCandidates}}
-  \STATE $w_r \gets v_{\text{stage}}(r)$ \COMMENT{same currency}
-\ENDFOR
-\STATE $S \gets \arg\max \sum_{r \in S} w_r \;\;\text{s.t.}\; \sum_{r \in S} g(r) \le B$
-\STATE release $\mathrm{held} \setminus S$; hold $S \setminus \mathrm{held}$
-\end{algorithmic}
-\caption{Residency decision}
-\label{alg:arb}
-\end{figure}
 
 Held resources cannot be partially surrendered. Half a model's weights serve
 no requests, and a partially retained structure does not answer queries, so
@@ -115,31 +84,19 @@ capacity constraint rather than a sequence of independent evictions, and
 \sysname{} evaluates it as one: it searches for the highest-value set that fits,
 rather than repeatedly discarding the worst-ranked resident. The distinction
 matters whenever admitting one large resource requires releasing two smaller
-ones---a decision single-victim eviction cannot express.
-Algorithm~\ref{alg:arb} states the resulting decision procedure.
-
-Ties are broken toward the smaller total footprint, so equal value never costs
-extra budget.
+ones---a decision single-victim eviction cannot express. Ties are broken
+toward the smaller total footprint, so equal value never costs extra budget.
 
 
 \subsubsection{Horizon Estimation}
 \label{sec:horizon}
 
-The arbitrator's only external input is $\Delta t(r)$, and \sysname{} obtains it
-from two sources at different granularities.
-
-\paragraph{Coarse.}
-Agentic workflows are organised by a planner that commits to a sequence of
-steps before executing them. That plan is a long-range but incomplete signal:
-it names the tools the workflow intends to run and their order, which reaches
-far ahead, but agents routinely execute steps the plan does not enumerate and
-depart from it under tool failures or intermediate results.
-
-\paragraph{Fine.}
-A transition model built from observed executions supplies the local
-complement: a distribution over the immediate successors of the current step.
-This is short-range but covers exactly the region where the plan is silent or
-has been departed from.
+The arbitrator's only external input is $\Delta t(r)$, and \sysname{} obtains
+it by combining the two signals characterised in Section~\ref{sec:insights}: a
+planner's declared step sequence, which reaches far ahead but locates poorly,
+and a transition model over observed executions, which locates well but only
+locally. The second covers exactly the region where the first is silent or has
+been departed from.
 
 The two are merged into a single predicted step sequence---the plan supplying
 structure, the transition model filling and correcting it near the
@@ -221,9 +178,7 @@ how the saving is computed. Retention saves the full $\mathrm{cold}(r) -
 already done. Staging saves only as much of that cost as fits in the interval
 before the need---a stage that gets halfway leaves the remainder exposed. Its
 benefit is therefore capped by $\Delta t(r)$, and Eq.~\ref{eq:value} applies
-to that capped quantity. Sharing $H$ across both is what puts them on one
-scale: within the horizon they are compared as seconds saved, so a small
-imminent stage cannot outrank a large retention simply for being nearer.
+to that capped quantity.
 
 \subsubsection{Slack First}
 
