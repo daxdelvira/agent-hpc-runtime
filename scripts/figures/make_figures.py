@@ -100,7 +100,7 @@ def fig_intro_behavior():
                                alpha=alpha, hatch=hatch))
         if label:
             ax.text(x0 + w / 2, y + 0.31, label, ha="center", va="center",
-                    fontsize=7, color="white" if alpha > 0.6 else theme.INK)
+                    fontsize=7, color=theme.on(color) if alpha > 0.6 else theme.INK)
 
     # -- traditional: need is known, staging hides behind the previous phase
     a = axes[0]
@@ -149,7 +149,7 @@ def fig_replacement_loss():
                                edgecolor="none", alpha=1.0 if i == 0 else 0.85))
         if e - s > 500:
             ax.text((s + e) / 2, 0.5, lab, ha="center", va="center",
-                    fontsize=6.5, color="white")
+                    fontsize=6.5, color=theme.on(C[0]))
     ax.set_xlim(0, wall)
     ax.set_ylim(0, 1.0)
     ax.set_yticks([])
@@ -523,29 +523,61 @@ def fig_accuracy_sweep():
 
 
 # ------------------------------------------------------------------- 7 ------
-def fig_tool_relationships():
-    """Best successor confidence per tool, per offset."""
+def _transitions():
     d = json.load(open(os.path.join(ROOT, "runtime", "predictor", "data",
                                     "learned_transitions.json")))
     tt = d.get("tool_transitions", {})
-    # The shipped table is keyed [source][offset] -> list of candidate dicts,
-    # and it only carries offsets 1 and 2 -- the predictor's horizon is
-    # hardcoded to those two. k in [0,5] is NOT available from this artifact.
     offsets = sorted({int(k) for src in tt for k in tt[src]})
     tools, grid = [], []
     for src in sorted(tt):
-        row = []
-        for k in offsets:
-            cands = tt[src].get(str(k)) or []
-            row.append(max((float(c.get("probability", 0.0)) for c in cands),
-                           default=0.0))
+        row = [max((float(c.get("probability", 0.0))
+                    for c in (tt[src].get(str(k)) or [])), default=0.0)
+               for k in offsets]
         if any(row):
             tools.append(src)
             grid.append(row)
-    if not grid:
+    return tools, offsets, np.array(grid) if grid else np.zeros((0, 0))
+
+
+def fig_tool_relationships():
+    """How much of the tool population has a confident successor, per offset.
+
+    REPLACES a 26-row heatmap that occupied a full column -- 100.5% of the
+    available height, the single largest item in the paper. The claim the
+    prose makes is about the SHARE of tools carrying a confident successor,
+    not about which particular tools do, so the distribution states it
+    directly and costs a quarter of the space. The heatmap generator is kept
+    below as fig_tool_relationships_heatmap for anyone who wants the detail.
+    """
+    tools, offsets, g = _transitions()
+    if not len(g):
         print("  SKIP fig_tool_relationships: no offset-keyed transitions found")
         return
-    g = np.array(grid)
+    x = np.linspace(0.0, 1.0, 201)
+    fig, ax = plt.subplots(figsize=(theme.COL, 2.0))
+    for i, k in enumerate(offsets):
+        share = [(g[:, i] >= t).mean() * 100 for t in x]
+        ax.plot(x, share, color=C[i], label=f"$k{{=}}{k}$", lw=1.9)
+    ax.axvline(0.9, color=theme.MUTED, lw=0.8, zorder=0)
+    best = g.max(axis=1)
+    n_hi = int((best >= 0.9).sum())
+    ax.plot([0.9], [(best >= 0.9).mean() * 100], marker="*", ms=9,
+            color=theme.INK, zorder=5, linestyle="none",
+            label=f"any $k$: {n_hi}/{len(best)}")
+    ax.set_xlim(0, 1.0)
+    ax.set_ylim(0, 104)
+    ax.set_xlabel("successor confidence")
+    ax.set_ylabel("tools at or above (%)")
+    theme.legend_above(ax, ncol=4, fontsize=7)
+    fig.tight_layout()
+    save(fig, "fig-tool-relationships")
+
+
+def fig_tool_relationships_heatmap():
+    """Per-tool detail. Not referenced by the paper -- see the note above."""
+    tools, offsets, g = _transitions()
+    if not len(g):
+        return
     from matplotlib.colors import LinearSegmentedColormap
     cmap = LinearSegmentedColormap.from_list("seq", theme.SEQUENTIAL)
     fig, ax = plt.subplots(figsize=(theme.COL, 0.28 * len(tools) + 1.1))
@@ -559,13 +591,13 @@ def fig_tool_relationships():
         for j in range(g.shape[1]):
             if g[i, j] >= 0.9:
                 ax.text(j, i, f"{g[i,j]:.2f}", ha="center", va="center",
-                        fontsize=6, color="white")
+                        fontsize=6, color=theme.on(theme.SEQUENTIAL[-1]))
     cb = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.03)
     cb.set_label("best successor confidence", fontsize=7.5)
     cb.outline.set_linewidth(0.6)
     ax.set_xlabel("offset")
     fig.tight_layout()
-    save(fig, "fig-tool-relationships")
+    save(fig, "fig-tool-relationships-detail")
 
 
 FIGS = {
@@ -575,6 +607,7 @@ FIGS = {
     "scale-sweep": fig_scale_sweep,
     "topology-budget": fig_topology_budget,
     "tool-relationships": fig_tool_relationships,
+    "tool-relationships-detail": fig_tool_relationships_heatmap,
     "budget-sweep": fig_budget_sweep,
     "stall-ladder": fig_stall_ladder,
     "compute-sweep": fig_compute_sweep,

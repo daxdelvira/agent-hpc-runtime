@@ -2,55 +2,33 @@
 
 \subsection{Traditional vs.\ Agentic Scientific Workflows}
 
-High Performance Computing workflows consist of multi-stage applications that
-produce and manipulate data in multiple discrete phases to produce an end
-result or insight. A phase typically corresponds to a computational task
-(e.g., a simulation, analysis, or visualization step) that consumes data
-produced by previous phases and generates data for subsequent ones. For
-instance, a workflow meant to discover new alloys could involve preparing
-alloy structures in one phase, running Density Functional Theory calculations
-on each, and then aggregating and visualizing the data. Sometimes these phases
-may be cyclical, with phases repeating in a set order, where the outputs of
-one series of phases become the inputs to the next. Common high-impact HPC
-workflows include protein and alloy discovery, astronomical simulation, and
-fluid dynamics workflows. The use of these workflows to simulate, analyze, and
-derive insights from data has led to significant advances in multiple
-scientific fields, including the discovery of new proteins for medical
-applications, analysis and identification of cosmological phenomena such as
-supernovae in massive telescope data streams, and rapid speed-ups of
-prototyping for fluid-dependent systems in fields such as aerospace
-engineering.
+An HPC workflow is a multi-stage application whose phases each correspond to a
+computational task---a simulation, analysis, or visualization step---that
+consumes data produced by earlier phases and generates data for later ones.
+Phases are often cyclical, with the outputs of one series becoming the inputs
+to the next. Workflows of this shape underpin protein and alloy discovery,
+astronomical survey analysis, and computational fluid dynamics, and their use
+has produced advances from new therapeutic proteins to the identification of
+supernovae in telescope data streams.
 
 \subsection{Prior Solutions for Memory Bottlenecks}
 
-Despite their advantages for scientific progress, HPC workflows face a key
-challenge: their operations on massive datasets lead to an imbalance between
-the efficiency of compute hardware and memory bandwidth. Workflows often
-involve multi-GB datasets that can balloon quickly as simulation steps produce
-more data from their initial inputs (e.g., 100,000 atoms having their energy
-interactions for every 1~ns step simulated by a protein folding program). This
-data can easily make an HPC workflow's data ``out-of-core'' for part or all of
-a workflow, meaning the data is too large to fit in RAM all at once. This
-results in data movement costs, and the infamous ``memory wall'': hardware
-FLOPs have scaled $60000\times$ in the past 20 years, while DRAM bandwidth has
-only scaled $100\times$ and interconnect bandwidth $20\times$ in the same
-timespan. While some HPC sites have addressed this by scaling their DRAM, the
-financial and energy cost of this scaling makes it unsustainable.
+The datasets these workflows manipulate expose a growing imbalance between
+compute throughput and memory bandwidth: over the past twenty years hardware
+FLOPs have scaled $60000\times$, while DRAM bandwidth has scaled $100\times$
+and interconnect bandwidth only $20\times$. A workflow whose working set
+exceeds RAM becomes ``out-of-core'' for part or all of its execution, and the
+resulting data movement is the memory wall in its practical form. Scaling DRAM
+addresses it only at a financial and energy cost that does not generalize
+across sites.
 
-In recent work, the solution to this issue has come in the form of software
-distributed shared memory (DSM) systems that present tiered memory and storage
-resources as an ``infinite memory pool'', often referred to as a Deep Memory
-and Storage Hierarchy (DMSH). This system relies on the predictable
-phase-based nature of HPC workflows in order to handle both the organization
-of data across the memory and storage hierarchy and ensure coherency without
-infeasible overhead. Information about phase intent and accesses allows data to
-be staged proactively, placed across the hierarchy intelligently, and
-prefetched while other computation is running to ensure no idle computational
-resources. For example, if a simulation phase is known to consume a particular
-trajectory, a DMSH data staging system can begin loading that data from
-storage while the preceding analysis phase is still executing, hiding most of
-the I/O latency behind computation. Intent and expected accesses are
-transmitted to the system via API.
+Recent work instead exposes tiered memory and storage through software
+distributed shared memory, presenting the hierarchy as one large pool---a Deep
+Memory and Storage Hierarchy (DMSH). Coherency and placement are made
+affordable by the predictability of phase-based execution: a workflow declares
+its intent and expected accesses through an API, and the system uses that
+declaration to place data across tiers and to prefetch it during preceding
+computation. That declaration is the assumption agentic workflows remove.
 
 \subsection{Workload Description}
 

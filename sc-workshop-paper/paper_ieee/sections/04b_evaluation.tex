@@ -52,21 +52,6 @@ arbitration for benefits that plain retention already delivers.
 
 \subsection{Stall Reduction}
 
-At the production 256~GB allocation with a single device slot, \textsc{Lru}
-removes 26.97\% of the \textsc{Never} baseline's wall time and \sysname{}
-removes 34.49\%, eliminating a further 11.55\% of the stall \textsc{Lru}
-leaves behind (Figure~\ref{fig:stall-ladder}). The margin widens as the budget
-admits more of the working set: at 560~GB with two slots \sysname{} removes
-50.69\% of \textsc{Lru}'s residual stall.
-Figure~\ref{fig:budget-sweep} shows the effect across the full budget range,
-together with the fraction of decisions in which memory pressure actually
-forced an eviction. That fraction is the more informative axis: it falls from
-35.2\% at 200~GB to 0.0\% by 720~GB, and where it reaches zero the correct
-policy is to retain everything and no arbitration is required. Budget also
-buys performance in steps rather than smoothly, since additional memory is
-only useful when it crosses a threshold admitting one more resource---which is
-why 320~GB and 400~GB perform almost identically.
-
 \begin{figure}[t]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
@@ -80,6 +65,51 @@ configuration. \sysname{} removes 11.55\% of the stall \textsc{Lru} leaves at
 the production allocation and 50.69\% at a larger budget.}
 \label{fig:stall-ladder}
 \end{figure}
+\begin{figure*}[t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-budget-sweep.pdf)
+%   two panels, one per device-slot count. $x$ = budget (200--838~GB). 
+%   Lines: \textsc{Lru} and \sysname, both as \% reduction vs 
+%   \textsc{Never}. Twin right-hand axis: binding \% (share of decisions 
+%   that forced an eviction), shaded. Mark the packing thresholds at 283, 
+%   445, 562 and 838~GB with vertical rules --- the step structure is the 
+%   point.
+\includegraphics[width=0.95\textwidth]{figures/fig-budget-sweep}
+\caption{Wall-time reduction versus budget and device capacity, at one and
+two device slots.}
+\label{fig:budget-sweep}
+\end{figure*}
+\begin{figure}[t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-compute-sweep.pdf)
+%   $x$ = compute share of wall (5.7\%--95.1\%, log). Two lines vs 
+%   \textsc{Lru}: wall-clock reduction (falling) and stall reduction 
+%   (rising). Mark the measured workload's operating point near 5\%. The 
+%   crossing behaviour is the reading.
+\includegraphics[width=\columnwidth]{figures/fig-compute-sweep}
+\caption{The same mechanism reported two ways. Wall-clock reduction is diluted
+by compute; stall reduction improves with it, because a longer window hides
+more of a staging operation.}
+\label{fig:compute-sweep}
+\end{figure}
+
+At the production 256~GB allocation with a single device slot, \textsc{Lru}
+removes 26.97\% of the \textsc{Never} baseline's wall time and \sysname{}
+removes 34.49\%, eliminating a further 11.55\% of the stall \textsc{Lru}
+leaves behind (Figure~\ref{fig:stall-ladder}). The margin widens as the budget
+admits more of the working set: at 560~GB with two slots \sysname{} removes
+50.69\% of \textsc{Lru}'s residual stall.
+Figure~\ref{fig:budget-sweep} shows the effect across the full budget range,
+together with the fraction of decisions in which memory pressure actually
+forced an eviction. That fraction is the more informative axis: it falls from
+35.2\% at 200~GB to 0.0\% by 720~GB, so the upper end of the sweep measures a
+regime in which the system has nothing left to arbitrate. The step structure
+predicted in Section~\ref{sec:insights} is visible here as well---320~GB and
+400~GB perform almost identically, because neither admits an additional
+resource.
+
 
 \subsection{End-to-End Runtime}
 
@@ -99,38 +129,6 @@ operation. Our measured workload sits near the low-compute end, spending
 280.3~s of a 5288.5~s trial on agent work, so we attach the compute share to
 every wall-clock claim.
 
-\begin{figure*}[t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-budget-sweep.pdf)
-%   two panels, one per device-slot count. $x$ = budget (200--838~GB). 
-%   Lines: \textsc{Lru} and \sysname, both as \% reduction vs 
-%   \textsc{Never}. Twin right-hand axis: binding \% (share of decisions 
-%   that forced an eviction), shaded. Mark the packing thresholds at 283, 
-%   445, 562 and 838~GB with vertical rules --- the step structure is the 
-%   point.
-\includegraphics[width=0.95\textwidth]{figures/fig-budget-sweep}
-\caption{Wall-time reduction versus budget and device capacity. The shaded
-series is the fraction of decisions in which memory pressure forced an
-eviction; where it reaches zero the arbitration problem has disappeared and
-retaining everything is correct.}
-\label{fig:budget-sweep}
-\end{figure*}
-
-\begin{figure}[t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-compute-sweep.pdf)
-%   $x$ = compute share of wall (5.7\%--95.1\%, log). Two lines vs 
-%   \textsc{Lru}: wall-clock reduction (falling) and stall reduction 
-%   (rising). Mark the measured workload's operating point near 5\%. The 
-%   crossing behaviour is the reading.
-\includegraphics[width=\columnwidth]{figures/fig-compute-sweep}
-\caption{The same mechanism reported two ways. Wall-clock reduction is diluted
-by compute; stall reduction improves with it, because a longer window hides
-more of a staging operation.}
-\label{fig:compute-sweep}
-\end{figure}
 
 \subsection{Comparison with Byte-Oriented Tiering}
 \label{sec:dmsh}
@@ -186,6 +184,33 @@ baseline we compare against.
 
 \subsection{Ablations}
 
+\begin{figure*}[t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-ablation.pdf)
+%   horizontal cumulative bar, \textsc{Never} $\rightarrow$ +model parking 
+%   $\rightarrow$ +data retention $\rightarrow$ +cost-aware arbitration 
+%   $\rightarrow$ +slack staging, annotated with each marginal contribution. 
+%   Inset or second panel: Shapley split of the retention total at 256~GB 
+%   and 560~GB, showing the reversal.
+\includegraphics[width=0.95\textwidth]{figures/fig-ablation}
+\caption{Contribution of each mechanism at 256~GB with one device slot, and
+the order-independent split of the retention total at two budgets.}
+\label{fig:ablation}
+\end{figure*}
+\begin{figure}[t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-prefetch-variants.pdf)
+%   grouped bars at measured accuracy: retain-only, data+slack, data+outbid, 
+%   all+slack, all+outbid, as \% vs \textsc{Lru}. Optionally repeat at two 
+%   accuracies to show the safety rule's stability.
+\includegraphics[width=\columnwidth]{figures/fig-prefetch-variants}
+\caption{Two independent restrictions on speculative staging: which classes it
+may stage, and whether it may displace a retained resource.}
+\label{fig:prefetch-variants}
+\end{figure}
+
 We decompose the result by adding one mechanism at a time
 (Figure~\ref{fig:ablation}). At 256~GB with one device slot, parking models
 alone accounts for 5.64\%; adding retention of activated data reaches 26.97\%;
@@ -205,35 +230,23 @@ permitting displacement yields $+5.91$\%; restricting scope to data artifacts
 yields $+13.10$\%. The safety rule matters more than the scope restriction,
 and neither is a better predictor---both simply bound the cost of being wrong.
 
-\begin{figure*}[t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-ablation.pdf)
-%   horizontal cumulative bar, \textsc{Never} $\rightarrow$ +model parking 
-%   $\rightarrow$ +data retention $\rightarrow$ +cost-aware arbitration 
-%   $\rightarrow$ +slack staging, annotated with each marginal contribution. 
-%   Inset or second panel: Shapley split of the retention total at 256~GB 
-%   and 560~GB, showing the reversal.
-\includegraphics[width=0.95\textwidth]{figures/fig-ablation}
-\caption{Contribution of each mechanism at 256~GB with one device slot, and
-the order-independent split of the retention total at two budgets.}
-\label{fig:ablation}
-\end{figure*}
+
+\subsection{Performance Penalties of Processes on CPU for Foreground Work}
 
 \begin{figure}[t]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-prefetch-variants.pdf)
-%   grouped bars at measured accuracy: retain-only, data+slack, data+outbid, 
-%   all+slack, all+outbid, as \% vs \textsc{Lru}. Optionally repeat at two 
-%   accuracies to show the safety rule's stability.
-\includegraphics[width=\columnwidth]{figures/fig-prefetch-variants}
-\caption{Two independent restrictions on speculative staging: which classes it
-may stage, and whether it may displace a retained resource.}
-\label{fig:prefetch-variants}
+% scripts/figures/make_figures.py -> figure_drafts/fig-cpu-interference.pdf)
+%   $x$ = concurrent background construction processes (0,1,2,4,8). Left 
+%   axis: foreground median latency, flat. Right axis: CPU-seconds consumed 
+%   by the workers, rising. Plot both --- the flatness is only credible next 
+%   to evidence the workers ran.
+\includegraphics[width=\columnwidth]{figures/fig-cpu-interference}
+\caption{Foreground latency under concurrent background construction. The
+rising CPU-seconds series is reported alongside the flat latency series
+because a null result and a broken probe are otherwise indistinguishable.}
+\label{fig:cpu-interference}
 \end{figure}
-
-\subsection{Performance Penalties of Processes on CPU for Foreground Work}
 
 Retention and staging both consume CPU in resident worker processes, so we
 measured whether that work degrades the foreground agent
@@ -259,53 +272,8 @@ working sets of roughly 78~MB. Memory-bandwidth contention at the scale of a
 fully activated artifact, three orders of magnitude larger, is not exercised
 by this experiment.
 
-\begin{figure}[t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-cpu-interference.pdf)
-%   $x$ = concurrent background construction processes (0,1,2,4,8). Left 
-%   axis: foreground median latency, flat. Right axis: CPU-seconds consumed 
-%   by the workers, rising. Plot both --- the flatness is only credible next 
-%   to evidence the workers ran.
-\includegraphics[width=\columnwidth]{figures/fig-cpu-interference}
-\caption{Foreground latency under concurrent background construction. The
-rising CPU-seconds series is reported alongside the flat latency series
-because a null result and a broken probe are otherwise indistinguishable.}
-\label{fig:cpu-interference}
-\end{figure}
 
 \subsection{Sensitivity Sweeps}
-
-\paragraph{Horizon.}
-Retention is insensitive to $H$ across a wide range, varying by 0.14 points
-between $H=60$~s and $H=600$~s, while staging degrades steadily once $H$
-exceeds the workload's typical inter-need gap: 67.75\% at $H=60$, 62.19\% at
-$H=600$, and 55.07\% at $H=3000$ (Figure~\ref{fig:h-sweep}). The asymmetry is
-expected---$H$ exists to keep near-term candidates comparable on absolute
-savings, and enlarging it past the window in which a staging operation can
-complete admits candidates that cannot pay off. Setting $H$ near the observed
-inter-step gap is sufficient; no tuning beyond that order of magnitude was
-required.
-
-\paragraph{Hardware topology.}
-We sweep device slots against budget (Figure~\ref{fig:budget-sweep}). A second
-device slot substantially raises absolute performance but reduces the value of
-host-memory arbitration, because the models worth retaining are already
-resident on the device and what competes for host memory is the less-used
-remainder. Arbitration therefore matters most where device capacity is scarce
-relative to the number of distinct models in the workflow.
-
-\paragraph{Predictor accuracy.}
-Figure~\ref{fig:accuracy-sweep} sweeps horizon accuracy from 0.15 to 1.00.
-Retention is essentially flat, moving from $+7.50$\% to $+7.99$\% over
-\textsc{Lru}, since horizon error perturbs a ranking rather than forcing a
-selection. Slack staging degrades gracefully, from $+5.65$\% to $+18.72$\%,
-and remains positive throughout: an operation that consumes only unclaimed
-memory cannot destroy a retention worth more, so its downside is bounded by
-wasted bandwidth. Permitting displacement removes that bound, and the same
-sweep runs from $-6.22$\% at 0.15 accuracy to $+19.67$\% at 1.00, which is the
-quantitative basis for the conjunctive conditions the outbid path carries in
-Section~\ref{sec:prefetch}.
 
 \begin{figure}[t]
 \centering
@@ -319,7 +287,6 @@ Section~\ref{sec:prefetch}.
 staging degrades once $H$ exceeds the window in which a stage can complete.}
 \label{fig:h-sweep}
 \end{figure}
-
 \begin{figure}[t]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
@@ -334,3 +301,35 @@ beneficial across the range; only displacement-permitting staging is
 accuracy-critical.}
 \label{fig:accuracy-sweep}
 \end{figure}
+
+\paragraph{Horizon.}
+Retention is insensitive to $H$ across a wide range, varying by 0.14 points
+between $H=60$~s and $H=600$~s, while staging degrades steadily once $H$
+exceeds the workload's typical inter-need gap: 67.75\% at $H=60$, 62.19\% at
+$H=600$, and 55.07\% at $H=3000$ (Figure~\ref{fig:h-sweep}). The asymmetry is
+expected---$H$ exists to keep near-term candidates comparable on absolute
+savings, and enlarging it past the window in which a staging operation can
+complete admits candidates that cannot pay off. Setting $H$ near the observed
+inter-step gap is sufficient; no tuning beyond that order of magnitude was
+required.
+
+\paragraph{Hardware topology.}
+Sweeping device slots against budget (Figure~\ref{fig:budget-sweep}) confirms
+the mechanism of Section~\ref{sec:insights} quantitatively: a second slot
+raises absolute performance substantially while reducing the value of
+host-memory arbitration. Arbitration matters most where device capacity is
+scarce relative to the number of distinct models in the workflow.
+
+\paragraph{Predictor accuracy.}
+Figure~\ref{fig:accuracy-sweep} sweeps horizon accuracy from 0.15 to 1.00.
+Retention is essentially flat, moving from $+7.50$\% to $+7.99$\% over
+\textsc{Lru}, since horizon error perturbs a ranking rather than forcing a
+selection. Slack staging degrades gracefully, from $+5.65$\% to $+18.72$\%,
+and remains positive throughout: an operation that consumes only unclaimed
+memory cannot destroy a retention worth more, so its downside is bounded by
+wasted bandwidth. Permitting displacement removes that bound, and the same
+sweep runs from $-6.22$\% at 0.15 accuracy to $+19.67$\% at 1.00, which is the
+quantitative basis for the conjunctive conditions the outbid path carries in
+Section~\ref{sec:prefetch}.
+
+

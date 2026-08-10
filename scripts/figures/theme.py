@@ -6,20 +6,21 @@ are metric-compatible Times clones -- same widths, same line breaks -- so a
 machine that does have the real face will pick it up first and nothing else
 shifts.
 
-COLOUR. Stock Gruvbox, unmodified hex, biased to the less-saturated "faded"
-family because the surface is white. An earlier revision substituted two of
-these for accessibility reasons; per request the published values are now used
-verbatim, and the two costs that substitution was paying for are stated here
-rather than silently absorbed:
+COLOUR. Stock Gruvbox REGULAR (neutral) accents, unmodified hex -- the standard
+set, not the darker "faded" variants an earlier revision used. Published values
+are used verbatim, so the costs are stated here rather than absorbed silently:
 
-  * Gruvbox blue #076678 has OKLCH chroma 0.066 and aqua #427b58 has 0.082,
-    both under the ~0.10 floor at which a hue stops reading as a hue. They
-    still separate fine from the other slots; they just read desaturated
-    rather than blue/green as such.
-  * Orange #af3a03 against green #79740e is dE 2.4 under protan/deutan
-    simulation -- indistinguishable to a red-green colourblind reader. Slots
-    5 and 7 must therefore not be used TOGETHER in one figure. Nothing here
-    does; keep it that way, or facet instead.
+  * Blue #458588 has OKLCH chroma 0.066, under the ~0.10 floor at which a hue
+    stops reading as a hue. It separates from the other slots fine; it just
+    reads desaturated rather than blue as such.
+  * Yellow #d79921 has only 2.48:1 contrast against white, below the 3:1
+    threshold. Filled bars are unaffected -- there is enough area. Thin lines
+    and small markers are, which is why lines.linewidth and markersize below
+    are set slightly heavier than they would otherwise be.
+  * Two pairs collide under protan/deutan simulation: blue vs purple (slots
+    1 and 4) and orange vs green (7 and 5). Neither pair may share a frame.
+    Purple currently appears only in scale-sweep's lower panel, which is a
+    separate axes with no key; green, aqua and orange are unused.
 
 Marker shape is assigned alongside hue in the same fixed order, so series
 identity never rests on colour alone and both costs above stay cosmetic.
@@ -38,18 +39,19 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 # Categorical slots, in fixed assignment order. Do not reorder or cycle.
-# Stock Gruvbox "faded" accents -- the published hex, unmodified.
-BLUE, RED, YELLOW = "#076678", "#9d0006", "#b57614"
-PURPLE, GREEN = "#8f3f71", "#79740e"
-AQUA, ORANGE = "#427b58", "#af3a03"
-# ORANGE is slot 7 and collides with GREEN (slot 5) for red-green colourblind
-# readers; do not put both in one figure.
+# Stock Gruvbox REGULAR (neutral) accents -- the published hex, unmodified.
+# This is the standard set, not the darker "faded" variants used previously.
+BLUE, RED, YELLOW = "#458588", "#cc241d", "#d79921"
+PURPLE, GREEN = "#b16286", "#98971a"
+AQUA, ORANGE = "#689d6a", "#d65d0e"
+# ORANGE (7) collides with GREEN (5), and BLUE (1) with PURPLE (4), for
+# red-green colourblind readers. Do not put either pair in one frame.
 CATEGORICAL = [BLUE, RED, YELLOW, PURPLE, GREEN, AQUA, ORANGE]
 
-# Sequential ramp for MAGNITUDE only, never identity. Anchored on the Gruvbox
-# blues (#458588 mid, #076678 dark); the pale end is those hues tinted toward
-# the surface, since Gruvbox ships no light-background ramp of its own.
-SEQUENTIAL = ["#dbe7e9", "#b3ccd0", "#8ab2b7", "#458588", "#1d6f7d", "#076678"]
+# Sequential ramp for MAGNITUDE only, never identity. Anchored on the regular
+# Gruvbox blue; the pale end is that hue tinted toward the surface, since
+# Gruvbox ships no light-background ramp of its own.
+SEQUENTIAL = ["#dfe9ea", "#bcd2d4", "#98babd", "#6f9fa3", "#458588", "#356a6d"]
 
 INK = "#000000"          # text, axes, ticks, frame -- black, as requested
 GRID = "#d9d9d9"         # hairline, solid, one shade off the surface
@@ -96,8 +98,8 @@ def apply() -> None:
         "axes.spines.top": False,
         "axes.spines.right": False,
 
-        "lines.linewidth": 1.6,
-        "lines.markersize": 4.5,
+        "lines.linewidth": 1.9,
+        "lines.markersize": 5.0,
 
         "legend.frameon": False,
         "legend.handlelength": 1.6,
@@ -136,6 +138,26 @@ def legend_above(ax, ncol=None, pad=0.02, **kw):
     kw.setdefault("columnspacing", 1.0)
     ax.legend(h, l, loc="lower left", bbox_to_anchor=(0.0, 1.0 + pad, 1.0, 0.12),
               mode="expand", borderaxespad=0.0, ncol=ncol or len(h), **kw)
+
+
+def on(bg: str) -> str:
+    """Label colour for text sitting ON a filled mark of colour `bg`.
+
+    Needed because the regular Gruvbox yellow is light enough that white text
+    on it is unreadable, while the blue wants white. Picking by hand gets it
+    wrong the moment a slot is reassigned.
+
+    Not a pure max-contrast rule. The strict WCAG crossover is at luminance
+    0.179, and Gruvbox blue sits just above it at 0.198 -- so max-contrast
+    would put black on a mid-dark teal, where both choices clear 4:1 anyway
+    (4.97 vs 4.23) and the dark one reads badly. The threshold is raised to
+    0.35 so a saturated dark fill keeps light text, which is the convention
+    and stays well inside the accessible range either way.
+    """
+    r, g, b = (int(bg.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    lum = 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    return INK if lum > 0.35 else "#ffffff"
 
 
 def headroom(ax, frac=0.22):

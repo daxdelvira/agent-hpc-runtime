@@ -6,26 +6,15 @@
 % % RESTORED so they can be checked against intent.
 
 \section{Gaps, Insights and Opportunities}
+\label{sec:insights}
 
 \subsection{Agents Break Existing HPC DMSH Solutions}
 
-\paragraph{Agents Create Workflow Nondeterminism.}
-Although their impact on scientific goals is significant, AI-steered HPC
-workflows break a fundamental assumption made by memory-storage software DSM
-systems about scientific HPC workflows: that of predictable phases and data
-accesses. AI steering agents make independent choices about which data will be
-used for computation in an upcoming phase (and in some cases even about which
-phases will be triggered). As a result, prior systems that treat storage as an
-extension of memory are unable to prefetch the correct data for each step in
-agentic HPC workflows because they rely on the definition of deterministic
-phases in an HPC workflow program. This leads to stalls while the required
-data is fetched from storage into memory. Figure~\ref{fig:predictability}
-demonstrates the proportion of runs of the same workflow that deviate from the
-most common action taken at a given step index. With only 30--60\% agreement
-at any given step, it exemplifies that even given the exact same task to
-investigate, agentic frameworks will produce significantly different behavior.
-Functionally, agentic workflows are not deterministic.
-
+% FLOATS DECLARED AT THE HEAD OF EACH SUBSECTION. A float can only move
+% FORWARD from where it is declared, so a figure declared after the paragraph
+% citing it can never appear before that paragraph -- which is what stacked
+% the figures at the end of earlier drafts. Declared here, LaTeX fills page
+% tops in reading order and a figure can precede its own citation.
 \begin{figure}[t]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
@@ -40,19 +29,6 @@ executions of an identical task. Agreement never exceeds 60\%, so the same
 request produces materially different executions.}
 \label{fig:predictability}
 \end{figure}
-
-\paragraph{Agents Add Memory Pressure.}
-To make matters worse, the core problem these solutions address is compounded
-in AI-steered workflows because AI agents comprise multi-billion-parameter
-models requiring anything from 2--200~GB of space (for most common models).
-The loading of model weights from disk all the way to GPU VRAM is some of the
-most expensive loading work in a workflow, and as such agentic workflows
-typically offload models that may be reused later onto CPU RAM. However, this
-means models are now in competition with the scientific data they work with
-for the RAM resources available, exacerbating the memory pressure HPC
-workflows experience. Figure~\ref{fig:replacement-loss} shows a visual
-workflow timeline against the page cache hits of a workflow over time, showing
-how typical ``weight-parking'' behavior can cycle useful data out of RAM.
 
 \begin{figure}[t]
 \centering
@@ -69,6 +45,26 @@ with a loss of the artifact's residency, which the next tool invocation must
 pay to rebuild.}
 \label{fig:replacement-loss}
 \end{figure}
+
+\paragraph{Agents Create Workflow Nondeterminism.}
+AI-steered workflows break the assumption these systems rest on: predictable
+phases and data accesses. Steering agents choose independently which data an
+upcoming phase will use, and in some cases which phases run at all, so a
+system that identifies data by the deterministic structure of a workflow
+program has nothing to identify. Figure~\ref{fig:predictability} shows the
+share of runs of an identical task that take the modal action at each step
+index. Agreement never exceeds 60\%: the same request produces materially
+different executions, and agentic workflows are functionally nondeterministic.
+
+\paragraph{Agents Add Memory Pressure.}
+The problem is compounded because the agents themselves are
+multi-billion-parameter models occupying 2--200~GB. Loading weights from disk
+through to device memory is among the most expensive work in a workflow, so
+frameworks park models that may be reused in host RAM rather than discarding
+them---which puts them in direct competition with the scientific data their
+tools consume. Figure~\ref{fig:replacement-loss} sets a workflow timeline
+against artifact residency over the same interval, showing how parking cycles
+useful data out of memory.
 
 \paragraph{Agents Rely Heavily On Data Transformations.}
 Data used by agentic tools must undergo a representation change. A
@@ -92,6 +88,55 @@ fetch but which structures to keep, and---when they cannot all be kept---which
 of them a gigabyte of memory is better spent on.
 
 \subsection{Value-Ranking Opportunities}
+
+\begin{figure}[t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-sgb-spread.pdf)
+%   seconds saved per GB retained, log $y$, one point per resource. Shade 
+%   the narrow model band (2.78--3.81) as a horizontal strip; scatter the 
+%   data artifacts across it, from ASCII at 22.0 to memory-mappable binary 
+%   at 0.34. Draw a horizontal rule at the 0.32~s/GB materialisation floor. 
+%   The models-in-the-middle geometry is the reading.
+\includegraphics[width=\columnwidth]{figures/fig-sgb-spread}
+\caption{Retention value per gigabyte across resources. Models occupy a narrow
+band set by transfer bandwidth; data artifacts span $65\times$ and bracket
+that band on both sides, so no fixed class priority is correct.}
+\label{fig:sgb-spread}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-scale-sweep.pdf)
+%   $x$ = number of distinct resources (5, 10, 18, 28). Left axis: advantage 
+%   over the recency-ranked baseline for retention and for staging, as two 
+%   lines that cross. Right axis: first-use share, rising 10.4\% 
+%   $\rightarrow$ 32.3\%. The crossing is the reading.
+\includegraphics[width=\columnwidth]{figures/fig-scale-sweep}
+\caption{As the resource population grows at fixed schedule length, first uses
+become a larger share of all needs and the advantage moves from retention to
+staging.}
+\label{fig:scale-sweep}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-topology-budget.pdf)
+%   $x$ = budget as \% of total footprint. $y$ = share of decisions in which 
+%   memory pressure forced an eviction, one line per accelerator-slot count, 
+%   falling to zero. Mark the packing thresholds with vertical rules so the 
+%   step structure is visible. This is the motivating view; 
+%   Figure~\ref{fig:budget-sweep} shows the same axis with performance 
+%   rather than pressure.
+\includegraphics[width=\columnwidth]{figures/fig-topology-budget}
+\caption{Contention as a function of budget and accelerator capacity. Above
+roughly 86\% of the total footprint nothing is ever evicted and the
+arbitration problem disappears; below it, budget admits resources in steps
+rather than smoothly.}
+\label{fig:topology-budget}
+\end{figure}
 
 \paragraph{Not Every GB Retained Is Equally Valuable.}
 If retention is the action, a scheduler needs a price: how many seconds of
@@ -121,21 +166,6 @@ structure into a process address space costs roughly 0.32~s/GB regardless of
 format, so a resource whose price approaches that floor performs no
 transformation at all, and retaining it buys nothing that placement would not.
 
-\begin{figure}[t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-sgb-spread.pdf)
-%   seconds saved per GB retained, log $y$, one point per resource. Shade 
-%   the narrow model band (2.78--3.81) as a horizontal strip; scatter the 
-%   data artifacts across it, from ASCII at 22.0 to memory-mappable binary 
-%   at 0.34. Draw a horizontal rule at the 0.32~s/GB materialisation floor. 
-%   The models-in-the-middle geometry is the reading.
-\includegraphics[width=\columnwidth]{figures/fig-sgb-spread}
-\caption{Retention value per gigabyte across resources. Models occupy a narrow
-band set by transfer bandwidth; data artifacts span $65\times$ and bracket
-that band on both sides, so no fixed class priority is correct.}
-\label{fig:sgb-spread}
-\end{figure}
 
 \paragraph{Value-Aware Retention vs.\ Prefetching Depend on Hardware Topology
 and the Inter-need Gap.}
@@ -176,79 +206,25 @@ whenever the resource is next used. The two mechanisms are thus complementary
 along both axes that vary in practice, which is the case for arbitrating them
 jointly rather than choosing one.  % RESTORED
 
-\begin{figure}[t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-scale-sweep.pdf)
-%   $x$ = number of distinct resources (5, 10, 18, 28). Left axis: advantage 
-%   over the recency-ranked baseline for retention and for staging, as two 
-%   lines that cross. Right axis: first-use share, rising 10.4\% 
-%   $\rightarrow$ 32.3\%. The crossing is the reading.
-\includegraphics[width=\columnwidth]{figures/fig-scale-sweep}
-\caption{As the resource population grows at fixed schedule length, first uses
-become a larger share of all needs and the advantage moves from retention to
-staging.}
-\label{fig:scale-sweep}
-\end{figure}
-
-\begin{figure}[t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-topology-budget.pdf)
-%   $x$ = budget as \% of total footprint. $y$ = share of decisions in which 
-%   memory pressure forced an eviction, one line per accelerator-slot count, 
-%   falling to zero. Mark the packing thresholds with vertical rules so the 
-%   step structure is visible. This is the motivating view; 
-%   Figure~\ref{fig:budget-sweep} shows the same axis with performance 
-%   rather than pressure.
-\includegraphics[width=\columnwidth]{figures/fig-topology-budget}
-\caption{Contention as a function of budget and accelerator capacity. Above
-roughly 86\% of the total footprint nothing is ever evicted and the
-arbitration problem disappears; below it, budget admits resources in steps
-rather than smoothly.}
-\label{fig:topology-budget}
-\end{figure}
 
 \subsection{Speculative Value-Ranking Opportunities}
-
-\paragraph{Local transition structure survives workflow-level nondeterminism.}
-Agentic workflows are dynamic in the large but structured in the small: tools
-exhibit high-confidence $k$-offset successor relationships, in which one tool
-consistently follows another a fixed number of invocations later. Not every
-tool has such a successor at every offset, but nearly every tool has one at
-some offset. Figure~\ref{fig:tool-relationships} shows this for AtomAgents at
-both framework and workflow level---restricting to $k \in [0,5]$, both
-workflows contain numerous relationships with empirical confidence between 0.9
-and 1.0. Critically, these relationships persist across substantially
-different prompts and objectives within a framework, so traces from prior,
-unrelated executions supply useful priors on the first run of a workflow never
-seen before.
-
-\paragraph{Plans predict order, not distance.}
-Frameworks organised by a planner agent expose a second, longer-range signal:
-a natural-language plan naming the tools to be invoked and their intended
-order. In AtomAgents these plans predict 95\% of tool orderings correctly
-(Figure~\ref{fig:plan-accuracy}), far enough ahead to begin staging resources
-whose construction would otherwise be exposed. What they do not supply is
-distance: agents insert additional calls to recover from syntax errors and
-retry failures, so the observed trace diverges from the planned offsets even
-when the order is right. Plans therefore reach far but locate poorly, while
-local transitions locate well but do not reach---which is why the two are used
-together.
 
 \begin{figure}[t]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
 % scripts/figures/make_figures.py -> figure_drafts/fig-tool-relationships.pdf)
-%   heatmap or matrix, source tool $\times$ offset $k \in [0,5]$, cell 
-%   shaded by the confidence of the highest-confidence successor at that 
-%   offset. Two panels: framework level and workflow level. Highlight cells 
-%   in the 0.9--1.0 band. The reading is that nearly every row has at least 
-%   one dark cell.
+%   ORIGINAL SPEC was a source-tool x offset heatmap. Rendered, that ran to
+%   26 rows and occupied 100.5%% of a column -- the largest single item in the
+%   paper -- to support a claim that is about the SHARE of tools with a
+%   confident successor, not about which ones. Replaced by the distribution:
+%   x = confidence threshold, y = share of tools at or above it, one line per
+%   offset, star marking the best-over-any-offset count at 0.9. The heatmap
+%   is still generated as fig-tool-relationships-detail if the per-tool view
+%   is wanted; swapping the filename below restores it.
 \includegraphics[width=\columnwidth]{figures/fig-tool-relationships}
-\caption{High-confidence $k$-offset successor relationships in AtomAgents.
-Nearly every tool has at least one successor at some offset with confidence
-above 0.9, despite workflow-level nondeterminism.}
+\caption{Distribution of best-successor confidence across AtomAgents tools,
+per offset $k$. Despite workflow-level nondeterminism, 17 of 26 tools have a
+successor at some offset with confidence above 0.9.}
 \label{fig:tool-relationships}
 \end{figure}
 
@@ -267,3 +243,32 @@ are not. Agents insert recovery and retry calls, so realized offsets diverge
 from planned ones even when the order is correct.}
 \label{fig:plan-accuracy}
 \end{figure}
+
+\paragraph{Local transition structure survives workflow-level nondeterminism.}
+Agentic workflows are dynamic in the large but structured in the small: tools
+exhibit high-confidence $k$-offset successor relationships, in which one tool
+consistently follows another a fixed number of invocations later. Not every
+tool has such a successor at every offset, but a substantial majority have one
+at some offset. Over the offsets our transition table records ($k \in
+\{1,2,3\}$), 17 of 26 AtomAgents tools---65\%---have a successor with
+empirical confidence of at least 0.9, and the signal is concentrated at $k=2$,
+where 58\% of tools clear that threshold
+(Figure~\ref{fig:tool-relationships}). Critically, these relationships persist
+across substantially
+different prompts and objectives within a framework, so traces from prior,
+unrelated executions supply useful priors on the first run of a workflow never
+seen before.
+
+\paragraph{Plans predict order, not distance.}
+Frameworks organised by a planner agent expose a second, longer-range signal:
+a natural-language plan naming the tools to be invoked and their intended
+order. In AtomAgents these plans predict 95\% of tool orderings correctly
+(Figure~\ref{fig:plan-accuracy}), far enough ahead to begin staging resources
+whose construction would otherwise be exposed. What they do not supply is
+distance: agents insert additional calls to recover from syntax errors and
+retry failures, so the observed trace diverges from the planned offsets even
+when the order is right. Plans therefore reach far but locate poorly, while
+local transitions locate well but do not reach---which is why the two are used
+together.
+
+

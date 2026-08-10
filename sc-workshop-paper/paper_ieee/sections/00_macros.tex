@@ -17,6 +17,34 @@
 % brace need no {} and were left alone.
 \newcommand{\sysname}{Tandem}
 
+% ---------------------------------------------------------------------------
+% FLOAT PLACEMENT. This paper is figure-dense: 16 floats against roughly six
+% pages of text. LaTeX's stock parameters allow at most 2 floats at the top of
+% a page and 3 per page total, and refuse any page that is more than 70% float
+% -- limits tuned for a paper with far fewer figures. Under them the float
+% queue cannot drain as fast as figures are declared, and the overflow is
+% flushed at the end of the document, which is why earlier drafts ended in a
+% block of figures.
+%
+% Raising the limits lets the queue keep up. These are placement parameters
+% only: nothing about the text changes, and a figure still cannot appear
+% before the point where it is DECLARED (which is why the section files now
+% declare each float at the head of its subsection rather than after the
+% paragraph that cites it).
+%
+% If figures still collect at the end after this, the queue is genuinely
+% oversubscribed and the remedy is fewer or merged figures, not more tuning.
+\setcounter{topnumber}{3}            % floats at the top of a column  (was 2)
+\setcounter{totalnumber}{4}          % floats per column              (was 3)
+\setcounter{dbltopnumber}{2}         % full-width floats at page top  (was 2)
+\renewcommand{\topfraction}{0.92}    % of a column that may be top float
+\renewcommand{\dbltopfraction}{0.92} % same, for full-width floats
+\renewcommand{\bottomfraction}{0.5}
+\renewcommand{\textfraction}{0.06}   % minimum text on a mixed page   (was .2)
+\renewcommand{\floatpagefraction}{0.7}
+\renewcommand{\dblfloatpagefraction}{0.7}
+% ---------------------------------------------------------------------------
+
 % Placeholder that used to stand in for an unrendered plot. #1 optional width,
 % #2 box height, #3 the plot specification.
 %

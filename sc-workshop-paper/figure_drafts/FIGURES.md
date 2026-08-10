@@ -33,6 +33,7 @@ Theme lives in `scripts/figures/theme.py`.
 | 5 | `fig-scale-sweep` | `fig:scale-sweep` | **S** | `results_tables/05_scale_sweep.md` |
 | 6 | `fig-topology-budget` | `fig:topology-budget` | **S** | `results_tables/02_budget_sweep.md` |
 | 7 | `fig-tool-relationships` | `fig:tool-relationships` | **M** | `runtime/predictor/data/learned_transitions.json` |
+| — | `fig-tool-relationships-detail` | *(not referenced)* | **M** | per-tool heatmap, kept but unused — see caveats |
 | 8 | *(you have this)* | `fig:plan-accuracy` | — | not generated |
 | 9 | `fig-budget-sweep` | `fig:budget-sweep` | **S** | `results_tables/02_budget_sweep.md` |
 | 10 | `fig-stall-ladder` | `fig:stall-ladder` | **S** | `results_tables/02_budget_sweep.md` |
@@ -60,13 +61,22 @@ and `figures/fig-plan-accuracy`; drop PDFs with those names into
 
 ## Caveats that need your decision
 
-**`fig-tool-relationships` contradicts the prose in two ways.** The shipped
-transition table carries **offsets 1, 2 and 3 only** — the predictor's horizon
-is hardcoded to a short window — so the claim of *k* ∈ [0,5] cannot be drawn
-from this artifact. And **17 of 26 tools** have at least one successor above
-0.9 confidence, which is 65%, not the "nearly every tool" the paragraph
-claims. The figure plots what exists. Either regenerate the table over a wider
-offset range, or soften both claims to match.
+**`fig-tool-relationships` was redrawn, and the prose corrected to match it.**
+The original 26-row heatmap occupied **100.5% of a column** — a full column,
+the largest single item in the paper — to support a claim that is about the
+*share* of tools with a confident successor rather than about which ones. It
+is now the distribution: confidence threshold against share of tools at or
+above it, one line per offset. Same data, 26% of the space.
+
+Two prose claims were wrong against this artifact and are now fixed. The
+shipped table carries **offsets 1, 2 and 3 only**, so *k* ∈ [0,5] was never
+drawable from it; and **17 of 26 tools** (65%) clear 0.9 confidence, which is
+not "nearly every tool." If you regenerate the transition table over a wider
+offset range, both the figure and the corrected sentence should be revisited.
+
+The heatmap still generates as `fig-tool-relationships-detail` and is not
+referenced by the paper; swapping the filename in `03_problem.tex` restores
+it.
 
 **`fig-replacement-loss` has one series that is not measured.** The model
 timeline is real — the seven load windows of a representative trial. The

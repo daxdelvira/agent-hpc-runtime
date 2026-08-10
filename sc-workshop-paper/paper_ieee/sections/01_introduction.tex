@@ -1,5 +1,30 @@
 \section{Introduction}
 
+% FLOAT PLACED FIRST, DELIBERATELY. LaTeX can only carry a float FORWARD from
+% where it is declared, so a figure declared after the paragraph that cites it
+% can never appear before that paragraph. This one is declared ahead of all
+% body text and asks for [!t], which suspends the usual limits on how much of
+% a page may be float, so it lands at the top of page 1.
+\begin{figure}[!t]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-intro-behavior.pdf)
+%   two stacked timelines. Top: a traditional HPC workflow, phases with
+%   declared inputs, staging bars for phase $n{+}1$ overlapping computation
+%   of phase $n$, no exposed stall. Bottom: an agentic workflow, where the
+%   data need for phase $n{+}1$ becomes visible only after the agent's
+%   decision point, so the staging bar starts late and a stall band is
+%   exposed. Mark the agent decision points explicitly --- the late arrival
+%   of the need is the whole figure.
+\includegraphics[width=\columnwidth]{figures/fig-intro-behavior}
+\caption{Why phase-based staging works for traditional HPC workflows and
+fails for agentic ones. In the traditional case the data need is known before
+the phase begins and retrieval overlaps the preceding computation; in the
+agentic case the need becomes visible only after a steering decision, leaving
+too little window to hide the transfer.}
+\label{fig:intro-behavior}
+\end{figure}
+
 Agentic workflows based on artificial intelligence (AI) are quickly
 revolutionizing high-performance computing (HPC), making it possible for
 machine learning algorithms to control the flow of HPC workflows and allowing
@@ -57,26 +82,6 @@ a given phase---or even the ordering of the phases themselves---are not
 available until a steering model produces control decisions, which may be
 delayed, incrementally produced, and sporadic.
 
-\begin{figure}[t]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-intro-behavior.pdf)
-%   two stacked timelines. Top: a traditional HPC workflow, phases with 
-%   declared inputs, staging bars for phase $n{+}1$ overlapping computation 
-%   of phase $n$, no exposed stall. Bottom: an agentic workflow, where the 
-%   data need for phase $n{+}1$ becomes visible only after the agent's 
-%   decision point, so the staging bar starts late and a stall band is 
-%   exposed. Mark the agent decision points explicitly --- the late arrival 
-%   of the need is the whole figure.
-\includegraphics[width=\columnwidth]{figures/fig-intro-behavior}
-\caption{Why phase-based staging works for traditional HPC workflows and
-fails for agentic ones. In the traditional case the data need is known before
-the phase begins and retrieval overlaps the preceding computation; in the
-agentic case the need becomes visible only after a steering decision, leaving
-too little window to hide the transfer.}
-\label{fig:intro-behavior}
-\end{figure}
-
 This means prior work that uses storage to extend memory for non-agentic HPC
 workflows cannot prefetch the correct data for each step in agentic HPC
 workflows. These systems must rely on deterministic data-selection policies
@@ -90,21 +95,14 @@ that a state-of-the-art DMSH system increases end-to-end wall time by
 $3.2\times$ on our workloads rather than decreasing it as it does for
 traditional workflows.
 
-Because DMSH solutions are not broadly applicable to agentic workflows, the
-performance challenges introduced by these workflows translate into economic
-and sustainability concerns for scientific computing infrastructures. HPC
-systems operate under strict power, memory, and budget constraints, where idle
-accelerators and unnecessary data transfers lead to greater operational costs
-and higher energy consumption. Simply scaling DRAM capacity or storage
-bandwidth to accommodate dynamic data-access patterns is rarely feasible,
-especially for research institutions operating fixed on-premise infrastructure
-or handling sensitive data that cannot be exposed to externally hosted
-services. Efficient data movement therefore becomes a first-order systems
-concern rather than a secondary optimization. At the same time, agentic
-workflows offer the potential to accelerate scientific discovery through
-adaptive experimentation and automated decision-making. Enabling these
-workflows to run efficiently within realistic resource constraints therefore
-represents a systems challenge with broad scientific impact.
+Because DMSH solutions are not broadly applicable here, these performance
+losses become economic and sustainability costs. Idle accelerators and
+unnecessary transfers consume power and allocation on systems that are already
+constrained, and the usual escape---provisioning more DRAM or bandwidth---is
+least available to the institutions running fixed on-premise infrastructure or
+handling data that cannot leave it. Efficient data movement is therefore a
+first-order concern for making agentic workflows viable at all, not a
+secondary optimization.
 
 Designing a memory and storage management system that enables efficient
 agentic HPC workflows requires addressing several challenges. First, most of
@@ -137,37 +135,29 @@ into a 10.6~s reuse. Both charge the same memory allocation. Because held
 resources cannot be partially surrendered, the arbitrator solves a
 subset-selection problem rather than evicting one victim at a time. It ranks
 candidates by the seconds of stall avoided per gigabyte held and discounts
-each candidate according to the time until it is next required. Relative to a
-runtime that retains nothing, \sysname{} reduces end-to-end wall time by 34.5\%
-at our production allocation and by 50.8\% with additional accelerator
-capacity. Relative to a recency-ranked baseline that already retains both
-resource classes, it reduces wall time by a further 10.3--17.1\%. We report
-both because retention alone is obtainable from an inference server and a
-persistent worker process; what the recency-ranked baseline lacks is
-value-aware arbitration.
+each candidate according to the time until it is next required.
 
 The opportunistic prefetcher provides what retention structurally cannot: a
 first use of a resource has nothing to retain. It draws time-to-next-need
 estimates from a lightweight predictor that combines a planning agent's
-declared sequence with learned tool-to-tool succession. By default, it stages
-resources only into memory that the arbitrator has left unclaimed. This
-restriction makes speculation safe at realistic prediction quality: a stage
-that consumes only unclaimed memory cannot displace a more valuable retention,
-so its downside is bounded by wasted bandwidth rather than a lost retention.
-Displacement is permitted only under a conjunction of strict conditions.
-Staging contributes a further 1.6 percentage points at the production
-allocation, and its share grows with the number of distinct resources a
-workflow touches.
+declared sequence with learned tool-to-tool succession. By default it stages
+only into memory the arbitrator has left unclaimed, which is what makes
+speculation safe at realistic prediction quality; displacement is permitted
+only under a conjunction of strict conditions. Staging contributes a further
+1.6 percentage points at the production allocation, and its share grows with
+the number of distinct resources a workflow touches.
 
-We evaluate \sysname{} in terms of stall reduction and end-to-end wall time,
-isolate the contribution of each mechanism, measure the CPU cost that resident
-worker processes impose on foreground agent work, and characterize sensitivity
-to the planning horizon, accelerator topology, and predictor accuracy. We
-compare against a runtime that retains nothing, a recency-ranked retention
-policy that already retains both resource classes, and a state-of-the-art DMSH
-system evaluated both as naively implemented and as adapted to account for
-agentic framework specifics, using workflows built with the AtomAgents
-framework.
+We evaluate \sysname{} on workflows built with the AtomAgents framework,
+reporting stall and end-to-end wall time, isolating each mechanism's
+contribution, measuring the CPU cost resident workers impose on foreground
+agent work, and characterizing sensitivity to the planning horizon,
+accelerator topology, and predictor accuracy. We compare against a runtime
+that retains nothing, a recency-ranked policy that already retains both
+resource classes, and a state-of-the-art DMSH system in both naive and
+agentic-framework-adapted form. We report against both baselines throughout,
+because retention alone is obtainable from an inference server and a
+persistent worker process; what the recency-ranked baseline lacks is
+value-aware arbitration.
 
 \medskip
 \noindent The main contributions of our paper include:

@@ -10,21 +10,14 @@
 
 \subsection{System Overview}
 
-\sysname{} is a runtime that manages a single host-memory budget shared by two
-kinds of resource: language models backing an agent's reasoning and
-tool-calling steps, and the scientific data artifacts those tools consume. It
-has two components.
-
-The retention arbitrator decides which resources remain resident between uses,
-and at which level. It is the primary component and it acts at every point
-where memory pressure forces a choice. The opportunistic prefetcher moves
-resources toward residency ahead of need, and is deliberately subordinate: it
-consumes memory that retention did not claim, and may displace a resident
-resource only under a conjunction of strict conditions.
-
-Both components score candidates with one value function, so a decision to
-stage something and a decision to keep something are directly comparable
-rather than governed by separate policies competing for the same memory.
+\sysname{} manages a single host-memory budget shared by two kinds of
+resource: the language models backing an agent's reasoning and tool-calling
+steps, and the scientific data artifacts those tools consume. The retention
+arbitrator is the primary component and acts wherever memory pressure forces a
+choice; the opportunistic prefetcher is deliberately subordinate to it. Both
+score candidates with one value function, so a decision to stage and a
+decision to keep are directly comparable rather than governed by separate
+policies competing for the same memory.
 
 \subsection{Residency States}
 
@@ -96,25 +89,11 @@ decays as $H/\Delta t$, so a resource that will not be touched for a long time
 surrenders its memory to one that will. A system without $H$ has to pick one
 of these behaviours globally and gets the other regime wrong.
 
-$H$ also gives the prefetcher and the arbitrator a shared notion of ``soon,''
-which is what allows staging and retention to be scored in one currency
-(Section~\ref{sec:prefetch}). It is a tunable, and the natural setting is on
-the order of the workflow's typical inter-step gap.
+$H$ is a tunable, and the natural setting is on the order of the workflow's
+typical inter-step gap. It is also what lets staging and retention be scored
+in one currency (Section~\ref{sec:prefetch}).
 
 \subsubsection{Selection Under Indivisibility}
-
-Held resources cannot be partially surrendered. Half a model's weights serve
-no requests, and a partially retained structure does not answer queries, so
-release is all-or-nothing. Selection is therefore a subset choice under a
-capacity constraint rather than a sequence of independent evictions, and
-\sysname{} evaluates it as one: it searches for the highest-value set that fits,
-rather than repeatedly discarding the worst-ranked resident. The distinction
-matters whenever admitting one large resource requires releasing two smaller
-ones---a decision single-victim eviction cannot express.
-Algorithm~\ref{alg:arb} states the resulting decision procedure.
-
-Ties are broken toward the smaller total footprint, so equal value never costs
-extra budget.
 
 % ALGORITHM FLOAT. The authoritative preamble loads `algorithmic' only, which
 % supplies the pseudocode body but NO `algorithm' float wrapper (that comes
@@ -143,6 +122,20 @@ extra budget.
 \caption{Residency decision}
 \label{alg:arb}
 \end{figure}
+
+Held resources cannot be partially surrendered. Half a model's weights serve
+no requests, and a partially retained structure does not answer queries, so
+release is all-or-nothing. Selection is therefore a subset choice under a
+capacity constraint rather than a sequence of independent evictions, and
+\sysname{} evaluates it as one: it searches for the highest-value set that fits,
+rather than repeatedly discarding the worst-ranked resident. The distinction
+matters whenever admitting one large resource requires releasing two smaller
+ones---a decision single-victim eviction cannot express.
+Algorithm~\ref{alg:arb} states the resulting decision procedure.
+
+Ties are broken toward the smaller total footprint, so equal value never costs
+extra budget.
+
 
 \subsubsection{Horizon Estimation}
 \label{sec:horizon}
