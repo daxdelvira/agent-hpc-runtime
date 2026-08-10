@@ -168,29 +168,25 @@ value-aware arbitration.
 
 \begin{itemize}
 
-\item We conduct a detailed analysis of memory and storage behavior in agentic
-HPC workflows, showing that assumptions underlying existing deep memory and
-storage hierarchy (DMSH) systems break down under AI-driven control. We
-further show that byte placement is the wrong unit of work for these
-workflows: 93.0\% of the cost of making a scientific artifact usable is
-representation change performed inside the consumer process, and the value of
-a gigabyte of retained memory varies by $65\times$ across representations.
+\item We show that the phase-predictability assumption behind deep memory and
+storage hierarchy (DMSH) systems fails under AI-driven control, and that byte
+placement is the wrong unit of work regardless: 93.0\% of the cost of making a
+scientific artifact usable is representation change inside the consumer
+process, and a gigabyte of retained memory varies $65\times$ in value across
+representations.
 
-\item We present \sysname, a middleware runtime for agentic HPC workflows that
-manages agent-backing models and transformed scientific data against a single
-host-memory budget. \sysname{} combines a retention arbitrator that treats
-residency as a subset-selection problem---ranking candidates by stall avoided
-per gigabyte held, discounted by time to next use---with an opportunistic
-prefetcher that stages into unclaimed memory and may displace a resident
-resource only under strict conditions.
+\item We present \sysname, a middleware runtime managing agent-backing models
+and transformed scientific data against a single host-memory budget. A
+retention arbitrator treats residency as subset selection, ranking candidates
+by stall avoided per gigabyte held and discounting by time to next use; a
+subordinate prefetcher stages into unclaimed memory, displacing a resident
+only under strict conditions.
 
-\item We demonstrate that \sysname{} reduces stall and end-to-end execution time
-across representative agentic HPC workflows. Compared to a runtime that
-retains nothing, \sysname{} reduces end-to-end wall time by 34.5--50.8\%;
-compared to a recency-ranked baseline that already retains both classes, by a
-further 10.3--17.1\%. We attribute the result to each mechanism separately and
-report where each stops working---retention cannot help a first use, staging
-cannot help without a window, and above roughly 86\% of the total footprint
-neither is needed.
+\item We show \sysname{} reduces stall and end-to-end wall time by
+34.5--50.8\% against a runtime that retains nothing, and by a further
+10.3--17.1\% against a recency-ranked baseline that already retains both
+classes. We attribute the gain per mechanism and report where each stops:
+retention cannot help a first use, staging cannot help without a window, and
+above roughly 86\% of the footprint neither is needed.
 
 \end{itemize}
