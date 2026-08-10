@@ -1,0 +1,32 @@
+% ---------------------------------------------------------------------------
+% Document macros.
+%
+% These belong in a preamble, but the authoritative main.tex preamble is fixed
+% and must not be edited, so they live here and are \input'ed as the first
+% thing inside the document body. \newcommand is legal in the body, and both
+% macros are expanded only at use sites that come after this \input. If the
+% authoritative preamble is ever reopened, move these two definitions into it
+% verbatim and delete this file plus its \input line.
+% ---------------------------------------------------------------------------
+
+% System name. The original definition was \newcommand{\sysname}{Tandem\xspace}
+% but `xspace' is NOT loaded by the authoritative preamble. Rather than add a
+% package, the macro is plain and every call site that is followed by a space
+% or a newline was rewritten to \sysname{} (mechanically, 20 sites across three
+% section files). Call sites followed directly by punctuation or a closing
+% brace need no {} and were left alone.
+\newcommand{\sysname}{Tandem}
+
+% Placeholder standing in for an unrendered plot. #1 optional width,
+% #2 box height, #3 the plot specification. Uses only \fbox and \parbox, both
+% LaTeX kernel, so it needs nothing that IEEEtran does not already provide.
+% Every figure in every section calls this. To land a real plot, replace
+%     \figspec{4.2cm}{...spec text...}
+% with
+%     \includegraphics[width=\columnwidth]{figures/NAME}
+% and leave the \caption and \label alone. Note: the authoritative preamble
+% sets no \graphicspath, so use paths relative to main.tex (figures/NAME) or
+% add \graphicspath{{figures/}} at that time. Delete this macro once no call
+% sites remain.
+\newcommand{\figspec}[3][0.95\columnwidth]{%
+  \fbox{\parbox[c][#2][c]{#1}{\centering\footnotesize\itshape #3}}}

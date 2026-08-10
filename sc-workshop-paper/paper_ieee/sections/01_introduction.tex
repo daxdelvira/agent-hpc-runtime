@@ -1,0 +1,198 @@
+\section{Introduction}
+
+Agentic workflows based on artificial intelligence (AI) are quickly
+revolutionizing high-performance computing (HPC), making it possible for
+machine learning algorithms to control the flow of HPC workflows and allowing
+them to be more accurate and/or flexible. In a standard HPC workflow, a series
+of program-defined computational phases (modeling, simulation, analysis,
+visualization, etc.) ingest and produce data toward an end scientific result.
+An agentic workflow, by contrast, is a computational workflow in which one or
+more AI agents---software components that use AI to make independent decisions
+on behalf of users---observe intermediate data results during execution and
+dynamically select the next phase(s). Agentic workflows have proven beneficial
+in various scientific fields, such as molecular dynamics, alloy discovery, and
+computational chemistry. For instance, agents that selectively prune data to
+limit simulation to high-potential pathways (protein configurations, material
+models, etc.) lead to significant performance gains, such as in DeepDriveMD,
+where performance improved by $2.33\times$. Other agentic workflows increase
+the flexibility of HPC workflows, allowing them to leverage out-of-domain
+knowledge to automate processes previously limited to human experts, such as
+metallic alloy design.
+
+However, agentic workflows fundamentally challenge several key assumptions on
+which existing memory and storage management in high-performance computing
+systems are based. In particular, workflow phases are expected to proceed
+synchronously, reuse predictable data, and have one source of direction or
+control. This poses a problem because scientific simulations ingest and
+produce large amounts of data---sometimes more than $O(100$~TB$)$---and
+therefore cannot feasibly hold all the data required for the workflow in CPU
+RAM or GPU VRAM at once, depending on the compute step. This manifestation of
+the infamous ``memory wall'' problem results in longer overall wall time for
+workflow executions and processing-unit idle time, during which processing
+units incur energy and financial costs while performing no simulation work.
+Simply adding DRAM is a costly measure that does not scale easily across
+scientific workflows. Traditional HPC workflows could have their data needs
+fully predicted by inserting ``hints'' into the workflow's source code.
+Agentic workflows have no such---or highly limited---source code because
+decisions that would have been defined in the program's flow of control are
+instead made at runtime. Not only does this revive the memory-wall problem
+faced by all HPC workflows, but the various specialized LLMs backing different
+agents within a workflow add further memory pressure, since the parameters for
+each model can occupy hundreds of gigabytes.
+
+In traditional HPC workflows, prior solutions leveraged predictable
+phase-based execution to expose a unified memory-and-storage hierarchy to the
+workflow, prefetching relevant data from storage and placing it in memory
+before the phase in which it was needed. Overlapping data movement for the
+next phase with computation in the current phase allowed storage to be used as
+an extension of memory for data-intensive workflows without exposing the
+overheads of storage access. This ``Deep Memory and Storage Hierarchy'' (DMSH)
+could be presented to applications as a massive memory pool without incurring
+significant performance penalties. As illustrated in
+Figure~\ref{fig:intro-behavior}, this approach has worked for traditional HPC
+workflows because each phase has known inputs and outputs. The required data
+is therefore known before each phase begins, allowing retrieval to overlap
+with computation in the preceding phase. In agentic workflows, the inputs for
+a given phase---or even the ordering of the phases themselves---are not
+available until a steering model produces control decisions, which may be
+delayed, incrementally produced, and sporadic.
+
+\begin{figure}[t]
+\centering
+\figspec{5.0cm}{\textbf{fig:intro-behavior} --- two stacked timelines. Top:
+a traditional HPC workflow, phases with declared inputs, staging bars for
+phase $n{+}1$ overlapping computation of phase $n$, no exposed stall. Bottom:
+an agentic workflow, where the data need for phase $n{+}1$ becomes visible
+only after the agent's decision point, so the staging bar starts late and a
+stall band is exposed. Mark the agent decision points explicitly --- the late
+arrival of the need is the whole figure.}
+\caption{Why phase-based staging works for traditional HPC workflows and
+fails for agentic ones. In the traditional case the data need is known before
+the phase begins and retrieval overlaps the preceding computation; in the
+agentic case the need becomes visible only after a steering decision, leaving
+too little window to hide the transfer.}
+\label{fig:intro-behavior}
+\end{figure}
+
+This means prior work that uses storage to extend memory for non-agentic HPC
+workflows cannot prefetch the correct data for each step in agentic HPC
+workflows. These systems must rely on deterministic data-selection policies
+designed for non-AI-steered workflows. On our tested workloads, every stall
+these systems incur occurs because the staging window is too small to hide the
+transfer: the data need becomes visible only after the agent has committed to
+it. Agentic workflows consequently stall while the required data is fetched
+from storage into memory. Incorrectly prefetched data also pollutes the memory
+cache when it is read but not used in the next workflow phase. The result is
+that a state-of-the-art DMSH system increases end-to-end wall time by
+$3.2\times$ on our workloads rather than decreasing it as it does for
+traditional workflows.
+
+Because DMSH solutions are not broadly applicable to agentic workflows, the
+performance challenges introduced by these workflows translate into economic
+and sustainability concerns for scientific computing infrastructures. HPC
+systems operate under strict power, memory, and budget constraints, where idle
+accelerators and unnecessary data transfers lead to greater operational costs
+and higher energy consumption. Simply scaling DRAM capacity or storage
+bandwidth to accommodate dynamic data-access patterns is rarely feasible,
+especially for research institutions operating fixed on-premise infrastructure
+or handling sensitive data that cannot be exposed to externally hosted
+services. Efficient data movement therefore becomes a first-order systems
+concern rather than a secondary optimization. At the same time, agentic
+workflows offer the potential to accelerate scientific discovery through
+adaptive experimentation and automated decision-making. Enabling these
+workflows to run efficiently within realistic resource constraints therefore
+represents a systems challenge with broad scientific impact.
+
+Designing a memory and storage management system that enables efficient
+agentic HPC workflows requires addressing several challenges. First, most of
+the cost of making scientific data usable is not byte movement: in the
+artifact we decompose directly, 93.0\% of the cost is representation change
+performed inside the consumer process, and no amount of correctly placed bytes
+removes it. Second, transformed scientific data structures and the parked
+weights of the models backing the agents are both anonymous process memory
+drawn from a single allocation, so they compete directly. A gigabyte of
+retained memory is not uniformly valuable, with the seconds of stall avoided
+per gigabyte retained spanning $65\times$ across representations. Third,
+information about what the workflow will need next is available only at coarse
+and fine granularities that are individually insufficient and remain imperfect
+in aggregate. Speculative work must therefore be bounded so that an incorrect
+prediction cannot destroy a correct retention decision.
+
+To address these challenges, we propose \sysname, a middleware runtime that
+manages a host-memory budget shared by the models backing an agentic workflow
+and the scientific data consumed by its tools. \sysname{} contains (1) a
+retention arbitrator that decides which models and transformed data structures
+remain resident between uses and (2) an opportunistic prefetcher that stages
+resources ahead of need using memory that the arbitrator has not claimed.
+
+The retention arbitrator treats residency as a budgeted choice rather than
+applying a fixed priority across resource classes. Both classes can be held in
+a state that makes their next use inexpensive: a model's weights can be parked
+in host memory, turning a 782~s cold start into a 2.1~s wake, while a parsed
+artifact can be retained in a live worker, turning a 93.7~s reconstruction
+into a 10.6~s reuse. Both charge the same memory allocation. Because held
+resources cannot be partially surrendered, the arbitrator solves a
+subset-selection problem rather than evicting one victim at a time. It ranks
+candidates by the seconds of stall avoided per gigabyte held and discounts
+each candidate according to the time until it is next required. Relative to a
+runtime that retains nothing, \sysname{} reduces end-to-end wall time by 34.5\%
+at our production allocation and by 50.8\% with additional accelerator
+capacity. Relative to a recency-ranked baseline that already retains both
+resource classes, it reduces wall time by a further 10.3--17.1\%. We report
+both because retention alone is obtainable from an inference server and a
+persistent worker process; what the recency-ranked baseline lacks is
+value-aware arbitration.
+
+The opportunistic prefetcher provides what retention structurally cannot: a
+first use of a resource has nothing to retain. It draws time-to-next-need
+estimates from a lightweight predictor that combines a planning agent's
+declared sequence with learned tool-to-tool succession. By default, it stages
+resources only into memory that the arbitrator has left unclaimed. This
+restriction makes speculation safe at realistic prediction quality: a stage
+that consumes only unclaimed memory cannot displace a more valuable retention,
+so its downside is bounded by wasted bandwidth rather than a lost retention.
+Displacement is permitted only under a conjunction of strict conditions.
+Staging contributes a further 1.6 percentage points at the production
+allocation, and its share grows with the number of distinct resources a
+workflow touches.
+
+We evaluate \sysname{} in terms of stall reduction and end-to-end wall time,
+isolate the contribution of each mechanism, measure the CPU cost that resident
+worker processes impose on foreground agent work, and characterize sensitivity
+to the planning horizon, accelerator topology, and predictor accuracy. We
+compare against a runtime that retains nothing, a recency-ranked retention
+policy that already retains both resource classes, and a state-of-the-art DMSH
+system evaluated both as naively implemented and as adapted to account for
+agentic framework specifics, using workflows built with the AtomAgents
+framework.
+
+\medskip
+\noindent The main contributions of our paper include:
+
+\begin{itemize}
+
+\item We conduct a detailed analysis of memory and storage behavior in agentic
+HPC workflows, showing that assumptions underlying existing deep memory and
+storage hierarchy (DMSH) systems break down under AI-driven control. We
+further show that byte placement is the wrong unit of work for these
+workflows: 93.0\% of the cost of making a scientific artifact usable is
+representation change performed inside the consumer process, and the value of
+a gigabyte of retained memory varies by $65\times$ across representations.
+
+\item We present \sysname, a middleware runtime for agentic HPC workflows that
+manages agent-backing models and transformed scientific data against a single
+host-memory budget. \sysname{} combines a retention arbitrator that treats
+residency as a subset-selection problem---ranking candidates by stall avoided
+per gigabyte held, discounted by time to next use---with an opportunistic
+prefetcher that stages into unclaimed memory and may displace a resident
+resource only under strict conditions.
+
+\item We demonstrate that \sysname{} reduces stall and end-to-end execution time
+across representative agentic HPC workflows. Compared to a runtime that
+retains nothing, \sysname{} reduces end-to-end wall time by 34.5--50.8\%;
+compared to a recency-ranked baseline that already retains both classes, by a
+further 10.3--17.1\%. On a workflow where a DMSH baseline instead increases
+wall time by $3.2\times$, \sysname{} is indistinguishable from the unmodified
+baseline.
+
+\end{itemize}

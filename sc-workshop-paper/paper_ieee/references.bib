@@ -1,0 +1,15 @@
+% Bibliography database for paper_ieee/main.tex.
+%
+% EMPTY ON PURPOSE. The authoritative main.tex ends with
+%   \bibliographystyle{IEEEtran}
+%   \bibliography{references}
+% so bibtex needs this file to exist, but the section prose currently contains
+% ZERO \cite commands -- every reference in the draft is named inline in words
+% ("DeepDriveMD", "AtomAgents", "AutoGen", "LAMMPS", the memory-wall scaling
+% figures, the DMSH prior work). Those all still need citations.
+%
+% Until at least one \cite exists, `bibtex main' reports "I found no \citation
+% commands" and produces no main.bbl; pdflatex then warns about the missing
+% .bbl but still completes. That is expected, not a break.
+%
+% TODO: add entries and \cite them from the section files.

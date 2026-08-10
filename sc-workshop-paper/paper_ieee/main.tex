@@ -1,0 +1,107 @@
+% COPY of sc-workshop-paper/ieee_main_authoritative.tex. Compile THIS file.
+%
+%   pdflatex main && bibtex main && pdflatex main && pdflatex main
+%
+% The preamble below (documentclass, packages, comment macros, \BibTeX, title,
+% author block) is BYTE-IDENTICAL to the authoritative file. Diff it to check:
+%   diff <(sed -n '/documentclass/,/maketitle/p' ieee_main_authoritative.tex) \
+%        <(sed -n '/documentclass/,/maketitle/p' paper_ieee/main.tex)
+%
+% TWO LINES WERE ADDED to the body, both marked "<-- ADDED" below:
+%   1. \input{sections/00_macros}      -- carries \sysname and \figspec, which
+%      would normally be preamble material. The authoritative preamble is
+%      fixed, so they are defined in the body instead. \figspec is called by
+%      every figure in every section; without this line nothing compiles.
+%   2. \input{sections/04b_evaluation} -- the evaluation section, which has no
+%      slot in the authoritative \input list. See sections/04b_evaluation.tex.
+%
+% NOTHING ELSE DIFFERS. No package was added, no authoritative \input renamed
+% or reordered.
+%
+% NOT COMPILED -- no LaTeX toolchain was available where this was assembled.
+% Verified statically only (brace balance, environment pairing, label/ref
+% closure, non-ASCII, tabular column counts, escaping). Treat the first build
+% as proofreading.
+%
+% ---------------------------------------------------------------------------
+% Original header of the authoritative file:
+% AUTHORITATIVE main.tex supplied by the user 2026-08-10. This file governs the
+% paper's preamble, class, author block and section layout. sc-workshop-paper/
+% paper/main.tex was written before this arrived and must be reconciled TO this,
+% not the other way around.
+
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{ragged2e}
+
+% =========================
+% Comment macros
+% =========================
+
+\newif\ifcomments
+\commentsfalse      % <-- set to \commentsfalse for submission
+
+\ifcomments
+  \newcommand{\ada}[1]{\textcolor{blue}{[\textbf{Ada:} #1]}}
+  \newcommand{\dax}[1]{\textcolor{red}{[\textbf{Dax:} #1]}}
+  \newcommand{\vb}[1]{\textcolor{brown}{[\textbf{VB:} #1]}}
+  \newcommand{\vr}[1]{\textcolor{brown}{[\textbf{VR:} #1]}}
+
+\else
+  \newcommand{\ada}[1]{}
+  \newcommand{\dax}[1]{}
+  \newcommand{\vb}[1]{}
+  \newcommand{\vr}[1]{}
+
+\fi
+
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\input{sections/00_macros}          % <-- ADDED (\sysname, \figspec; see header)
+
+\title{Non-Deterministic Memory Access Patterns in AI-Steered HPC Workflows Lead to Wasted Resources}
+
+\author{\IEEEauthorblockN{Dax Delvira}
+\IEEEauthorblockA{\textit{School of Computer Science} \\
+\textit{Georgia Institute of Technology}\\
+Atlanta, Ga \\
+dax@gatech.edu}
+\and
+\IEEEauthorblockN{Ada Gavrilovska}
+\IEEEauthorblockA{\textit{School of Computer Science} \\
+\textit{Georgia Institute of Technology}\\
+Atlanta, Ga \\
+ada@cc.gatech.edu}
+
+}
+
+\maketitle
+
+\input{sections/00_abstract}
+
+\input{sections/01_introduction}
+\input{sections/02_background}
+\input{sections/03_problem}
+\input{sections/04_opportunities}   % system design (was paper/04_system.tex)
+\input{sections/04b_evaluation}     % <-- ADDED (no slot exists for evaluation)
+\input{sections/05_conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

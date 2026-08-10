@@ -1,0 +1,77 @@
+% AUTHORITATIVE main.tex supplied by the user 2026-08-10. This file governs the
+% paper's preamble, class, author block and section layout. sc-workshop-paper/
+% paper/main.tex was written before this arrived and must be reconciled TO this,
+% not the other way around.
+
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{ragged2e}
+
+% =========================
+% Comment macros
+% =========================
+
+\newif\ifcomments
+\commentsfalse      % <-- set to \commentsfalse for submission
+
+\ifcomments
+  \newcommand{\ada}[1]{\textcolor{blue}{[\textbf{Ada:} #1]}}
+  \newcommand{\dax}[1]{\textcolor{red}{[\textbf{Dax:} #1]}}
+  \newcommand{\vb}[1]{\textcolor{brown}{[\textbf{VB:} #1]}}
+  \newcommand{\vr}[1]{\textcolor{brown}{[\textbf{VR:} #1]}}
+
+\else
+  \newcommand{\ada}[1]{}
+  \newcommand{\dax}[1]{}
+  \newcommand{\vb}[1]{}
+  \newcommand{\vr}[1]{}
+
+\fi
+
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Non-Deterministic Memory Access Patterns in AI-Steered HPC Workflows Lead to Wasted Resources}
+
+\author{\IEEEauthorblockN{Dax Delvira}
+\IEEEauthorblockA{\textit{School of Computer Science} \\
+\textit{Georgia Institute of Technology}\\
+Atlanta, Ga \\
+dax@gatech.edu}
+\and
+\IEEEauthorblockN{Ada Gavrilovska}
+\IEEEauthorblockA{\textit{School of Computer Science} \\
+\textit{Georgia Institute of Technology}\\
+Atlanta, Ga \\
+ada@cc.gatech.edu}
+
+}
+
+\maketitle
+
+\input{sections/00_abstract}
+
+\input{sections/01_introduction}
+\input{sections/02_background}
+\input{sections/03_problem}
+\input{sections/04_opportunities}
+\input{sections/05_conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
