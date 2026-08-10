@@ -1,20 +1,17 @@
-% new_system.tex -- design of the residency-arbitration runtime.
+% new_system.tex -- system overview section.
 %
-% STANDALONE-COMPILABLE so it can be read and checked on its own. To fold into
-% the main paper, delete everything above \section{Design Overview} and
-% everything below \end{document}, then \input{new_system}.
+% STANDALONE-COMPILABLE for reading and checking. To fold into the main paper,
+% delete the preamble (everything above \section{System Overview}) and the
+% trailing \end{document}, then \input{new_system}.
 %
-% Packages used are all TeX Live / Overleaf defaults: geometry, booktabs,
-% amsmath, xspace, algorithm, algpseudocode, hyperref.
+% Packages are TeX Live / Overleaf defaults: geometry, booktabs, amsmath,
+% xspace, algorithm, algpseudocode, hyperref.
 %
-% NOT COMPILED. No LaTeX toolchain was available on the machine this was
-% written on, so treat a first build as a proofreading pass.
+% NOT COMPILED -- no LaTeX toolchain was available where this was written.
+% Statically checked for balance, escaping and dangling refs only.
 %
-% PROVENANCE RULE, inherited from the plan and enforced throughout: every
-% number carries "(measured)" or "(simulated)". Simulated numbers come from
-% scripts/sim_residency_v2.py over synthetic schedules with measured resource
-% constants; nothing labelled simulated ran on a GPU. A retention percentage
-% is never quoted without the oracle-vs-LRU gap at the same budget.
+% Assumes an INSIGHTS section precedes it establishing the cost ladder and the
+% movement/transformation asymmetry. This section describes mechanism only.
 
 \documentclass[10pt,twocolumn]{article}
 \usepackage[margin=0.75in]{geometry}
@@ -26,385 +23,248 @@
 \usepackage[hidelinks]{hyperref}
 
 \newcommand{\sysname}{Tandem\xspace}   % placeholder; rename in one place
-\newcommand{\meas}{\textsuperscript{m}}
-\newcommand{\simu}{\textsuperscript{s}}
 
-\title{\sysname: Arbitrating Model and Data Residency\\Under One Memory Budget}
+\title{\sysname: System Overview}
 \date{}
 
 \begin{document}
 \maketitle
 
-\noindent\textbf{Notation.} \meas{} marks a measured quantity;
-\simu{} marks a simulation result over measured constants.
+\section{System Overview}
 
-\section{Design Overview}
+\sysname is a runtime that manages a single host-memory budget shared by two
+kinds of resource: language models backing an agent's reasoning and
+tool-calling steps, and the scientific data artifacts those tools consume.
+It has two components.
 
-An agentic HPC workflow alternates between two kinds of resource: language
-models that back the planner and its tool-calling steps, and scientific data
-artifacts that the tools consume. Both are expensive to make usable and both
-are used repeatedly, so both are candidates for retention. \sysname is a
-runtime that decides, continuously and under a single host-memory budget,
-which of them to keep resident and at which level.
+The \textbf{retention arbitrator} decides which resources remain resident
+between uses, and at which level. It is the primary component and it acts at
+every point where memory pressure forces a choice. The
+\textbf{opportunistic prefetcher} moves resources toward residency ahead of
+need, and is deliberately subordinate: it consumes memory that retention did
+not claim, and may displace a resident resource only under a conjunction of
+strict conditions.
 
-The design rests on three claims, each measured before it was designed
-around.
+Both components score candidates with one value function, so a decision to
+stage something and a decision to keep something are directly comparable
+rather than governed by separate policies competing for the same memory.
 
-\paragraph{Claim 1: making a resource usable is a chain of costs, and
-residency is a prefix of that chain already paid.}
-We model residency as four rungs (Table~\ref{tab:ladder}). A scheduler's job
-is to choose, per resource, the highest rung it can afford to hold.
+\subsection{Residency states}
+
+\sysname can hold a resource in one of three states, and the arbitrator's job
+is to choose one per resource (Table~\ref{tab:states}).
 
 \begin{table}[t]
 \centering\small
-\begin{tabular}{@{}llll@{}}
+\begin{tabular}{@{}lll@{}}
 \toprule
-Rung & State & Cost to reach & Kind \\
+State & Model & Data artifact \\
 \midrule
-R0 & on disk & --- & --- \\
-R1 & bytes in page cache & disk $\to$ RAM & movement \\
-R2 & bytes in a process & RAM $\to$ process & movement \\
-R3 & activated in a live consumer & parse / construct & transformation \\
+Active   & serving on device      & activated in a live worker \\
+Held     & weights in host memory & activated structure retained \\
+Released & process terminated     & worker terminated \\
 \bottomrule
 \end{tabular}
-\caption{The residency ladder. Byte-oriented tiering systems operate on
-R0$\to$R1 exclusively; that is the definition of their interface, not a
-limitation of their implementation.}
-\label{tab:ladder}
+\caption{Residency states. \emph{Held} is the state the arbitrator budgets:
+it costs host memory and makes the next use cheap.}
+\label{tab:states}
 \end{table}
 
-\paragraph{Claim 2: the two resource classes sit at opposite ends of that
-chain, so the correct action differs in kind.}
-For a language model, \textbf{74--81\%\meas{}} of a cold boot is moving
-weights and engine initialisation is $\approx$4.7\%\meas{}; the cost is
-movement. For a data artifact the split inverts. Decomposing a 3.32\,GB
-tabulated interatomic potential with per-process \texttt{getrusage} gives
-2.0\%\meas{} disk$\to$RAM, 3.9\%\meas{} RAM$\to$process, and
-\textbf{93.0\%\meas{}} parse and spline construction.
+For a model, the held state parks weights in host memory while keeping the
+serving process, its device context and its allocator alive; returning to
+active is a wake rather than a boot, and in our deployment reduces a
+$782$\,s cold start to $2.1$\,s. For a data artifact, the held state is a
+resident worker process that keeps the parsed, in-memory structure across
+tool invocations, so a subsequent use skips construction entirely.
 
-The consequence is not a tuning difference. Because movement dominates a
-model, the winning action is to \emph{skip} it by never falling below R2, not
-to schedule it earlier: parking eliminates both the disk$\to$RAM and
-RAM$\to$GPU legs, whereas warming the page cache removes only the first and
-changed measured boot time by $-7.0\%$ to $+37.1\%$\meas{} across eight nodes
---- sign-unstable. Because transformation dominates a data artifact,
-pre-\emph{placing} its bytes recovers at most the 2.0\% movement share; the
-only winning action is to have already run the transform, i.e. to hold the
-artifact at R3 inside a live consumer.
+The two held states are the same kind of object as far as the operating
+system is concerned: anonymous memory belonging to a live process, invisible
+to any file-backed cache and chargeable to one allocation. That is why a
+single arbitrator manages both, and why the choice between them is a real
+one --- a parked model and a retained database compete for exactly the same
+bytes.
 
-\paragraph{Claim 3: the two savings live in the same place, which is what
-makes this one system rather than two.}
-A model parked at R2 and a database activated at R3 are both
-\emph{anonymous memory inside a live process}. Neither is a file range, so
-neither can be named, evicted, or repopulated by a byte-oriented tier; and
-both draw on the same host-memory allocation. Two mechanisms with
-incommensurable value functions, competing for one budget, is an arbitration
-problem, and it is the contribution of this work.
+\section{The Retention Arbitrator}
 
-\subsection{Architecture}
+At each decision point the arbitrator selects the set of resources to leave
+in the held state. Let $g(r)$ be the memory $r$ occupies while held, $B$ the
+budget, and $\Delta t(r)$ the estimated time until $r$ is next required.
+Writing $\mathrm{cold}(r)$ for the cost of producing $r$ from scratch and
+$\mathrm{ready}(r)$ for the cost of resuming it from the held state, the
+saving retention buys is $\mathrm{cold}(r) - \mathrm{ready}(r)$.
 
-\sysname has four components:
+Ranking on that saving alone is not enough, because it is indifferent to
+when the resource is next needed: a resource required in ten seconds and one
+required in three hours would compete equally for the same memory, and the
+budget fills with resources that will not be used soon. Ranking on saving per
+unit of time-to-use is not enough either, since it collapses the difference
+between a large saving and a small one whenever both are imminent.
 
-\begin{enumerate}\itemsep2pt
-\item \textbf{M1, model parking.} Park an outgoing inference engine at R2
-      rather than terminating it.
-\item \textbf{M2, activated-data retention.} Hold a parsed artifact at R3 in
-      a resident worker rather than re-parsing per tool call.
-\item \textbf{The arbitrator.} At every residency decision point, choose the
-      set of resources to hold, across both classes, under one budget.
-\item \textbf{The slack stager.} Opportunistically climb rungs for resources
-      predicted to be needed soon, but only when doing so evicts nothing.
-\end{enumerate}
+\sysname resolves this with an explicit \textbf{planning horizon} $H$:
 
-\noindent A \emph{horizon predictor} supplies the single input the arbitrator
-needs --- time until each resource is next required. Section~\ref{sec:pred}
-explains why it is deliberately a secondary component.
-
-\section{Mechanisms}
-
-\subsection{M1: model parking}
-
-M1 uses the inference server's existing sleep facility to move an engine's
-weights from device memory into host memory while keeping the process, its
-CUDA context, and its allocator alive. Measured on a 32B model at tp=2, a
-cold boot of \textbf{782.27\,s} becomes a \textbf{2.076\,s} wake\meas{}, with
-verbatim-identical generated text, unchanged \texttt{finish\_reason}, and
-post-wake throughput of 20.05--20.08\,tok/s against a 20.20\,tok/s pre-sleep
-steady state --- so no cost is deferred into generation. Wake is independent
-of page-cache state (evicting 18 weight shards changed it by
-0.015\,s\meas{}), which is the mechanistic confirmation that the weights are
-held in anonymous memory rather than re-read from a file.
-
-Parking is not free: it costs \textbf{1.90$\times$}\meas{} the weight bytes
-in host RAM (120.77\,GiB to park a 68.28\,GB model). That ratio is what makes
-residency a budgeted decision rather than a default.
-
-\emph{We do not claim sleep/wake as a contribution.} It is a feature of the
-serving stack, obtainable from a flag. What \sysname contributes on this axis
-is deciding \emph{when} parking is affordable and \emph{what it should
-displace} --- and, critically, that at realistic allocations the answer is
-frequently ``not this model.''
-
-\subsection{M2: activated-data retention}
-
-Agent frameworks typically execute each tool call as a fresh process. The
-activated structure therefore dies at every invocation, and the artifact is
-re-parsed even though the bytes are unchanged and the page cache is already
-warm --- a cost invisible to any byte-oriented prefetcher by the second
-parse. M2 replaces fork-per-call with a resident worker that retains the
-activated structure across calls: \textbf{93.73\,s $\to$ 10.56\,s}\meas{}
-(8.88$\times$) per redundant invocation, with the physical output
-bit-identical (relative difference $0.000\mathrm{e}{+}00$).
-
-The mechanism is not free of semantics, and this is where most of the
-engineering lives. A live simulation instance refuses to redefine its
-simulation box, and the conventional reset command destroys precisely the
-tables being retained. Reaching a new problem geometry while preserving them
-requires an in-place empty--resize--refill sequence. Because \sysname
-rewrites commands to achieve this, \textbf{a run that completes and returns
-plausible numbers is not evidence of correctness}; retention is enabled only
-for command shapes that have passed a differential test executing the same
-script through both the retained and the fork-per-call path and comparing
-physical outputs.
-
-\section{Arbitration}
-
-\subsection{One budget, two classes}
-
-Let $\mathcal{R}$ be the resident-candidate set, $g(r)$ the host memory a
-resource occupies while held, $B$ the budget, and $\Delta t(r)$ the predicted
-time until $r$ is next needed. Define
-
-\begin{align}
-\mathrm{full}(r) &= \mathrm{cold}(r) - \mathrm{ready}(r) \\
-\mathrm{benefit}(r) &=
-  \begin{cases}
-    \mathrm{full}(r) & \text{retain}\\
-    \min\!\left(\mathrm{full}(r), \Delta t(r)\right) & \text{stage}
-  \end{cases}\\
-v(r) &= \mathrm{benefit}(r)\cdot \frac{H}{\max(\Delta t(r),\,H)}
+\begin{equation}
+v(r) \;=\; \bigl(\mathrm{cold}(r) - \mathrm{ready}(r)\bigr)
+           \cdot \frac{H}{\max\!\left(\Delta t(r),\, H\right)}
 \label{eq:value}
-\end{align}
+\end{equation}
 
-\noindent where $\mathrm{cold}$ is the cost of producing the resource from
-R0, $\mathrm{ready}$ the cost of resuming it from its held rung, and $H$ a
-planning horizon. The arbitrator solves
-$\max \sum_{r\in S} v(r)$ subject to $\sum_{r \in S} g(r) \le B$.
+\noindent and ranks by \emph{value density} $v(r)/g(r)$ --- seconds of stall
+avoided per gigabyte held.
 
-\subsection{Why this value function and not the obvious one}
+$H$ is what makes the two regimes behave differently, and the system cannot
+do without it. Inside the horizon, resources are compared on absolute
+seconds saved: everything in that window is going to be needed soon, so the
+question is simply which resource saves the most, and a small imminent
+candidate does not get to outrank a large one merely by being sooner.
+Outside the horizon, value decays as $H/\Delta t$, so a resource that will
+not be touched for a long time surrenders its memory to one that will. A
+system without $H$ has to pick one of these behaviours globally and gets the
+other regime wrong.
 
-The natural choice --- benefit per byte per second, $v = \mathrm{benefit} /
-\Delta t$ --- is wrong, and wrong in a way that dimensional analysis exposes
-before any experiment. Retain and stage have benefit functions of different
-shape in $\Delta t$: retain's is constant, stage's saturates at
-$\min(\mathrm{full}, \Delta t)$. Dividing by $\Delta t$ therefore decays
-retain's score as $1/\Delta t$ while leaving stage's at a flat $1/g(r)$
-whenever the window is shorter than the load --- which is every interesting
-case, gaps being seconds against loads of hundreds of seconds. The resulting
-density has units of $\mathrm{GB}^{-1}$, not seconds per GB. Empirically, a
-stage worth 5\,s outranks and evicts a retention worth 798\,s.
+$H$ also gives the prefetcher and the arbitrator a shared notion of ``soon,''
+which is what allows staging and retention to be scored in one currency
+(\S\ref{sec:prefetch}). It is a tunable, and the natural setting is on the
+order of the workflow's typical inter-step gap.
 
-We test candidate objectives against an \textbf{oracle-monotonicity
-invariant}: offering staging as an additional \emph{option} to an
-oracle-informed policy must never lower the result, since the policy could
-always decline. The rate objective violates it by $-2.05$ to $-3.77$
-points\simu{}; the pure-benefit objective is marginal; the horizon objective
-of Eq.~\ref{eq:value} passes at $+3.14$ to $+4.28$\simu{}. The invariant is
-necessary, not sufficient --- all arms remain myopic one-step solves --- but
-it is cheap and it caught a defect that had survived in an earlier
-implementation.
+\subsection{Selection under indivisibility}
 
-$H$ is a real knob and is swept rather than chosen. Smaller $H$ is better
-because the pathology lives at small $\Delta t$; any $H$ above the typical
-inter-need gap suffices.
+Held resources cannot be partially surrendered. Half a model's weights serve
+no requests, and a partially retained structure does not answer queries, so
+release is all-or-nothing. Selection is therefore a subset choice under a
+capacity constraint rather than a sequence of independent evictions, and
+\sysname evaluates it as one: it searches for the highest-value set that
+fits, rather than repeatedly discarding the worst-ranked resident. The
+distinction matters whenever admitting one large resource requires releasing
+two smaller ones --- a decision single-victim eviction cannot express.
+Algorithm~\ref{alg:arb} states the resulting decision procedure.
 
-\subsection{Why the problem is 0/1 and not fractional}
+Ties are broken toward the smaller total footprint, so equal value never
+costs extra budget.
 
-Eviction here is a \emph{semantic} operation, not a paging one. Discarding a
-model's weights is all-or-nothing, and terminating a worker destroys the
-whole activated structure; there is no interface for parking half a model or
-retaining 40\% of a database, and 90\% of a model's weights serve zero
-tokens. Consequently the items are indivisible and the problem is 0/1
-knapsack, for which density-ranked greedy is a heuristic rather than an
-optimum. This is why \sysname evaluates a subset choice rather than
-single-victim eviction: single-victim greedy cannot express ``evict these two
-together to admit that one.'' Algorithm~\ref{alg:arb} states the decision
-procedure; note that both retain and stage candidates are scored into the
-\emph{same} objective, which is what makes the two actions comparable rather
-than separately prioritised.
+\subsection{Horizon estimation}
+\label{sec:horizon}
+
+The arbitrator's only external input is $\Delta t(r)$, and \sysname obtains
+it from two sources at different granularities.
+
+\textbf{Coarse.} Agentic workflows are organised by a planner that commits to
+a sequence of steps before executing them. That plan is a long-range but
+incomplete signal: it names the tools the workflow intends to run and their
+order, which reaches far ahead, but agents routinely execute steps the plan
+does not enumerate and depart from it under tool failures or intermediate
+results.
+
+\textbf{Fine.} A transition model built from observed executions supplies the
+local complement: a distribution over the immediate successors of the current
+step. This is short-range but covers exactly the region where the plan is
+silent or has been departed from.
+
+The two are merged into a single predicted step sequence --- the plan
+supplying structure, the transition model filling and correcting it near the
+present --- and each step carries an expected duration. A position in that
+sequence therefore converts to a time, and $\Delta t(r)$ is the summed
+expected duration of the steps between now and the earliest predicted step
+that requires $r$. Because the two sources may disagree, each estimate
+carries a confidence derived from their agreement and from the sharpness of
+the successor distribution; the arbitrator applies it as a weight, so an
+uncertain horizon perturbs a ranking rather than forcing a decision.
+
+One property of this estimator is load-bearing for the arbitrator. Lookahead
+is bounded, so the predictor reports \emph{not required within $H$} rather
+than \emph{not required again}. The arbitrator treats the two very
+differently: the first is a low rank that still competes for spare memory,
+while the second would be licence to discard. Preserving that distinction
+keeps a resource eligible whenever the budget has room for it, independently
+of how far ahead the estimate can see.
 
 \begin{algorithm}[t]
 \small
-\caption{Arbitration at a residency decision point}
+\caption{Residency decision}
 \label{alg:arb}
 \begin{algorithmic}[1]
-\State \textbf{input:} candidates $\mathcal{R}$, budget $B$, horizon oracle $\Delta t(\cdot)$
-\State $\mathcal{A} \gets \{\,r \in \mathcal{R} : \Delta t(r) \ne \textsc{Never}\,\}$
-  \Comment{believed-dead excluded, not scored zero}
-\For{$r \in \mathcal{A}$}
-  \State $w_r \gets v(r)$ via Eq.~\ref{eq:value} with kind \textsc{retain}
+\State \textbf{input:} candidates $\mathcal{R}$, budget $B$, horizons $\Delta t(\cdot)$
+\For{$r \in \mathcal{R}$ currently held or active}
+  \State $w_r \gets v(r)$ \Comment{Eq.~\ref{eq:value}, retention}
 \EndFor
-\For{$r \in \textsc{StageCandidates}$}
-  \State $w_r \gets v(r)$ with kind \textsc{stage}
-  \Comment{same currency as retain}
+\For{$r \in$ \textsc{StageCandidates}}
+  \State $w_r \gets v_{\text{stage}}(r)$ \Comment{same currency}
 \EndFor
-\State $S \gets \textsc{Knapsack}(w, g, B)$
-  \Comment{ties break toward smaller $\sum g$}
-\State \textbf{evict} $\mathrm{resident} \setminus S$; \textbf{admit} $S \setminus \mathrm{resident}$
-\State \Return $S$
+\State $S \gets \arg\max \sum_{r \in S} w_r \;\; \text{s.t.} \sum_{r \in S} g(r) \le B$
+\State release $\mathrm{held} \setminus S$; hold $S \setminus \mathrm{held}$
 \end{algorithmic}
 \end{algorithm}
 
-\subsection{Interaction with device slots}
+\subsection{Device capacity}
 
-A model resident on an accelerator does not charge the host-memory budget,
-since its weights are in device memory. The arbitrator therefore treats
-device residency as a separate, smaller capacity and only considers for
-host-memory retention what has been displaced from it. This has a
-counter-intuitive consequence that the evaluation confirms: adding a device
-slot \emph{reduces} the value of cost-aware host retention, because the
-frequently-used models are already free and what remains competing for host
-memory is the less-used tail.
+A model actively serving on an accelerator holds its weights in device
+memory and does not charge the host budget. The arbitrator therefore treats
+device residency as a separate, smaller capacity, and considers for host
+retention only what has been displaced from it. The two capacities are
+managed together: releasing a model from the device is what creates a
+candidate for the held state, and the arbitrator decides in the same step
+whether that candidate is worth its host memory or should be released
+outright.
 
-\section{Speculative Staging Under Slack}
+\section{The Opportunistic Prefetcher}
+\label{sec:prefetch}
 
-\sysname stages speculatively only under a strict safety rule: \textbf{a
-stage may never cause an eviction}. If the predicted-next resource does not
-fit in currently unused budget, the stage is abandoned rather than funded by
-displacing a resident resource.
+The arbitrator acts on resources the workflow has already used. The
+prefetcher acts on resources it has not: drawing on the same horizon
+estimates (\S\ref{sec:horizon}), it moves a resource toward residency before
+the need arrives, so that construction or transfer overlaps computation
+rather than blocking it.
 
-The rule is what makes staging safe at realistic prediction quality. Because
-a stage can only ever consume memory nothing else wanted, its downside is
-bounded by wasted bandwidth rather than by a lost retention, and its benefit
-becomes nearly independent of predictor accuracy: $+3.83$ points at 0.40
-accuracy versus $+5.06$ at a perfect oracle\simu{}. \emph{The safety rule
-substitutes for accuracy.} This is the inverse of the usual prefetching
-design point, where value scales with precision, and it is the direct
-consequence of operating in a regime where the competing use of memory is
-retention rather than nothing.
+Staging is scored in the same currency as retention, with one difference in
+how the saving is computed. Retention saves the full
+$\mathrm{cold}(r) - \mathrm{ready}(r)$ whenever the resource is next used,
+because the work is already done. Staging saves only as much of that cost as
+fits in the interval before the need --- a stage that gets halfway leaves the
+remainder exposed. Its benefit is therefore capped by $\Delta t(r)$, and
+Eq.~\ref{eq:value} applies to that capped quantity. Sharing $H$ across both
+is what puts them on one scale: within the horizon they are compared as
+seconds saved, so a small imminent stage cannot outrank a large retention
+simply for being nearer.
 
-\section{The Horizon Predictor, and Why It Is Secondary}
-\label{sec:pred}
+\subsection{Slack first}
 
-\subsection{From identity to horizon}
+The prefetcher's default is to consume only \textbf{slack}: memory the
+arbitrator has left unclaimed. If the resource does not fit in unused
+budget, the stage is abandoned rather than funded by displacing something
+resident.
 
-An earlier version of this system used prediction the conventional way: infer
-\emph{which} resource is needed next and fetch it. That framing failed, and
-its failure motivated the present design. Two signals were available --- a
-central planner's plan, and learned tool-to-tool transition statistics --- and
-neither delivered usable identity prediction on non-deterministic agent
-traces.
+This is the operating mode for the large majority of staging decisions, and
+it is what makes speculation safe here. A stage that consumes only slack has
+its downside bounded by wasted bandwidth --- it cannot cost a retention that
+would have been worth more --- so its expected value stays positive across a
+wide range of horizon quality rather than requiring precision to break even.
+Where a conventional prefetcher's value scales with accuracy, slack staging's
+does not, because the memory it uses had no competing claim.
 
-Under \sysname prediction answers a different question: \emph{how long until
-resource $r$ is needed again?} It is queried per already-held resource at
-eviction time, not consulted to select a fetch target. This is a strictly
-weaker requirement, in a way that matters:
+\subsection{The outbid path}
 
-\begin{itemize}\itemsep2pt
-\item A retention decision is made \emph{at eviction time}, when the past is
-      known, rather than at fetch time, when it is not.
-\item A wrong retain costs only memory. A wrong fetch costs bandwidth
-      \emph{and} memory \emph{and} may leave the consumer stalled anyway.
-\item Identity is not required at all: every held resource is scored, so
-      there is no candidate to name.
-\end{itemize}
+Restricting staging to slack forgoes cases where a stage genuinely is worth
+more than an incumbent. \sysname permits displacement, but only when every
+one of the following holds:
 
-\subsection{The accuracy the design actually needs}
+\begin{enumerate}\itemsep2pt
+\item \textbf{Margin, not tie.} The stage's value density must exceed the
+      incumbent's by a configured margin, so that estimation noise alone
+      cannot reorder them.
+\item \textbf{Completable.} The predicted window must be long enough to
+      finish the stage before the need. A stage that cannot complete converts
+      a certain retention into a partial, speculative saving.
+\item \textbf{Incumbent not imminent.} The displaced resource's own horizon
+      must lie beyond $H$ --- outside the window in which the system compares
+      candidates on absolute savings.
+\item \textbf{Confidence.} The horizon estimate must carry confidence above a
+      threshold, since displacement is the one staging action whose cost is
+      not bounded by slack.
+\end{enumerate}
 
-Because the arbitrator ranks rather than selects, horizon error degrades the
-ranking gracefully instead of committing to a wrong target. Across a sweep of
-predictor accuracy from 0.15 to 1.00, the deployable density-ranked policy
-moves from 47.63\% to 64.86\%\simu{} while a size-blind LRU baseline is flat
-at 56.23\%\simu{} by construction. Break-even against LRU falls near
-\textbf{0.55} --- the middle of the accuracy band the underlying predictor
-actually achieves.
-
-We state the negative half plainly: \emph{below that break-even, cost-aware
-retention is worse than LRU}, and the entire oracle ceiling over LRU is about
-nine points. The predictor is secondary not because it is unimportant but
-because the mechanism captures most of the available benefit without it, and
-the policy's marginal contribution is real but bounded.
-
-\subsection{One non-obvious interface requirement}
-
-A predictor must never report ``never again.'' In a finite trace, ``no
-further use'' is an artifact of the trace ending, but the arbitrator treats it
-as licence to discard. A bounded-lookahead predictor should instead report
-\emph{not within $H$}, which preserves a resource's eligibility when budget
-is available. Making this substitution is worth roughly nine points\simu{} to
-the subset-selection arm at measured accuracy, and it converts an apparent
-finding --- that exact optimisation amplifies prediction error --- into an
-artifact of a dead/alive binary. Table~\ref{tab:iface} states the full
-interface.
-
-\begin{table}[t]
-\centering\small
-\begin{tabular}{@{}p{0.30\columnwidth}p{0.60\columnwidth}@{}}
-\toprule
-Requirement & Why \\
-\midrule
-Horizon in \emph{seconds} & The budget is a rate-vs-time trade; step counts
-  do not compose with load costs. \\
-Queried per \emph{held} resource & The decision is which of $n$ residents to
-  drop, not which one thing to fetch. \\
-Calibrated ``not within $H$'' & Never $\infty$; see above. \\
-Queryable \emph{at eviction time} & The decision point is displacement, not
-  tool dispatch. \\
-Held footprint, not file size & The budget is charged the parked/activated
-  size, e.g. $1.90\times$ weights. \\
-Cold and ready costs, separately & $v(\cdot)$ needs
-  $\mathrm{cold}-\mathrm{ready}$, not one load estimate. \\
-Per-resource confidence & Used as a weight, so a low-confidence horizon
-  degrades a rank rather than forcing a choice. \\
-\bottomrule
-\end{tabular}
-\caption{What the horizon predictor must expose.}
-\label{tab:iface}
-\end{table}
-
-\section{Scope Conditions}
-
-The design is not universally profitable, and the conditions are sharp enough
-to state rather than let a reader discover.
-
-\paragraph{It requires a stall-dominated workload.} The benefit is a
-fraction of time spent waiting for resources; where compute windows are large
-the same seconds are a small share of wall time. This is defensible for the
-workloads measured here --- a representative trial spends 280.3\,s of
-5288.5\,s\meas{} doing agent work --- but it is a real boundary, and it runs
-opposite to what speculative staging wants. \textbf{The two halves of the
-system prefer opposite regimes}, which we report rather than reconcile.
-
-\paragraph{It requires contention.} If the budget accommodates every
-resource, the correct policy is ``hold everything'' and no arbitration is
-needed. Conversely, if the largest resources exceed the budget alone they are
-not badly ranked but unrankable --- at a 256\,GB allocation the two largest
-models are individually 279.0 and 276.3\,GB\meas{}, so 51.4\%\simu{} of stall
-is capacity rather than replacement, and no ranking can convert it.
-Quantisation, not a better policy, is what moves that mass.
-
-\paragraph{The value of each mechanism depends on the budget, and must be
-quoted with it.} At a budget where nearly everything fits, retention is worth
-a great deal and an oracle recovers essentially nothing over LRU --- the win
-belongs to the serving stack's flag, not to arbitration. At the production
-allocation the ordering inverts, and retaining \emph{both} classes under LRU
-is worse than retaining data alone by 4.73 points\simu{}, because a
-size-blind policy parks a large, rarely-used model over a smaller,
-frequently-used artifact; cost-aware arbitration recovers $+1.29$\simu{}.
-\textbf{Any retention figure reported without the oracle-vs-LRU gap at the
-same budget is not a claim about this system.}
-
-\paragraph{Transformation cost is format-determined, and formats can be
-changed.} Seconds per GB retained spans $65\times$ across
-formats\meas{} and is flat to $1.00$--$1.16\times$ across a $4\times$ size
-range\meas{}, which is what makes it a cacheable scheduling input rather than
-an online-learning problem. But an artifact whose consumer accepts a
-pre-built binary form can have its transformation cost converted away
-offline. That conversion is not free: it trades a low-variance CPU cost for a
-larger byte-movement cost, and for the sequence database measured here the
-two balance at \textbf{151\,MB/s}\meas{} --- above measured shared-filesystem
-throughput, where pre-building is a net loss, and below local NVMe, where it
-is roughly break-even. The honest position is that this is
-configuration-dependent rather than decided.
+\noindent The conditions are conjunctive and deliberately conservative. Their
+combined effect is that the prefetcher behaves as a slack consumer under
+normal conditions and acquires the ability to displace only when the evidence
+is strong and the incumbent is demonstrably idle --- so the arbitrator, not
+speculation, remains in control of the budget.
 
 \end{document}
