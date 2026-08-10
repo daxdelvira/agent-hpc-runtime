@@ -129,6 +129,39 @@ COL, WIDE = 3.35, 7.0
 # space. Below about 0.75 the axis labels start colliding.
 HSCALE = 0.85
 
+# Per-figure override, multiplied ON TOP of HSCALE. Standard data plots carry
+# far less structure than the schematic and the two timelines, so they survive
+# being flattened much further -- an xy plot with two or three series still
+# reads at a 3:1 aspect, where a stacked timeline does not.
+#
+# Figures 1-3 (the schematic, the predictability plot and the load timeline)
+# are deliberately absent from this table and keep the global scale.
+TIGHT = 0.65
+# Two-panel figures carry TWO rotated y labels, each centred on a panel. Below
+# about 0.8 those labels are longer than their own panel is tall and collide
+# with each other -- a limit of the label, not of the data, and not fixable by
+# shortening further ("reduction" and "first uses" still overlapped).
+TIGHT_2PANEL = 0.80
+HSCALE_FOR = {
+    "fig-sgb-spread":         TIGHT,
+    "fig-scale-sweep":        TIGHT_2PANEL,
+    "fig-topology-budget":    TIGHT,
+    "fig-tool-relationships": TIGHT,
+    "fig-stall-ladder":       TIGHT,
+    "fig-budget-sweep":       TIGHT,
+    "fig-compute-sweep":      TIGHT,
+    "fig-ablation":           TIGHT_2PANEL,   # 5 categorical rows need the height
+    "fig-prefetch-variants":  TIGHT,
+    "fig-cpu-interference":   TIGHT_2PANEL,
+    "fig-h-sweep":            TIGHT,
+    "fig-accuracy-sweep":     TIGHT,
+}
+
+
+def fh(name: str, base: float) -> float:
+    """Figure height in inches: the design height, globally and per-figure scaled."""
+    return base * HSCALE * HSCALE_FOR.get(name, 1.0)
+
 # Marker shapes, used as SECONDARY encoding so identity never rests on hue
 # alone. Same fixed order as CATEGORICAL.
 MARKERS = ["o", "s", "^", "D", "v", "P", "X"]

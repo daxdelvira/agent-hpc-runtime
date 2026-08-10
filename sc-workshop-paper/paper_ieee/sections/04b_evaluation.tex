@@ -45,9 +45,9 @@
 %   (rising). Mark the measured workload's operating point near 5\%. The 
 %   crossing behaviour is the reading.
 \includegraphics[width=\columnwidth]{figures/fig-compute-sweep}
-\caption{The same mechanism reported two ways. Wall-clock reduction is diluted
-by compute; stall reduction improves with it, because a longer window hides
-more of a staging operation.}
+\caption{The same mechanism against \textsc{Lru}, reported two ways.
+Wall-clock reduction is diluted by compute; stall reduction improves with it,
+because a longer window hides more of a staging operation.}
 \label{fig:compute-sweep}
 \end{figure}
 \begin{figure*}[t]
@@ -60,8 +60,9 @@ more of a staging operation.}
 %   Inset or second panel: Shapley split of the retention total at 256~GB 
 %   and 560~GB, showing the reversal.
 \includegraphics[width=0.95\textwidth]{figures/fig-ablation}
-\caption{Contribution of each mechanism at 256~GB with one device slot, and
-the order-independent split of the retention total at two budgets.}
+\caption{Contribution of each mechanism at 256~GB with one device slot,
+cumulative against \textsc{Never}, and the order-independent split of the
+retention total at two budgets.}
 \label{fig:ablation}
 \end{figure*}
 
@@ -131,7 +132,8 @@ every wall-clock claim.
 %   accuracies to show the safety rule's stability.
 \includegraphics[width=\columnwidth]{figures/fig-prefetch-variants}
 \caption{Two independent restrictions on speculative staging: which classes it
-may stage, and whether it may displace a retained resource.}
+may stage, and whether it may displace a retained resource. Reduction is
+against \textsc{Lru}.}
 \label{fig:prefetch-variants}
 \end{figure}
 
@@ -207,8 +209,9 @@ by this experiment.
 %   retention+staging (declining). Shade the region around the workload's 
 %   median inter-need gap.
 \includegraphics[width=\columnwidth]{figures/fig-h-sweep}
-\caption{Sensitivity to the planning horizon $H$. Retention is insensitive;
-staging degrades once $H$ exceeds the window in which a stage can complete.}
+\caption{Sensitivity to the planning horizon $H$, as wall-time reduction
+against \textsc{Never}. Retention is insensitive; staging degrades once $H$
+exceeds the window in which a stage can complete.}
 \label{fig:h-sweep}
 \end{figure}
 \begin{figure}[tb]
@@ -220,9 +223,9 @@ staging degrades once $H$ exceeds the window in which a stage can complete.}
 %   (crossing zero near 0.35). Mark the measured accuracy band. The zero 
 %   crossing is the reading.
 \includegraphics[width=\columnwidth]{figures/fig-accuracy-sweep}
-\caption{Sensitivity to horizon accuracy. Retention and slack staging remain
-beneficial across the range; only displacement-permitting staging is
-accuracy-critical.}
+\caption{Sensitivity to horizon accuracy, as reduction against \textsc{Lru}.
+Retention and slack staging remain beneficial across the range; only
+displacement-permitting staging is accuracy-critical.}
 \label{fig:accuracy-sweep}
 \end{figure}
 

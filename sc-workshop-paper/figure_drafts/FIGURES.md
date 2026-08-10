@@ -168,11 +168,26 @@ and should be updated to match.
 
 ## Size and placement
 
-**`theme.HSCALE` is the space knob.** Every figure's height is multiplied by
-it; widths are untouched, since a figure narrower than the column just wastes
-margin. Currently **0.85**, which took the figure budget from 2.69 to 2.38
-pages. Raise it toward 1.0 if the plots read cramped; below about 0.75 the
-axis labels start colliding. Type sizes are set for the current value.
+**Height is a two-level knob in `theme.py`.** `HSCALE` (0.85) applies to every
+figure; `HSCALE_FOR` multiplies on top of it per figure. Widths are untouched —
+a figure narrower than the column just wastes margin.
+
+| tier | value | applies to |
+|---|---|---|
+| `HSCALE` alone | 0.85 | figures 1–3: the schematic, the predictability plot, the load timeline |
+| `TIGHT` | ×0.65 | single-panel data plots |
+| `TIGHT_2PANEL` | ×0.80 | `scale-sweep`, `cpu-interference`, `ablation` |
+
+**Two-panel figures cannot take the full reduction, and the reason is the
+label, not the data.** Each panel carries its own rotated y label; below about
+0.8 that label is taller than its own panel and collides with the neighbouring
+one. Shortening the wording does not fix it — "reduction" and "first uses"
+still overlapped. `ablation` is in this tier for a different reason: five
+categorical rows need the height.
+
+**Axis labels were shortened to fit**, and where that dropped a baseline
+qualifier the caption now names it — a bare "reduction (%)" is unreadable
+without knowing the denominator. Eight captions were amended for this.
 
 **Floats are declared where they need to LAND, not where they are cited.** A
 LaTeX float only ever moves forward, so three rules apply:

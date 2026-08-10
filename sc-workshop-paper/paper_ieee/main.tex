@@ -74,7 +74,16 @@
 
 \input{sections/00_macros}          % <-- ADDED (\sysname, \figspec; see header)
 
-\title{Non-Deterministic Memory Access Patterns in AI-Steered HPC Workflows Lead to Wasted Resources}
+% TITLE CHANGED 2026-08-10. The previous title -- "Non-Deterministic Memory
+% Access Patterns in AI-Steered HPC Workflows Lead to Wasted Resources" --
+% predates the system and describes a diagnosis, which the paper no longer is.
+% Alternatives considered, in case a different emphasis is wanted:
+%   \title{\sysname: One Memory Budget for Models and Scientific Data in Agentic HPC Workflows}
+%   \title{\sysname: Value-Aware Residency for Agentic HPC Workflows}
+%   \title{\sysname: Residency, Not Placement, for Agentic HPC Workflows}
+% NOTE \sysname is defined in sections/00_macros.tex, which is \input AFTER
+% \maketitle, so the title must spell "Tandem" out rather than use the macro.
+\title{Tandem: Arbitrating Model and Data Residency in Agentic HPC Workflows}
 
 \author{\IEEEauthorblockN{Dax Delvira}
 \IEEEauthorblockA{\textit{School of Computer Science} \\

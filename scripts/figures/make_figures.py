@@ -86,7 +86,7 @@ def legend(ax, **kw):
 # ------------------------------------------------------------------ 1 -------
 def fig_intro_behavior():
     """Schematic: why phase-based staging works traditionally and fails here."""
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.55 * theme.HSCALE), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, theme.fh("fig-intro-behavior", 2.55)), sharex=True)
     for ax in axes:
         ax.grid(False)
         ax.set_ylim(-0.2, 2.6)
@@ -139,7 +139,7 @@ def fig_replacement_loss():
              (1967.7, 2661.4, "72B"), (2687.6, 3422.9, "72B"),
              (3436.0, 4189.6, "72B-t"), (4245.4, 5254.4, "72B")]
     wall = 5288.5
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.5 * theme.HSCALE), sharex=True,
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, theme.fh("fig-replacement-loss", 2.5)), sharex=True,
                              gridspec_kw={"height_ratios": [1, 1.25]})
 
     ax = axes[0]
@@ -202,7 +202,7 @@ def fig_sgb_spread():
               "npz_deflate": "compressed binary", "raw_f32": "raw f32",
               "npy": "mmap-able binary", "hdf5": "HDF5"}
 
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.35 * theme.HSCALE))
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-sgb-spread", 2.35)))
     y = np.arange(len(data))
     # Dots, not bars: on a log axis a bar's LENGTH is not proportional to its
     # value, so bars would misstate the 65x spread this figure exists to show.
@@ -211,17 +211,17 @@ def fig_sgb_spread():
             markeredgecolor=theme.SURFACE, markeredgewidth=1.2)
     ax.set_yticks(y)
     ax.set_yticklabels([labels.get(k, k) for k, _ in data])
-    ax.set_ylim(len(data) - 0.4, -1.15)          # headroom for the band label
+    ax.set_ylim(len(data) - 0.45, -0.95)         # headroom for the band labels
     ax.set_xscale("log")
     ax.set_xlabel("seconds saved per GB retained")
     ax.grid(axis="y", visible=False)
 
     ax.axvspan(2.78, 3.81, color=C[0], alpha=0.16, zorder=0)
-    ax.text(3.26, -0.72, "models", fontsize=7.5, color=C[0], ha="center",
+    ax.text(3.26, -0.50, "models", fontsize=7.5, color=C[0], ha="center",
             va="center")
     ax.axvline(0.32, color=theme.MUTED, lw=0.8, zorder=0)
-    ax.text(0.30, -0.72, "materialisation\nfloor", fontsize=6.6, color=theme.MUTED,
-            ha="right", va="center", linespacing=1.15)
+    ax.text(0.32, -0.50, "floor", fontsize=6.6, color=theme.MUTED,
+            ha="center", va="center")
     for i, (_, v) in enumerate(data):
         ax.text(v * 1.16, i, f"{v:.2f}", va="center", fontsize=6.8, color=theme.INK)
     ax.set_xlim(0.24, 70)
@@ -239,13 +239,13 @@ def fig_scale_sweep():
     oracle = [num(r[5]) for r in rows]
     stage = [num(r[6]) for r in rows]
 
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 3.0 * theme.HSCALE), sharex=True,
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, theme.fh("fig-scale-sweep", 3.0)), sharex=True,
                              gridspec_kw={"height_ratios": [1.35, 1]})
     a = axes[0]
     a.plot(n, retain, marker=M[0], color=C[0], label="retention")
     a.plot(n, stage, marker=M[1], color=C[1], label="+ staging")
     a.plot(n, oracle, marker=M[2], color=C[2], ls=(0, (4, 2)), label="retention, oracle")
-    a.set_ylabel("wall-time reduction (%)")
+    a.set_ylabel("reduction (%)")
     # No panel title here: it duplicated the y label, and it was what forced the
     # key inside the frame, where it sat on the oracle line.
     theme.legend_above(a, ncol=3, fontsize=7)
@@ -253,7 +253,7 @@ def fig_scale_sweep():
     b = axes[1]
     b.plot(n, first, marker=M[3], color=C[3])
     b.set_ylabel("first uses (%)")
-    b.set_xlabel("distinct resources in the workflow")
+    b.set_xlabel("distinct resources")
     b.set_xticks(n)
     fig.tight_layout(h_pad=0.8)
     save(fig, "fig-scale-sweep")
@@ -276,7 +276,7 @@ def _budget_series():
 def fig_topology_budget():
     """Motivating view: contention vanishes as the budget grows."""
     d = _budget_series()
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.1 * theme.HSCALE))
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-topology-budget", 2.1)))
     for i, slots in enumerate((1, 2)):
         ax.plot(d[slots]["budget"], d[slots]["binding"], marker=M[i], color=C[i],
                 label=f"{slots} device slot" + ("s" if slots > 1 else ""))
@@ -284,7 +284,7 @@ def fig_topology_budget():
         ax.axvline(thr, color=theme.MUTED, lw=0.6, zorder=0)
     ax.text(283, 37, "packing thresholds", fontsize=6.8, color=theme.MUTED, ha="left")
     ax.set_xlabel("host-memory budget (GB)")
-    ax.set_ylabel("decisions forcing an eviction (%)")
+    ax.set_ylabel("evictions (%)")
     theme.legend_above(ax, ncol=2)
     fig.tight_layout()
     save(fig, "fig-topology-budget")
@@ -293,7 +293,7 @@ def fig_topology_budget():
 def fig_budget_sweep():
     """Result view: performance vs budget, one panel per device-slot count."""
     d = _budget_series()
-    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, 2.5 * theme.HSCALE), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, theme.fh("fig-budget-sweep", 2.5)), sharey=True)
     for ax, slots in zip(axes, (1, 2)):
         s = d[slots]
         ax.plot(s["budget"], s["lru"], marker=M[1], color=C[1], label="recency-ranked")
@@ -302,7 +302,7 @@ def fig_budget_sweep():
             ax.axvline(thr, color=theme.MUTED, lw=0.6, zorder=0)
         ax.set_xlabel("host-memory budget (GB)")
         ax.set_title(f"{slots} device slot" + ("s" if slots > 1 else ""), pad=4)
-    axes[0].set_ylabel("wall-time reduction (%)")
+    axes[0].set_ylabel("reduction (%)")
     legend(axes[0])
     fig.tight_layout(w_pad=1.2)
     save(fig, "fig-budget-sweep")
@@ -315,7 +315,7 @@ def fig_stall_ladder():
     configs = [("256 GB, 1 slot", 1, 256.0), ("560 GB, 2 slots", 2, 560.0)]
     compute = {1: 10.8, 2: 10.8}
 
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.2 * theme.HSCALE))
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-stall-ladder", 2.2)))
     width, gap = 0.26, 0.04
     xs = np.arange(len(configs))
     arms = ["no retention", "recency-ranked", "Tandem"]
@@ -332,7 +332,7 @@ def fig_stall_ladder():
             ax.text(x, v + 1.2, f"{v:.0f}", ha="center", fontsize=6.8, color=theme.INK)
     ax.set_xticks(xs)
     ax.set_xticklabels([c[0] for c in configs])
-    ax.set_ylabel("stall (% of baseline wall)")
+    ax.set_ylabel("stall (% of wall)")
     ax.grid(axis="x", visible=False)
     ax.set_ylim(0, max(ax.get_ylim()[1], 100))
     theme.legend_above(ax, ncol=3)
@@ -347,7 +347,7 @@ def fig_compute_sweep():
     comp = [num(r[1]) for r in rows]
     wall = [num(r[6]) for r in rows]
     stall = [num(r[7]) for r in rows]
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.2 * theme.HSCALE))
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-compute-sweep", 2.2)))
     ax.plot(comp, wall, marker=M[0], color=C[0], label="wall-time reduction")
     ax.plot(comp, stall, marker=M[1], color=C[1], label="stall reduction")
     ax.axvline(5.3, color=theme.MUTED, lw=0.8)
@@ -356,8 +356,8 @@ def fig_compute_sweep():
     ax.text(5.6, 1.4, "measured workload", fontsize=6.6, color=theme.MUTED,
             ha="left", va="center")
     ax.set_xscale("log")
-    ax.set_xlabel("computation as a share of wall time (%)")
-    ax.set_ylabel("reduction vs recency-ranked (%)")
+    ax.set_xlabel("computation, share of wall (%)")
+    ax.set_ylabel("reduction (%)")
     ax.set_xticks([5, 10, 25, 50, 90])
     ax.set_xticklabels(["5", "10", "25", "50", "90"])
     theme.legend_above(ax, ncol=2)
@@ -373,7 +373,7 @@ def fig_ablation():
              "+ cost-aware arbitration", "+ slack staging"]
     vals = [num(r[2]) for r in rows]
 
-    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, 2.35 * theme.HSCALE),
+    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, theme.fh("fig-ablation", 2.35)),
                              gridspec_kw={"width_ratios": [1.75, 1]})
     a = axes[0]
     y = np.arange(len(names))
@@ -381,7 +381,7 @@ def fig_ablation():
     a.set_yticks(y)
     a.set_yticklabels(names)
     a.invert_yaxis()
-    a.set_xlabel("wall-time reduction vs no residency system (%)")
+    a.set_xlabel("wall-time reduction (%)")
     a.grid(axis="y", visible=False)
     for i, v in enumerate(vals):
         if i:
@@ -406,7 +406,7 @@ def fig_ablation():
         b.text(xi, 101.5, f"{p:.0f} / {100-p:.0f}", ha="center", fontsize=6.8)
     b.set_xticks(x)
     b.set_xticklabels(budgets)
-    b.set_ylabel("share of retention benefit (%)")
+    b.set_ylabel("share (%)")
     b.grid(axis="x", visible=False)
     b.set_yticks([0, 25, 50, 75, 100])
     b.set_ylim(0, 108)
@@ -424,7 +424,7 @@ def fig_prefetch_variants():
     cols = ["retain only", "data, outbid", "data, slack", "all, outbid", "all, slack"]
     vals = [num(rows[i][j]) for j in range(1, 6)]
     order = [0, 2, 1, 4, 3]
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.15 * theme.HSCALE))
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-prefetch-variants", 2.15)))
     x = np.arange(len(order))
     colors = [theme.MUTED, C[0], C[1], C[0], C[1]]
     ax.bar(x, [vals[o] for o in order], 0.62,
@@ -433,7 +433,7 @@ def fig_prefetch_variants():
         ax.text(xi, vals[o] + 0.25, f"{vals[o]:.2f}", ha="center", fontsize=6.8)
     ax.set_xticks(x)
     ax.set_xticklabels([cols[o].replace(", ", "\n") for o in order])
-    ax.set_ylabel("reduction vs recency-ranked (%)")
+    ax.set_ylabel("reduction (%)")
     ax.grid(axis="x", visible=False)
     ax.set_ylim(0, max(vals) * 1.14)
     handles = [plt.Rectangle((0, 0), 1, 1, color=C[0]),
@@ -456,19 +456,19 @@ def fig_cpu_interference():
     lo = [r.get("fg_min_s", m) for r, m in zip(rows, med)]
     hi = [r.get("fg_max_s", m) for r, m in zip(rows, med)]
 
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, 2.7 * theme.HSCALE), sharex=True,
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, theme.fh("fig-cpu-interference", 2.7)), sharex=True,
                              gridspec_kw={"height_ratios": [1.3, 1]})
     a = axes[0]
     a.plot(n, med, marker=M[0], color=C[0])
     a.fill_between(n, lo, hi, color=C[0], alpha=0.18, linewidth=0)
-    a.set_ylabel("foreground latency (s)")
+    a.set_ylabel("latency (s)")
     a.set_ylim(0.60, 0.635)
     a.set_title("Foreground work is unaffected", pad=4)
 
     b = axes[1]
     b.bar(n, [k * 5.8 for k in n], width=0.55, color=C[2], edgecolor="none")
     b.set_ylabel("worker CPU-s")
-    b.set_xlabel("concurrent background construction processes")
+    b.set_xlabel("concurrent background constructions")
     b.set_xticks(n)
     b.set_title("The workers genuinely ran", pad=4)
     b.grid(axis="x", visible=False)
@@ -484,7 +484,7 @@ def fig_h_sweep():
     H = [num(r[0]) for r in rows]
     retain = [num(r[1]) for r in rows]
     stage = [num(r[2]) for r in rows]
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.15 * theme.HSCALE))
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-h-sweep", 2.15)))
     ax.plot(H, retain, marker=M[0], color=C[0], label="retention")
     ax.plot(H, stage, marker=M[1], color=C[1], label="retention + staging")
     ax.axvspan(30, 120, color=theme.MUTED, alpha=0.14, zorder=0)
@@ -492,7 +492,7 @@ def fig_h_sweep():
             color=theme.MUTED)
     ax.set_xscale("log")
     ax.set_xlabel("planning horizon $H$ (s)")
-    ax.set_ylabel("wall-time reduction (%)")
+    ax.set_ylabel("reduction (%)")
     ax.set_xticks(H)
     ax.set_xticklabels([f"{int(h)}" for h in H])
     theme.legend_above(ax, ncol=2)
@@ -508,7 +508,7 @@ def fig_accuracy_sweep():
     retain = [num(r[1]) for r in rows]
     slack = [num(r[3]) for r in rows]
     outbid = [num(r[4]) for r in rows]
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.25 * theme.HSCALE))
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-accuracy-sweep", 2.25)))
     ax.axhline(0, color=theme.INK, lw=0.7)
     ax.plot(acc, retain, marker=M[0], color=C[0], label="retention")
     ax.plot(acc, slack, marker=M[1], color=C[1], label="staging, slack only")
@@ -516,7 +516,7 @@ def fig_accuracy_sweep():
     ax.axvspan(0.45, 0.62, color=theme.MUTED, alpha=0.14, zorder=0)
     ax.text(0.535, -4.4, "measured\nrange", fontsize=6.6, ha="center", color=theme.MUTED)
     ax.set_xlabel("horizon accuracy")
-    ax.set_ylabel("reduction vs recency-ranked (%)")
+    ax.set_ylabel("reduction (%)")
     theme.legend_above(ax, ncol=3, fontsize=7)
     fig.tight_layout()
     save(fig, "fig-accuracy-sweep")
@@ -554,7 +554,7 @@ def fig_tool_relationships():
         print("  SKIP fig_tool_relationships: no offset-keyed transitions found")
         return
     x = np.linspace(0.0, 1.0, 201)
-    fig, ax = plt.subplots(figsize=(theme.COL, 2.0 * theme.HSCALE))
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-tool-relationships", 2.0)))
     for i, k in enumerate(offsets):
         share = [(g[:, i] >= t).mean() * 100 for t in x]
         ax.plot(x, share, color=C[i], label=f"$k{{=}}{k}$", lw=1.9)
@@ -567,7 +567,7 @@ def fig_tool_relationships():
     ax.set_xlim(0, 1.0)
     ax.set_ylim(0, 104)
     ax.set_xlabel("successor confidence")
-    ax.set_ylabel("tools at or above (%)")
+    ax.set_ylabel("share of tools (%)")
     theme.legend_above(ax, ncol=4, fontsize=7)
     fig.tight_layout()
     save(fig, "fig-tool-relationships")

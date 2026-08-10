@@ -129,7 +129,7 @@ that band on both sides, so no fixed class priority is correct.}
 \includegraphics[width=\columnwidth]{figures/fig-scale-sweep}
 \caption{As the resource population grows at fixed schedule length, first uses
 become a larger share of all needs and the advantage moves from retention to
-staging.}
+staging. Reduction is against the recency-ranked baseline.}
 \label{fig:scale-sweep}
 \end{figure}
 
@@ -144,10 +144,10 @@ staging.}
 %   Figure~\ref{fig:budget-sweep} shows the same axis with performance 
 %   rather than pressure.
 \includegraphics[width=\columnwidth]{figures/fig-topology-budget}
-\caption{Contention as a function of budget and accelerator capacity. Above
-roughly 86\% of the total footprint nothing is ever evicted and the
-arbitration problem disappears; below it, budget admits resources in steps
-rather than smoothly.}
+\caption{Share of decisions in which memory pressure forced an eviction, by
+budget and accelerator capacity. Above roughly 86\% of the total footprint
+nothing is ever evicted and the arbitration problem disappears; below it,
+budget admits resources in steps rather than smoothly.}
 \label{fig:topology-budget}
 \end{figure}
 

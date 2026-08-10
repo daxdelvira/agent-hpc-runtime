@@ -204,7 +204,7 @@ the production allocation and 50.69\% at a larger budget.}
 %   445, 562 and 838~GB with vertical rules --- the step structure is the 
 %   point.
 \includegraphics[width=0.95\textwidth]{figures/fig-budget-sweep}
-\caption{Wall-time reduction versus budget and device capacity, at one and
+\caption{Wall-time reduction against \textsc{Never}, versus budget, at one and
 two device slots.}
 \label{fig:budget-sweep}
 \end{figure*}
@@ -242,27 +242,15 @@ not, because the memory it uses had no competing claim.
 \subsubsection{The Outbid Path}
 
 
-Restricting staging to slack forgoes cases where a stage genuinely is worth
-more than an incumbent. \sysname{} permits displacement, but only when every one
-of the following holds:
-
-\begin{enumerate}\itemsep2pt
-\item \textbf{Margin, not tie.} The stage's value density must exceed the
-      incumbent's by a configured margin, so that estimation noise alone
-      cannot reorder them.
-\item \textbf{Completable.} The predicted window must be long enough to finish
-      the stage before the need. A stage that cannot complete converts a
-      certain retention into a partial, speculative saving.
-\item \textbf{Incumbent not imminent.} The displaced resource's own horizon
-      must lie beyond $H$---outside the window in which the system compares
-      candidates on absolute savings.
-\item \textbf{Confidence.} The horizon estimate must carry confidence above a
-      threshold, since displacement is the one staging action whose cost is
-      not bounded by slack.
-\end{enumerate}
-
-The conditions are conjunctive and deliberately conservative. Their combined
-effect is that the prefetcher behaves as a slack consumer under normal
-conditions and acquires the ability to displace only when the evidence is
-strong and the incumbent is demonstrably idle---so the arbitrator, not
-speculation, remains in control of the budget.
+Restricting staging to slack forgoes the cases where a stage genuinely is
+worth more than an incumbent, so \sysname{} permits displacement under four
+conjunctive conditions. The stage's value density must exceed the incumbent's
+by a margin wider than estimation noise, so that noise alone cannot reorder
+them. The predicted window must be long enough to complete the stage, since a
+partial stage trades a certain retention for a speculative saving. The
+incumbent's own horizon must lie beyond $H$, placing it outside the window in
+which candidates are compared on absolute savings. And the horizon estimate
+must clear a confidence threshold, because displacement is the one staging
+action whose cost slack does not bound. The conjunction is deliberately
+conservative: the prefetcher is a slack consumer under normal conditions, and
+the arbitrator, not speculation, stays in control of the budget.
