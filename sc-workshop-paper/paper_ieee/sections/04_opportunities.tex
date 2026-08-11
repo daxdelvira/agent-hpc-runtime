@@ -67,12 +67,16 @@ avoided per gigabyte held. Inside $H$ the discount is~1 and candidates are
 compared on absolute seconds saved, so a small imminent resource cannot
 outrank a large one merely by being sooner; outside it value decays as
 $H/\Delta t$, so a resource that will not be touched for a long time surrenders
-its memory to one that will. A system without $H$ must choose one of these
-behaviours globally and gets the other regime wrong.
+its memory to one that will.
 
 $H$ is a tunable, and the natural setting is on the order of the workflow's
 typical inter-step gap. It is also what lets staging and retention be scored
 in one currency (Section~\ref{sec:prefetch}).
+
+Device memory is a separate, smaller capacity, so only a model displaced from
+it becomes a candidate for the held state. The arbitrator decides in the same
+step whether that candidate is worth its host memory or should be released
+outright.
 
 \subsubsection{Selection Under Indivisibility}
 
@@ -98,15 +102,13 @@ and a transition model over observed executions, which locates well but only
 locally. The second covers exactly the region where the first is silent or has
 been departed from.
 
-The two are merged into a single predicted step sequence---the plan supplying
-structure, the transition model filling and correcting it near the
-present---and each step carries an expected duration. A position in that
-sequence therefore converts to a time, and $\Delta t(r)$ is the summed
-expected duration of the steps between now and the earliest predicted step
-that requires $r$. Because the two sources may disagree, each estimate carries
-a confidence derived from their agreement and from the sharpness of the
-successor distribution; the arbitrator applies it as a weight, so an uncertain
-horizon perturbs a ranking rather than forcing a decision.
+The two merge into one predicted step sequence---the plan supplying structure,
+the transition model correcting it near the present---in which each step
+carries an expected duration. $\Delta t(r)$ is the summed duration between now
+and the earliest predicted step requiring $r$. Each estimate also carries a
+confidence, from the sources' agreement and the sharpness of the successor
+distribution, which the arbitrator applies as a weight: an uncertain horizon
+perturbs a ranking rather than forcing a decision.
 
 One property of this estimator is load-bearing for the arbitrator. Lookahead
 is bounded, so the predictor reports \emph{not required within $H$} rather
@@ -115,16 +117,6 @@ differently: the first is a low rank that still competes for spare memory,
 while the second would be licence to discard. Preserving that distinction
 keeps a resource eligible whenever the budget has room for it, independently
 of how far ahead the estimate can see.
-
-\subsubsection{Device Capacity}
-
-A model actively serving on an accelerator holds its weights in device memory
-and does not charge the host budget. The arbitrator therefore treats device
-residency as a separate, smaller capacity, and considers for host retention
-only what has been displaced from it. The two capacities are managed together:
-releasing a model from the device is what creates a candidate for the held
-state, and the arbitrator decides in the same step whether that candidate is
-worth its host memory or should be released outright.
 
 \subsection{The Opportunistic Prefetcher}
 \label{sec:prefetch}
@@ -199,16 +191,12 @@ to that capped quantity.
 \subsubsection{Slack First}
 
 The prefetcher's default is to consume only \emph{slack}: memory the
-arbitrator has left unclaimed. If the resource does not fit in unused budget,
-the stage is abandoned rather than funded by displacing something resident.
-
-This is the operating mode for the large majority of staging decisions, and it
-is what makes speculation safe here. A stage that consumes only slack has its
-downside bounded by wasted bandwidth---it cannot cost a retention that would
-have been worth more---so its expected value stays positive across a wide
-range of horizon quality rather than requiring precision to break even. Where
-a conventional prefetcher's value scales with accuracy, slack staging's does
-not, because the memory it uses had no competing claim.
+arbitrator has left unclaimed. If a resource does not fit in unused budget the
+stage is abandoned rather than funded by displacing something resident. That
+restriction is what makes speculation safe here---a stage drawing only on
+slack has its downside bounded by wasted bandwidth, since it cannot cost a
+retention worth more, so its expected value stays positive across a wide range
+of horizon quality instead of requiring precision to break even.
 
 \subsubsection{The Outbid Path}
 
