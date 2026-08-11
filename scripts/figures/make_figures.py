@@ -204,6 +204,65 @@ def fig_predictability():
     save(fig, "fig-predictability")
 
 
+# ------------------------------------------------------------------ 8 -------
+def fig_plan_accuracy():
+    """Plan compliance under order-only and positional matching, AtomAgents.
+
+    The analysis is IMPORTED from experiments/plot_plan_accuracy.py rather
+    than reimplemented. Two numbers in this paper were already wrong because
+    they were carried forward instead of recomputed, and the lenient/strict
+    distinction is subtle enough (does a retry consume a plan slot?) that a
+    second implementation would drift. Only the rendering is ours: that script
+    draws AtomAgents beside ChemGraph at 13x5.6 in under its own Gruvbox rc,
+    and only AtomAgents is used here.
+
+    The divergence between the two panels IS the figure. Order-only matching
+    stays high while positional matching collapses to zero after the first
+    retry, which is exactly the claim the paragraph makes -- plans get the
+    sequence right and the spacing wrong.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "experiments"))
+    from plot_plan_accuracy import compute_aa_compliance      # noqa: E402
+    from plot_utils import load_traces                        # noqa: E402
+
+    traces = load_traces(os.path.join(ROOT, "logs", "workflow_traces"),
+                         "runtime_trace_*.jsonl")
+    panels = []
+    for strict, title in ((False, "order only"), (True, "position, retries penalised")):
+        M, _, labels = compute_aa_compliance(traces, strict=strict)
+        if not M.size:
+            print("  SKIP fig_plan_accuracy: no plan_extracted events")
+            return
+        pct, ann = [], []
+        for p in range(M.shape[1]):
+            col = M[:, p]
+            nv, nm = int((col >= 0).sum()), int((col == 1.0).sum())
+            pct.append(nm / nv * 100 if nv else 0.0)
+            ann.append(f"{nm}/{nv}")
+        overall = int((M == 1.0).sum()) / int((M >= 0).sum()) * 100
+        panels.append((title, labels, pct, ann, overall, M.shape[0]))
+    print(f"  AtomAgents plan compliance over {panels[0][5]} runs: "
+          f"order-only {panels[0][4]:.1f}%, positional {panels[1][4]:.1f}%")
+
+    fig, axes = plt.subplots(2, 1, sharex=True,
+                             figsize=(theme.COL, theme.fh("fig-plan-accuracy", 3.4)))
+    for ax, (title, labels, pct, ann, overall, n) in zip(axes, panels):
+        col = C[0] if "order" in title else C[1]
+        ax.bar(np.arange(len(pct)), pct, 0.62, color=col, edgecolor="none")
+        for i, (v, a) in enumerate(zip(pct, ann)):
+            ax.text(i, v + 3, a, ha="center", fontsize=6.0, color=theme.INK)
+        ax.set_ylim(0, 122)
+        ax.set_yticks([0, 50, 100])
+        ax.set_ylabel("compliant (%)")
+        ax.grid(axis="x", visible=False)
+        ax.set_title(f"{title} — {overall:.0f}% overall", pad=3, fontsize=8)
+    axes[1].set_xticks(np.arange(len(panels[0][1])))
+    axes[1].set_xticklabels([l[:11] for l in panels[0][1]], rotation=28,
+                            ha="right", fontsize=6.5)
+    fig.tight_layout(h_pad=0.7)
+    save(fig, "fig-plan-accuracy")
+
+
 # ------------------------------------------------------------------ 3 -------
 def fig_replacement_loss():
     """Model-load timeline for a representative trial, against artifact residency."""
@@ -706,6 +765,7 @@ FIGS = {
     "scale-sweep": fig_scale_sweep,
     "topology-budget": fig_topology_budget,
     "tool-relationships": fig_tool_relationships,
+    "plan-accuracy": fig_plan_accuracy,
     "tool-relationships-detail": fig_tool_relationships_heatmap,
     "budget-sweep": fig_budget_sweep,
     "stall-ladder": fig_stall_ladder,

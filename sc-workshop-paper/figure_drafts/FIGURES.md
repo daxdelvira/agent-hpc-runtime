@@ -34,7 +34,7 @@ Theme lives in `scripts/figures/theme.py`.
 | — | `fig-topology-budget` | *(merged away)* | **S** | now the lower row of `fig-budget-sweep`; still generated, unreferenced |
 | 7 | `fig-tool-relationships` | `fig:tool-relationships` | **M** | `runtime/predictor/data/learned_transitions.json` |
 | — | `fig-tool-relationships-detail` | *(not referenced)* | **M** | per-tool heatmap, kept but unused — see caveats |
-| 8 | *(you have this)* | `fig:plan-accuracy` | — | not generated |
+| 8 | `fig-plan-accuracy` | `fig:plan-accuracy` | **M** | `logs/workflow_traces/runtime_trace_*.jsonl` (64 runs with plans) |
 | 9 | `fig-budget-sweep` | `fig:budget-sweep` | **S** | `results_tables/02_budget_sweep.md` — MERGED, two rows: reduction over binding |
 | 10 | `fig-stall-ladder` | `fig:stall-ladder` | **S** | `results_tables/02_budget_sweep.md` |
 | — | `fig-compute-sweep` | *(cut)* | **S** | finding kept as three numbers in prose; still generated, unreferenced |
@@ -52,9 +52,22 @@ two panels are illegible at 3.35 in. Everything else is single-column.
 a live LaTeX hazard and the tex checker flags it; hyphens remove the class of
 problem outright.
 
-**`fig-plan-accuracy` is not generated here** — it is yours. The sections
-reference `figures/fig-plan-accuracy`; drop a PDF with that name into
-`paper_ieee/figures/` and it will resolve.
+**All 14 figures now generate here.** Nothing is author-supplied any more.
+
+**`fig-plan-accuracy` imports its analysis** from
+`experiments/plot_plan_accuracy.py` rather than reimplementing it. Only the
+rendering is ours — that script draws AtomAgents beside ChemGraph at 13×5.6 in
+under its own rc, and only AtomAgents is used here. The lenient/strict
+distinction (does a retry consume a plan slot?) is subtle enough that a second
+implementation would drift, and two numbers in this paper were already wrong
+from exactly that failure mode.
+
+> The paper claimed plans "predict 95% of tool orderings correctly." Measured
+> over the 64 runs carrying `plan_extracted` events: **76.3% order-only, 40.8%
+> positional.** 95% is not reproducible from any artifact in this repository.
+> The divergence between the two scorings is now the figure's point — order-only
+> compliance holds while positional compliance collapses to zero after the first
+> retry, which is precisely the "order, not distance" claim.
 
 **`fig-predictability` replaces `experiments/plot_step_variation.py`'s
 rendering for paper use.** That script plots ChemGraph and AtomAgents together
@@ -212,7 +225,14 @@ qualifier the caption now names it — a bare "reduction (%)" is unreadable
 without knowing the denominator. Eight captions were amended for this.
 
 **Floats are declared where they need to LAND, not where they are cited.** A
-LaTeX float only ever moves forward, so three rules apply:
+LaTeX float only ever moves forward, so four rules apply:
+
+0. **Consecutive `figure*` floats stack into a slab** with the single-column
+   ones pushed beneath, which is ugly at three layers. `fig:budget-sweep` and
+   `fig:ablation` are the two full-width floats, so the single-column
+   `fig:stall-ladder` is declared *between* them to break the stack. The
+   evaluation's subsections are ordered End-to-End Runtime → Stall Reduction
+   to match, so citation order still runs forward.
 
 1. Each float is declared at the head of its subsection, ahead of the citing
    paragraph. 0 of 17 are declared late.

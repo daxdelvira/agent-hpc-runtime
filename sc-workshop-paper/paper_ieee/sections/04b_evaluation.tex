@@ -70,47 +70,42 @@ but ranks by recency alone; it is already a system, so it is the line any
 policy claim must clear. Reporting only against \textsc{Never} would credit
 arbitration for benefits that plain retention already delivers.
 
-\subsection{Stall Reduction}
-
-
-At the production 256~GB allocation with a single device slot, \textsc{Lru}
-removes 26.97\% of the \textsc{Never} baseline's wall time and \sysname{}
-removes 34.49\%, eliminating a further 11.55\% of the stall \textsc{Lru}
-leaves behind (Figure~\ref{fig:stall-ladder}). The margin widens as the budget
-admits more of the working set: at 560~GB with two slots \sysname{} removes
-50.69\% of \textsc{Lru}'s residual stall.
-Figure~\ref{fig:budget-sweep} shows the effect across the full budget range,
-together with the fraction of decisions in which memory pressure actually
-forced an eviction. That fraction is the more informative axis: it falls from
-35.2\% at 200~GB to 0.0\% by 720~GB, so the upper end of the sweep measures a
-regime in which the system has nothing left to arbitrate. What survives there
-is staging: at two device slots \textsc{Lru} flattens at 68.4\% once evictions
-stop while \sysname{} continues to 80.3\%, putting the widest margin of the
-whole sweep where the arbitrator is provably idle. Additional budget becomes
-additional slack, and staging needs no eviction to spend it. The step structure
-predicted in Section~\ref{sec:insights} is visible here as well---320~GB and
-400~GB perform almost identically, because neither admits an additional
-resource.
-
-
 \subsection{End-to-End Runtime}
 
 \sysname{} reduces end-to-end wall time by 34.49\% against \textsc{Never} and
 10.30\% against \textsc{Lru} at 256~GB with one device slot, rising to 50.81\%
-and 17.09\% respectively with two (Figure~\ref{fig:budget-sweep}).
+and 17.09\% respectively with two (Figure~\ref{fig:budget-sweep}). The same
+figure reports the fraction of decisions in which memory pressure actually
+forced an eviction, which is the more informative axis: it falls from 35.2\%
+at 200~GB to 0.0\% by 720~GB, so the upper end of the sweep measures a regime
+in which the system has nothing left to arbitrate. What survives there is
+staging: at two device slots \textsc{Lru} flattens at 68.4\% once evictions
+stop while \sysname{} continues to 80.3\%, putting the widest margin of the
+whole sweep where the arbitrator is provably idle. Additional budget becomes
+additional slack, and staging needs no eviction to spend it. The step
+structure predicted in Section~\ref{sec:insights} is visible as well---320~GB
+and 400~GB perform almost identically, because neither admits an additional
+resource.
 
 These wall-clock figures are a function of how much real computation the
 workload performs between tool invocations, and we report that dependence
-rather than a single number. Holding the
-mechanism fixed and varying only the inter-need gap, the wall-clock reduction
-over \textsc{Lru} falls from 10.56\% at 5.7\% compute to 6.99\% at 54.9\% and
-0.89\% at 95.1\%, purely because the denominator grows. The stall reduction
-moves the opposite way over the same sweep---11.21\%, 15.49\%,
-18.24\%---because a larger compute window hides more of each staging
-operation. Our measured workload sits near the low-compute end, spending
-280.3~s of a 5288.5~s trial on agent work, so we attach the compute share to
-every wall-clock claim.
+rather than a single number. Holding the mechanism fixed and varying only the
+inter-need gap, the wall-clock reduction over \textsc{Lru} falls from 10.56\%
+at 5.7\% compute to 6.99\% at 54.9\% and 0.89\% at 95.1\%, purely because the
+denominator grows. The stall reduction moves the opposite way over the same
+sweep---11.21\%, 15.49\%, 18.24\%---because a larger compute window hides more
+of each staging operation. Our measured workload sits near the low-compute
+end, spending 280.3~s of a 5288.5~s trial on agent work, so we attach the
+compute share to every wall-clock claim.
 
+\subsection{Stall Reduction}
+
+Reported as stall rather than wall time, at the production 256~GB allocation
+with a single device slot \textsc{Lru} removes 26.97\% of the \textsc{Never}
+baseline and \sysname{} removes 34.49\%, eliminating a further 11.55\% of the
+stall \textsc{Lru} leaves behind (Figure~\ref{fig:stall-ladder}). The margin
+widens as the budget admits more of the working set: at 560~GB with two slots
+\sysname{} removes 50.69\% of \textsc{Lru}'s residual stall.
 
 \subsection{Ablations}
 

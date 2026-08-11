@@ -144,6 +144,7 @@ TIGHT = 0.65
 TIGHT_2PANEL = 0.80
 HSCALE_FOR = {
     "fig-predictability":     TIGHT,
+    "fig-plan-accuracy":      TIGHT_2PANEL,   # two panels, rotated tick labels
     "fig-sgb-spread":         TIGHT,
     "fig-scale-sweep":        TIGHT_2PANEL,
     "fig-topology-budget":    TIGHT,

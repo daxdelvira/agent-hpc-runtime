@@ -137,19 +137,13 @@ worth its host memory or should be released outright.
 % this section's text, they can take that page's top slots. Per author
 % preference, a reader flipping back one page beats figures piling up
 % pages later.
-\begin{figure}[tb]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-stall-ladder.pdf)
-%   grouped bars, stall seconds per arm (\textsc{Never}, \textsc{Lru}, 
-%   \sysname) at 256~GB/1 slot and 560~GB/2 slots. Annotate each \sysname{} 
-%   bar with its reduction over \textsc{Lru}.
-\includegraphics[width=\columnwidth]{figures/fig-stall-ladder}
-\caption{Stall attributable to resource residency, by policy and
-configuration. \sysname{} removes 11.55\% of the stall \textsc{Lru} leaves at
-the production allocation and 50.69\% at a larger budget.}
-\label{fig:stall-ladder}
-\end{figure}
+%
+% ORDER MATTERS HERE. fig:budget-sweep and fig:ablation are both figure*,
+% and consecutive double-column floats stack into a slab with the
+% single-column ones pushed beneath. Declaring the full-width budget sweep
+% BEFORE the single-column stall ladder puts a one-column float between the
+% two figure*s and breaks the stack. The evaluation's subsections are
+% ordered to match, so citation order still runs forward.
 \begin{figure*}[t]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
@@ -176,6 +170,19 @@ with the arbitrator idle, the remaining margin is speculative staging, which
 needs no eviction to spend the additional budget.}
 \label{fig:budget-sweep}
 \end{figure*}
+\begin{figure}[tb]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-stall-ladder.pdf)
+%   grouped bars, stall seconds per arm (\textsc{Never}, \textsc{Lru}, 
+%   \sysname) at 256~GB/1 slot and 560~GB/2 slots. Annotate each \sysname{} 
+%   bar with its reduction over \textsc{Lru}.
+\includegraphics[width=\columnwidth]{figures/fig-stall-ladder}
+\caption{Stall attributable to resource residency, by policy and
+configuration. \sysname{} removes 11.55\% of the stall \textsc{Lru} leaves at
+the production allocation and 50.69\% at a larger budget.}
+\label{fig:stall-ladder}
+\end{figure}
 
 The arbitrator acts on resources the workflow has already used. The prefetcher
 acts on resources it has not: drawing on the same horizon estimates

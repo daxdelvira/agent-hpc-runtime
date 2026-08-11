@@ -219,15 +219,18 @@ successor at some offset with confidence above 0.9.}
 \centering
 % PLOT SPEC (kept for provenance; rendered by
 % scripts/figures/make_figures.py -> figure_drafts/fig-plan-accuracy.pdf)
-%   planned tool order versus realized tool order. Either (a) a 
-%   confusion-style plot of planned rank versus realized rank, or (b) paired 
-%   bars for ordering accuracy (95\%) against offset-distance accuracy (much 
-%   lower). Option (b) makes the order-vs-distance contrast, which is the 
-%   point of the paragraph.
+%   Realised as option (b): per-step compliance under order-only matching
+%   (top) against positional matching with retries penalised (bottom), same
+%   plan steps, shared x. AtomAgents only. The analysis is imported from
+%   experiments/plot_plan_accuracy.py so the two cannot drift.
+%   NOTE the original spec said "ordering accuracy (95\%)". The traces give
+%   76.3\% order-only and 40.8\% positional over 64 runs; 95\% is not
+%   reproducible from any artifact in this repository.
 \includegraphics[width=\columnwidth]{figures/fig-plan-accuracy}
-\caption{Planner-declared orderings are accurate; planner-implied distances
-are not. Agents insert recovery and retry calls, so realized offsets diverge
-from planned ones even when the order is correct.}
+\caption{AtomAgents plan compliance over 64 runs, per planned step. Scored on
+order alone (top) the plan holds; scored positionally, with a retry consuming
+a plan slot (bottom), everything after the first divergence misses. Planner
+orderings are accurate; planner-implied distances are not.}
 \label{fig:plan-accuracy}
 \end{figure}
 
@@ -249,11 +252,15 @@ seen before.
 \paragraph{Plans predict order, not distance.}
 Frameworks organised by a planner agent expose a second, longer-range signal:
 a natural-language plan naming the tools to be invoked and their intended
-order. In AtomAgents these plans predict 95\% of tool orderings correctly
-(Figure~\ref{fig:plan-accuracy}), far enough ahead to begin staging resources
-whose construction would otherwise be exposed. What they do not supply is distance: agents insert calls to recover from
-syntax errors and retry failures, so the trace diverges from the planned
-offsets even when the order is right. Plans reach far but locate poorly, local
-transitions locate well but do not reach---which is why both are used.
+order. Scored on order alone---does each planned tool appear, in
+sequence---AtomAgents plans are 76.3\% compliant over 64 runs, far enough
+ahead to begin staging resources whose construction would otherwise be
+exposed. Scored positionally, so that a retry consumes a plan slot,
+compliance falls to 40.8\%, and every step after the first divergence reads
+as a miss (Figure~\ref{fig:plan-accuracy}). That gap is the shape of the
+signal: agents insert calls to recover from syntax errors and retry failures,
+so a trace keeps the planned order while drifting from the planned offsets.
+Plans reach far but locate poorly, local transitions locate well but do not
+reach---which is why both are used.
 
 
