@@ -146,8 +146,11 @@ TIGHT = 0.58
 # TIGHT drops, this does not follow it down.
 TIGHT_2PANEL = 0.80
 HSCALE_FOR = {
+    "fig-intro-behavior":     0.72,           # schematic; compresses well
     "fig-predictability":     TIGHT,
-    "fig-plan-accuracy":      TIGHT_2PANEL,   # two panels, rotated tick labels
+    # Two panels, but ONE shared x axis and two short identical y labels,
+    # so the collision TIGHT_2PANEL guards against cannot occur here.
+    "fig-plan-accuracy":      TIGHT,
     "fig-sgb-spread":         TIGHT,
     "fig-scale-sweep":        TIGHT_2PANEL,
     "fig-topology-budget":    TIGHT,

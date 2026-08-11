@@ -86,7 +86,7 @@ def legend(ax, **kw):
 # ------------------------------------------------------------------ 1 -------
 def fig_intro_behavior():
     """Schematic: why phase-based staging works traditionally and fails here."""
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, theme.fh("fig-intro-behavior", 2.55)), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, theme.fh("fig-intro-behavior", 2.35)), sharex=True)
     for ax in axes:
         ax.grid(False)
         ax.set_ylim(-0.2, 2.6)
@@ -110,7 +110,7 @@ def fig_intro_behavior():
     a.text(1.55, 2.30, "inputs declared", fontsize=7, color=theme.INK, ha="center")
     a.plot([1.55], [2.10], marker="v", ms=4, color=theme.INK)
     a.set_yticklabels(["storage", "compute"])
-    a.set_title("Traditional workflow: inputs known before the phase begins", pad=4)
+    a.set_title("Traditional: inputs known before the phase", pad=3)
 
     # -- agentic: need appears only after the decision, so a stall is exposed
     b = axes[1]
@@ -122,11 +122,12 @@ def fig_intro_behavior():
     b.plot([4.8], [1.82], marker="v", ms=4, color=theme.INK)
     b.add_patch(Rectangle((5.1, 1.25), 2.9, 0.62, facecolor="none",
                           edgecolor=theme.INK, lw=0.7, hatch="////"))
-    b.text(6.55, 1.56, "stall", ha="center", va="center", fontsize=7, color=theme.INK)
+    b.text(6.55, 1.56, "stall", ha="center", va="center", fontsize=7, color=theme.INK,
+           bbox=dict(facecolor=theme.SURFACE, edgecolor="none", pad=1.0))
     b.set_yticklabels(["storage", "compute"])
     b.set_xlabel("wall-clock time")
     b.set_xticks([])
-    b.set_title("Agentic workflow: the need appears after the decision", pad=4)
+    b.set_title("Agentic: the need appears after the decision", pad=3)
 
     fig.tight_layout(h_pad=0.9)
     save(fig, "fig-intro-behavior")
@@ -245,20 +246,22 @@ def fig_plan_accuracy():
           f"order-only {panels[0][4]:.1f}%, positional {panels[1][4]:.1f}%")
 
     fig, axes = plt.subplots(2, 1, sharex=True,
-                             figsize=(theme.COL, theme.fh("fig-plan-accuracy", 3.4)))
+                             figsize=(theme.COL, theme.fh("fig-plan-accuracy", 3.0)))
     for ax, (title, labels, pct, ann, overall, n) in zip(axes, panels):
         col = C[0] if "order" in title else C[1]
         ax.bar(np.arange(len(pct)), pct, 0.62, color=col, edgecolor="none")
-        for i, (v, a) in enumerate(zip(pct, ann)):
-            ax.text(i, v + 3, a, ha="center", fontsize=6.0, color=theme.INK)
-        ax.set_ylim(0, 122)
+        # The per-bar n/n counts are dropped: they read as clutter above every
+        # bar, and the denominators vary per step only because plans differ in
+        # length, which is not what the figure is about. Dropping them also
+        # removes the 22% headroom they needed.
+        ax.set_ylim(0, 105)
         ax.set_yticks([0, 50, 100])
-        ax.set_ylabel("compliant (%)")
         ax.grid(axis="x", visible=False)
         ax.set_title(f"{title} — {overall:.0f}% overall", pad=3, fontsize=8)
     axes[1].set_xticks(np.arange(len(panels[0][1])))
     axes[1].set_xticklabels([l[:11] for l in panels[0][1]], rotation=28,
                             ha="right", fontsize=6.5)
+    fig.supylabel("compliant (%)", fontsize=8, x=0.015)
     fig.tight_layout(h_pad=0.7)
     save(fig, "fig-plan-accuracy")
 
@@ -435,7 +438,7 @@ def fig_budget_sweep():
     """
     d = _budget_series()
     fig, axes = plt.subplots(2, 2, sharex="col", sharey="row",
-                             figsize=(theme.WIDE, theme.fh("fig-budget-sweep", 4.2)),
+                             figsize=(theme.WIDE, theme.fh("fig-budget-sweep", 3.9)),
                              gridspec_kw={"height_ratios": [1.55, 1]})
     for j, slots in enumerate((1, 2)):
         s = d[slots]
@@ -459,7 +462,7 @@ def fig_budget_sweep():
         a.set_title(f"{slots} device slot" + ("s" if slots > 1 else ""), pad=4)
         b.set_xlabel("host-memory budget (GB)")
     axes[0][0].set_ylabel("reduction (%)")
-    axes[1][0].set_ylabel("evictions (%)")
+    axes[1][0].set_ylabel("evicted (%)")
     legend(axes[0][0], loc="upper left", headroom=0.16)
     fig.tight_layout(w_pad=1.2, h_pad=0.7)
     save(fig, "fig-budget-sweep")
