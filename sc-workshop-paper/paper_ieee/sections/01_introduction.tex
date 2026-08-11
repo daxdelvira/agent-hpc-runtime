@@ -169,21 +169,20 @@ value-aware arbitration.
 
 \begin{itemize}
 
-\item \textbf{The problem, and what it implies.} AI steering breaks the
-assumption behind deep memory and storage hierarchy (DMSH) systems: that a
-phase's data needs are known before it begins. A state-of-the-art one makes
-wall time $3.18\times$ worse on an agentic workflow, and randomising its
-predictions does not worsen it---what it lacks is a window, not accuracy. Byte
-placement is the wrong unit regardless: 93.0\% of the cost of making an
-artifact usable is representation change inside a live process, and a retained
-gigabyte varies $65\times$ in value.
+\item We characterize the failure of deep memory and storage hierarchy (DMSH)
+staging under AI steering: a state-of-the-art system increases wall time by
+$3.18\times$, and randomizing its staging decisions does not degrade it
+further, isolating the absence of a staging window rather than prediction
+error as the cause. Byte placement is also the wrong unit of work, since
+representation change within the consumer process accounts for 93.0\% of the
+cost of making an artifact usable and the value of a retained gigabyte varies
+by $65\times$ across representations.
 
-\item \textbf{The system, and what it buys.} \sysname{} arbitrates residency
-for agent-backing models and transformed scientific data against one
-host-memory budget, ranking by stall avoided per gigabyte held and bounding
-speculation to memory retention has not claimed. It cuts end-to-end wall time
-by 34.5--50.8\% against a runtime that retains nothing and a further
-10.3--17.1\% against a recency-ranked baseline that already retains both, with
-the margin widening as budget and device capacity grow.
+\item We present \sysname, which arbitrates residency for agent-backing models
+and transformed scientific data against a single host-memory budget, ranking
+candidates by stall avoided per gigabyte held and restricting speculation to
+unclaimed memory. It reduces end-to-end wall time by 34.5--50.8\% relative to a
+runtime that retains nothing, and by a further 10.3--17.1\% relative to a
+recency-ranked baseline that already retains both resource classes.
 
 \end{itemize}

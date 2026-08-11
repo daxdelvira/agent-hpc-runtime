@@ -6,20 +6,17 @@
 
 \section{Conclusion}
 
-Agentic steering breaks the phase predictability that byte-oriented staging
-depends on, and the systems built on it fail structurally rather than for want
-of accuracy. The unit of work is wrong as well: for these workloads most of
-the cost of making data usable is a representation change performed inside a
-live process, and that structure and a parked model's weights are the same
-kind of object---anonymous memory drawn from one allocation. Treating them as
-one budget rather than two tiers is what makes the residency decision
-expressible at all.
+Agentic steering removes the phase predictability that byte-oriented staging
+depends upon, and systems built on that assumption fail structurally rather
+than through insufficient accuracy. The unit of work is also misplaced: for
+these workloads the dominant cost of making data usable is a representation
+change performed within a live process, and that structure and a parked
+model's weights are the same class of object---anonymous memory drawn from a
+single allocation. Managing them against one budget, rather than as two tiers,
+is what renders the residency decision expressible.
 
-\sysname{} makes that decision, ranking residency by stall avoided per
-gigabyte held and bounding speculation to memory retention has not claimed. It
-removes between a third and half of end-to-end wall time against a runtime
-that retains nothing, and a further tenth to sixth against a baseline that
-already retains both classes---on workflows where the byte-oriented
-alternative makes wall time three times worse. As agentic steering reaches
-workflows with larger artifacts and more models, the quantity worth scheduling
-is not which bytes to move, but which structures to keep.
+\sysname{} makes that decision by ranking residency on stall avoided per
+gigabyte held and restricting speculation to memory the arbitrator has not
+claimed, reducing end-to-end wall time by 34.5--50.8\% relative to a runtime
+that retains nothing and by a further 10.3--17.1\% relative to a baseline that
+already retains both resource classes.
