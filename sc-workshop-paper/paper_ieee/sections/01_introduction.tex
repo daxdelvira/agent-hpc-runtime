@@ -19,6 +19,39 @@ the flexibility of HPC workflows, allowing them to leverage out-of-domain
 knowledge to automate processes previously limited to human experts, such as
 metallic alloy design.
 
+% DECLARED HERE ON PURPOSE -- TARGET IS THE TOP OF COLUMN 2, PAGE 1.
+% A float goes to the top of the first column built AFTER its declaration, so
+% declaring it before any body text put it at the top of column 1 and pushed
+% the abstract down. Column 1 holds the abstract plus roughly the first two
+% paragraphs, so declaring it here sends it to column 2 instead.
+%
+% THIS IS THE KNOB. Moved one paragraph EARLIER on 2026-08-10: with the
+% abstract drafted, column 1 holds abstract + index terms + roughly the first
+% paragraph only, so declaring after paragraph 2 was past the end of column 2
+% and the float fell to page 2. If it now lands in column 1, move it one
+% paragraph later; if it slips to page 2 again, one earlier. Re-check whenever
+% the abstract's length changes -- the abstract is what sets where column 1
+% ends.
+\begin{figure}[tb]
+\centering
+% PLOT SPEC (kept for provenance; rendered by
+% scripts/figures/make_figures.py -> figure_drafts/fig-intro-behavior.pdf)
+%   two stacked timelines. Top: a traditional HPC workflow, phases with
+%   declared inputs, staging bars for phase $n{+}1$ overlapping computation
+%   of phase $n$, no exposed stall. Bottom: an agentic workflow, where the
+%   data need for phase $n{+}1$ becomes visible only after the agent's
+%   decision point, so the staging bar starts late and a stall band is
+%   exposed. Mark the agent decision points explicitly --- the late arrival
+%   of the need is the whole figure.
+\includegraphics[width=\columnwidth]{figures/fig-intro-behavior}
+\caption{Why phase-based staging works for traditional HPC workflows and
+fails for agentic ones. In the traditional case the data need is known before
+the phase begins and retrieval overlaps the preceding computation; in the
+agentic case the need becomes visible only after a steering decision, leaving
+too little window to hide the transfer.}
+\label{fig:intro-behavior}
+\end{figure}
+
 However, agentic workflows fundamentally challenge several key assumptions on
 which existing memory and storage management in high-performance computing
 systems are based. In particular, workflow phases are expected to proceed
@@ -39,36 +72,6 @@ instead made at runtime. Not only does this revive the memory-wall problem
 faced by all HPC workflows, but the various specialized LLMs backing different
 agents within a workflow add further memory pressure, since the parameters for
 each model can occupy hundreds of gigabytes.
-
-% DECLARED HERE ON PURPOSE -- TARGET IS THE TOP OF COLUMN 2, PAGE 1.
-% A float goes to the top of the first column built AFTER its declaration, so
-% declaring it before any body text put it at the top of column 1 and pushed
-% the abstract down. Column 1 holds the abstract plus roughly the first two
-% paragraphs, so declaring it here sends it to column 2 instead.
-%
-% THIS IS THE KNOB. If it still lands in column 1, move this block one
-% paragraph later; if it slips to page 2, move it one paragraph earlier. The
-% right point shifts when the abstract is written, since the abstract is what
-% consumes the top of column 1 -- re-check after writing it.
-\begin{figure}[tb]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-intro-behavior.pdf)
-%   two stacked timelines. Top: a traditional HPC workflow, phases with
-%   declared inputs, staging bars for phase $n{+}1$ overlapping computation
-%   of phase $n$, no exposed stall. Bottom: an agentic workflow, where the
-%   data need for phase $n{+}1$ becomes visible only after the agent's
-%   decision point, so the staging bar starts late and a stall band is
-%   exposed. Mark the agent decision points explicitly --- the late arrival
-%   of the need is the whole figure.
-\includegraphics[width=\columnwidth]{figures/fig-intro-behavior}
-\caption{Why phase-based staging works for traditional HPC workflows and
-fails for agentic ones. In the traditional case the data need is known before
-the phase begins and retrieval overlaps the preceding computation; in the
-agentic case the need becomes visible only after a steering decision, leaving
-too little window to hide the transfer.}
-\label{fig:intro-behavior}
-\end{figure}
 
 In traditional HPC workflows, prior solutions leveraged predictable
 phase-based execution to expose a unified memory-and-storage hierarchy to the
