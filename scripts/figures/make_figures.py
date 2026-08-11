@@ -132,6 +132,78 @@ def fig_intro_behavior():
     save(fig, "fig-intro-behavior")
 
 
+# ------------------------------------------------------------------ 2 -------
+def fig_predictability():
+    """Per-step agreement with the modal tool, across repeated runs.
+
+    Replaces experiments/plot_step_variation.py's rendering for paper use.
+    That script plots ChemGraph and AtomAgents together at 10x5.6 in with its
+    own Gruvbox rc; only AtomAgents is used here, at column width and in the
+    paper's theme. The analysis is identical -- for each step index, the share
+    of runs that took the most-common tool at that index -- and it reads the
+    same traces, so the two cannot drift apart in substance.
+
+    The trace loaders are reimplemented rather than imported from
+    experiments/plot_utils, which applies its own rcParams; twelve lines is
+    cheaper than fighting that.
+    """
+    import glob as _glob
+    from collections import Counter, defaultdict
+
+    MIN_RUNS, MAX_STEP = 3, 20
+    seqs = []
+    for path in sorted(_glob.glob(os.path.join(
+            ROOT, "logs", "workflow_traces", "runtime_trace_*.jsonl"))):
+        ev = []
+        for line in open(path):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+        seq = [e["payload"]["tool"] for e in ev
+               if e.get("event_type") == "tool_call" and "tool" in e.get("payload", {})]
+        if seq:
+            seqs.append(seq)
+    if not seqs:
+        print("  SKIP fig_predictability: no traces under logs/workflow_traces")
+        return
+
+    per_step = defaultdict(list)
+    for seq in seqs:
+        for i, tool in enumerate(seq):
+            if i <= MAX_STEP:
+                per_step[i].append(tool)
+    steps, pct, runs = [], [], []
+    for i in sorted(per_step):
+        tools = per_step[i]
+        if len(tools) < MIN_RUNS:
+            continue
+        steps.append(i)
+        pct.append(Counter(tools).most_common(1)[0][1] / len(tools) * 100)
+        runs.append(len(tools))
+    mean = sum(pct) / len(pct)
+    print(f"  AtomAgents agreement: mean {mean:.1f}%  min {min(pct):.1f}%  "
+          f"max {max(pct):.1f}%  over {len(steps)} steps, n<={max(runs)} runs")
+
+    fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-predictability", 2.3)))
+    ax.plot(steps, pct, marker=M[0], color=C[0], zorder=3)
+    ax.axhline(mean, color=theme.MUTED, lw=0.9, zorder=1)
+    # Left of the run-up: steps 1-7 sit well below the mean, so the band just
+    # above the rule there is the only clear space on the axes.
+    ax.text(1.0, mean + 3.5, f"mean {mean:.0f}%", fontsize=6.8,
+            color=theme.MUTED, ha="left", va="bottom")
+    ax.set_ylim(0, 104)
+    ax.set_xlim(-0.4, max(steps) + 0.4)
+    ax.set_xticks(range(0, max(steps) + 1, 5))   # step index is an integer
+    ax.set_xlabel("step index")
+    ax.set_ylabel("agreement (%)")
+    fig.tight_layout()
+    save(fig, "fig-predictability")
+
+
 # ------------------------------------------------------------------ 3 -------
 def fig_replacement_loss():
     """Model-load timeline for a representative trial, against artifact residency."""
@@ -628,6 +700,7 @@ def fig_tool_relationships_heatmap():
 
 FIGS = {
     "intro-behavior": fig_intro_behavior,
+    "predictability": fig_predictability,
     "replacement-loss": fig_replacement_loss,
     "sgb-spread": fig_sgb_spread,
     "scale-sweep": fig_scale_sweep,

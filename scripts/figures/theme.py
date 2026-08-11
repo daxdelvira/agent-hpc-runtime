@@ -143,6 +143,7 @@ TIGHT = 0.65
 # shortening further ("reduction" and "first uses" still overlapped).
 TIGHT_2PANEL = 0.80
 HSCALE_FOR = {
+    "fig-predictability":     TIGHT,
     "fig-sgb-spread":         TIGHT,
     "fig-scale-sweep":        TIGHT_2PANEL,
     "fig-topology-budget":    TIGHT,

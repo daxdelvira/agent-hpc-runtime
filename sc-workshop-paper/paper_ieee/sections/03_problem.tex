@@ -19,13 +19,13 @@
 \centering
 % PLOT SPEC (kept for provenance; rendered by
 % scripts/figures/make_figures.py -> figure_drafts/fig-predictability.pdf)
-%   $x$ = step index, $y$ = share of runs taking the modal action at that 
-%   step, over repeated executions of an identical task. Band the 30--60\% 
-%   region. Optionally overlay a second series for a second workflow to show 
-%   the pattern is not workload-specific.
+%   $x$ = step index, $y$ = share of runs taking the modal action at that
+%   step, over repeated executions of an identical task, with the mean drawn
+%   as a rule. AtomAgents only -- experiments/plot_step_variation.py also
+%   renders ChemGraph, which is not used here.
 \includegraphics[width=\columnwidth]{figures/fig-predictability}
-\caption{Agreement with the modal action at each step index across repeated
-executions of an identical task. Agreement never exceeds 60\%, so the same
+\caption{Agreement with the modal action at each step index, across 137
+executions of an identical task. Agreement averages 58.4\%, so the same
 request produces materially different executions.}
 \label{fig:predictability}
 \end{figure}
@@ -53,8 +53,9 @@ upcoming phase will use, and in some cases which phases run at all, so a
 system that identifies data by the deterministic structure of a workflow
 program has nothing to identify. Figure~\ref{fig:predictability} shows the
 share of runs of an identical task that take the modal action at each step
-index. Agreement never exceeds 60\%: the same request produces materially
-different executions, and agentic workflows are functionally nondeterministic.
+index, over 137 runs: agreement averages 58.4\%. The same request produces
+materially different executions, and agentic workflows are functionally
+nondeterministic.
 
 That nondeterminism removes the window a staging system depends on. Measured
 against a state-of-the-art DMSH system on a workflow with short inter-step
@@ -80,25 +81,21 @@ against artifact residency over the same interval, showing how parking cycles
 useful data out of memory.
 
 \paragraph{Agents Rely Heavily On Data Transformations.}
-Data used by agentic tools must undergo a representation change. A
-representation change is work that produces a structure the consumer could not
-have obtained by placing bytes. In other words, if the in-memory structure the
-consumer requires is byte-identical to some contiguous range of the
-file---modulo a header---then making it usable is placement. Otherwise the
-structure is a computed function of the file, and producing it is a
-representation change. These representation changes are responsible for 93\%
-on average of the stalls caused by waiting for data staging. Because the
-product of a representation change is a computed structure rather than a range
-of a file, it cannot be named, staged, or evicted by a byte-oriented tier at
-all: it exists only as anonymous memory inside a live consumer process. Parked
-model weights have the same property, for the same reason. The ceiling on a
+Data used by agentic tools must undergo a representation change: work that
+produces a structure the consumer could not have obtained by placing bytes.
+The test is whether the structure the consumer needs is byte-identical to some
+contiguous range of the file, modulo a header; if it is, making it usable is
+placement, and if it is not, the structure is a computed function of the file.
+Representation change accounts for 93\% on average of the stalls incurred
+waiting on data. Its product is a computed structure rather than a range of a
+file, so a byte-oriented tier cannot name, stage or evict it at all---it
+exists only as anonymous memory inside a live consumer process, and parked
+model weights have the same property for the same reason. The ceiling on a
 placement-oriented system is therefore set by which rungs of the cost chain
-its interface can reach, not by how accurately it predicts---no improvement in
-prediction moves a cost the interface cannot express. And because the retained
-structure and the parked model both occupy anonymous memory drawn from a
-single allocation, the question these workflows pose is not which bytes to
-fetch but which structures to keep, and---when they cannot all be kept---which
-of them a gigabyte of memory is better spent on.
+its interface can reach, not by how accurately it predicts. The question these
+workflows pose is not which bytes to fetch but which structures to keep,
+and---when they cannot all be kept---which of them a gigabyte is better spent
+on.
 
 \subsection{Value-Ranking Opportunities}
 
@@ -147,12 +144,9 @@ bytes at roughly fixed bandwidth, so it is near-linear in size and its price
 per gigabyte is nearly constant. Data has no such anchor, because the cost of
 a representation change is set by the decoder rather than by the byte count.
 
-The consequence is that models land in the middle of the data range rather
-than above or below it. Some artifacts are worth an order of magnitude more
-per gigabyte than any model; others are worth almost nothing. A fixed class
-priority---models first, or data first---is therefore wrong at one end of the
-range or the other, and the correct ordering is recoverable only by pricing
-each resource individually.
+Models therefore land in the middle of the data range rather than above or
+below it, so a fixed class priority is wrong at one end or the other and the
+correct ordering is recoverable only by pricing each resource individually.
 
 Two properties make that pricing practical. First, the price is a property of
 the representation rather than of the instance: across a $4\times$ size range
@@ -181,21 +175,14 @@ there to convert.  % RESTORED
 
 Hardware topology moves the balance a second way, and in both directions.
 Accelerator capacity and host memory are separate budgets, and a model
-actively resident on an accelerator charges neither. Adding accelerator
-capacity therefore removes precisely the models most worth retaining, leaving
-a less-used remainder to compete for host memory and shrinking what
-value-aware arbitration can recover.  % RESTORED
-Host memory behaves symmetrically: once the budget is large enough that
-nothing is ever evicted---in our configuration at roughly 86\% of the total
-footprint---the arbitration problem disappears and retaining everything is
-correct.  % RESTORED
-That bound is on arbitration, not on residency management as a whole:
-speculative staging requires no eviction, so it keeps paying in exactly the
-regime where the arbitrator has nothing left to decide, and
-Figure~\ref{fig:budget-sweep} in Section~\ref{sec:eval} shows the two
-separating there. Budget also buys value in steps rather than smoothly, since
-additional memory pays only when it crosses a threshold admitting one more
-resource.
+actively resident on an accelerator charges neither, so adding accelerator
+capacity removes precisely the models most worth retaining and shrinks what
+arbitration can recover.  % RESTORED
+Host memory behaves symmetrically: above roughly 86\% of the total footprint
+nothing is ever evicted and the arbitration problem disappears.  % RESTORED
+That bound is on arbitration alone. Staging requires no eviction, so it keeps
+paying in exactly the regime where the arbitrator has nothing left to decide
+(Figure~\ref{fig:budget-sweep}, Section~\ref{sec:eval}).
 
 Finally, the inter-need gap bounds what staging can achieve. A stage recovers
 only as much of a construction cost as fits into the window before the need
@@ -264,11 +251,9 @@ Frameworks organised by a planner agent expose a second, longer-range signal:
 a natural-language plan naming the tools to be invoked and their intended
 order. In AtomAgents these plans predict 95\% of tool orderings correctly
 (Figure~\ref{fig:plan-accuracy}), far enough ahead to begin staging resources
-whose construction would otherwise be exposed. What they do not supply is
-distance: agents insert additional calls to recover from syntax errors and
-retry failures, so the observed trace diverges from the planned offsets even
-when the order is right. Plans therefore reach far but locate poorly, while
-local transitions locate well but do not reach---which is why the two are used
-together.
+whose construction would otherwise be exposed. What they do not supply is distance: agents insert calls to recover from
+syntax errors and retry failures, so the trace diverges from the planned
+offsets even when the order is right. Plans reach far but locate poorly, local
+transitions locate well but do not reach---which is why both are used.
 
 

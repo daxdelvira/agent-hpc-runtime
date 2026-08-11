@@ -27,7 +27,7 @@ Theme lives in `scripts/figures/theme.py`.
 | # | File | LaTeX label | | Source |
 |---|---|---|---|---|
 | 1 | `fig-intro-behavior` | `fig:intro-behavior` | **X** | none — conceptual |
-| 2 | *(you have this)* | `fig:predictability` | — | not generated |
+| 2 | `fig-predictability` | `fig:predictability` | **M** | `logs/workflow_traces/runtime_trace_*.jsonl` (137 runs) |
 | 3 | `fig-replacement-loss` | `fig:replacement-loss` | **M**+**X** | model timeline measured; artifact series illustrative — see caveats |
 | 4 | `fig-sgb-spread` | `fig:sgb-spread` | **M** | `results/bench_format_activation_atl1-1-02-003-25-1.json.csv` |
 | 5 | `fig-scale-sweep` | `fig:scale-sweep` | **S** | `results_tables/05_scale_sweep.md` |
@@ -52,10 +52,20 @@ two panels are illegible at 3.35 in. Everything else is single-column.
 a live LaTeX hazard and the tex checker flags it; hyphens remove the class of
 problem outright.
 
-**`fig-predictability` and `fig-plan-accuracy` are not generated here** --
-they are yours. The sections already reference `figures/fig-predictability`
-and `figures/fig-plan-accuracy`; drop PDFs with those names into
-`paper_ieee/figures/` and they will resolve.
+**`fig-plan-accuracy` is not generated here** — it is yours. The sections
+reference `figures/fig-plan-accuracy`; drop a PDF with that name into
+`paper_ieee/figures/` and it will resolve.
+
+**`fig-predictability` replaces `experiments/plot_step_variation.py`'s
+rendering for paper use.** That script plots ChemGraph and AtomAgents together
+at 10×5.6 in under its own Gruvbox rc; only AtomAgents is used here, at column
+width and in the paper theme. The analysis is identical and reads the same
+traces, so the two cannot drift apart in substance. Measured over **137 runs**:
+mean agreement **58.4%**, min 29.5%, max 78.1% across 21 step indices.
+
+> The paper previously claimed agreement "never exceeds 60%" and lay in a
+> "30–60%" band. Both were wrong against this artifact — the max is 78.1%.
+> Prose and caption now report the mean instead.
 
 ---
 
