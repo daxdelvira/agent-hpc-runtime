@@ -205,65 +205,81 @@ def fig_predictability():
     save(fig, "fig-predictability")
 
 
-# ------------------------------------------------------------------ 8 -------
-def fig_plan_accuracy():
-    """Plan compliance under order-only and positional matching, AtomAgents.
+# ------------------------------------------------------------------ 6 -------
+def fig_prediction_signals():
+    """Both horizon signals in one float: local transitions, then plans.
 
-    The analysis is IMPORTED from experiments/plot_plan_accuracy.py rather
-    than reimplemented. Two numbers in this paper were already wrong because
-    they were carried forward instead of recomputed, and the lenient/strict
-    distinction is subtle enough (does a retry consume a plan slot?) that a
-    second implementation would drift. Only the rendering is ours: that script
-    draws AtomAgents beside ChemGraph at 13x5.6 in under its own Gruvbox rc,
-    and only AtomAgents is used here.
+    MERGED from fig-tool-relationships and fig-plan-accuracy. They back the two
+    paragraphs of one subsection and were costing two captions and two floats.
+    Plan compliance also drops from two stacked panels to one with grouped
+    bars, which is both smaller and a better comparison -- the order-only and
+    positional scores for a given step now sit side by side instead of a
+    column apart.
 
-    The divergence between the two panels IS the figure. Order-only matching
-    stays high while positional matching collapses to zero after the first
-    retry, which is exactly the claim the paragraph makes -- plans get the
-    sequence right and the spacing wrong.
+    The compliance analysis is IMPORTED from experiments/plot_plan_accuracy.py
+    rather than reimplemented; the lenient/strict distinction is subtle, and
+    three numbers in this paper were already wrong from re-deriving instead of
+    recomputing.
     """
     sys.path.insert(0, os.path.join(ROOT, "experiments"))
     from plot_plan_accuracy import compute_aa_compliance      # noqa: E402
     from plot_utils import load_traces                        # noqa: E402
 
+    tools, offsets, g = _transitions()
     traces = load_traces(os.path.join(ROOT, "logs", "workflow_traces"),
                          "runtime_trace_*.jsonl")
-    panels = []
-    for strict, title in ((False, "order only"), (True, "position, retries penalised")):
-        M, _, labels = compute_aa_compliance(traces, strict=strict)
-        if not M.size:
-            print("  SKIP fig_plan_accuracy: no plan_extracted events")
-            return
-        pct, ann = [], []
-        for p in range(M.shape[1]):
-            col = M[:, p]
-            nv, nm = int((col >= 0).sum()), int((col == 1.0).sum())
-            pct.append(nm / nv * 100 if nv else 0.0)
-            ann.append(f"{nm}/{nv}")
-        overall = int((M == 1.0).sum()) / int((M >= 0).sum()) * 100
-        panels.append((title, labels, pct, ann, overall, M.shape[0]))
-    print(f"  AtomAgents plan compliance over {panels[0][5]} runs: "
-          f"order-only {panels[0][4]:.1f}%, positional {panels[1][4]:.1f}%")
+    scored = []
+    for strict in (False, True):
+        Mx, _, labels = compute_aa_compliance(traces, strict=strict)
+        pct = [(Mx[:, k] == 1.0).sum() / max((Mx[:, k] >= 0).sum(), 1) * 100
+               for k in range(Mx.shape[1])]
+        scored.append((pct, int((Mx == 1.0).sum()) / int((Mx >= 0).sum()) * 100, labels))
+    if not len(g) or not scored:
+        print("  SKIP fig_prediction_signals: missing traces")
+        return
+    print(f"  transitions: {int((g.max(axis=1) >= 0.9).sum())}/{len(g)} tools >= 0.9   "
+          f"plans: order-only {scored[0][1]:.1f}%, positional {scored[1][1]:.1f}%")
 
-    fig, axes = plt.subplots(2, 1, sharex=True,
-                             figsize=(theme.COL, theme.fh("fig-plan-accuracy", 3.0)))
-    for ax, (title, labels, pct, ann, overall, n) in zip(axes, panels):
-        col = C[0] if "order" in title else C[1]
-        ax.bar(np.arange(len(pct)), pct, 0.62, color=col, edgecolor="none")
-        # The per-bar n/n counts are dropped: they read as clutter above every
-        # bar, and the denominators vary per step only because plans differ in
-        # length, which is not what the figure is about. Dropping them also
-        # removes the 22% headroom they needed.
-        ax.set_ylim(0, 105)
-        ax.set_yticks([0, 50, 100])
-        ax.grid(axis="x", visible=False)
-        ax.set_title(f"{title} — {overall:.0f}% overall", pad=3, fontsize=8)
-    axes[1].set_xticks(np.arange(len(panels[0][1])))
-    axes[1].set_xticklabels([l[:11] for l in panels[0][1]], rotation=28,
-                            ha="right", fontsize=6.5)
-    fig.supylabel("compliant (%)", fontsize=8, x=0.015)
-    fig.tight_layout(h_pad=0.7)
-    save(fig, "fig-plan-accuracy")
+    fig, axes = plt.subplots(2, 1,
+                             figsize=(theme.COL, theme.fh("fig-prediction-signals", 3.6)),
+                             gridspec_kw={"height_ratios": [1, 1.15]})
+
+    a = axes[0]
+    x = np.linspace(0.0, 1.0, 201)
+    for i2, k in enumerate(offsets):
+        a.plot(x, [(g[:, i2] >= t).mean() * 100 for t in x], color=C[i2],
+               label=f"$k{{=}}{k}$", lw=1.7)
+    a.axvline(0.9, color=theme.MUTED, lw=0.8, zorder=0)
+    best = g.max(axis=1)
+    a.plot([0.9], [(best >= 0.9).mean() * 100], marker="*", ms=8, color=theme.INK,
+           linestyle="none", zorder=5, label=f"any $k$: {int((best>=0.9).sum())}/{len(best)}")
+    a.set_xlim(0, 1.0); a.set_ylim(0, 104)
+    a.set_xlabel("successor confidence", labelpad=1.5)
+    a.set_ylabel("tools (%)")
+    theme.legend_above(a, ncol=4, fontsize=7)
+
+    b = axes[1]
+    labels = scored[0][2]
+    xs = np.arange(len(labels))
+    for k, (pct, overall, _) in enumerate(scored):
+        lab = ("order only" if k == 0 else "position") + f" ({overall:.0f}%)"
+        b.bar(xs + (k - 0.5) * 0.38, pct, 0.36, color=C[k], edgecolor="none", label=lab)
+        # A zero-height bar is indistinguishable from an absent one, and the
+        # zeros ARE the finding here -- positional compliance collapses after
+        # the first retry. Label them so the reader sees a measurement.
+        for xi, v in zip(xs + (k - 0.5) * 0.38, pct):
+            if v <= 0.5:
+                b.text(xi, 2.5, "0", ha="center", va="bottom", fontsize=6.2,
+                       color=C[k])
+    b.set_ylim(0, 105); b.set_yticks([0, 50, 100])
+    b.set_ylabel("compliant (%)")
+    b.set_xticks(xs)
+    b.set_xticklabels([l[:11] for l in labels], rotation=28, ha="right", fontsize=6.5)
+    b.grid(axis="x", visible=False)
+    theme.legend_above(b, ncol=2, fontsize=7)
+
+    fig.tight_layout(h_pad=0.5)
+    save(fig, "fig-prediction-signals")
 
 
 # ------------------------------------------------------------------ 3 -------
@@ -273,8 +289,10 @@ def fig_replacement_loss():
              (1967.7, 2661.4, "72B"), (2687.6, 3422.9, "72B"),
              (3436.0, 4189.6, "72B-t"), (4245.4, 5254.4, "72B")]
     wall = 5288.5
-    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, theme.fh("fig-replacement-loss", 2.5)), sharex=True,
-                             gridspec_kw={"height_ratios": [1, 1.25]})
+    # The lower panel is ~8% filled, so it does not need the larger share --
+    # it had 1.25 against the timeline's 1.0, which is backwards.
+    fig, axes = plt.subplots(2, 1, figsize=(theme.COL, theme.fh("fig-replacement-loss", 2.5)),
+                             sharex=True, gridspec_kw={"height_ratios": [1.35, 1]})
 
     ax = axes[0]
     ax.grid(False)
@@ -757,7 +775,7 @@ FIGS = {
     "scale-sweep": fig_scale_sweep,
     "topology-budget": fig_topology_budget,
     "tool-relationships": fig_tool_relationships,
-    "plan-accuracy": fig_plan_accuracy,
+    "prediction-signals": fig_prediction_signals,
     "tool-relationships-detail": fig_tool_relationships_heatmap,
     "budget-sweep": fig_budget_sweep,
     "stall-ladder": fig_stall_ladder,

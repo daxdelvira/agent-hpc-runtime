@@ -198,39 +198,24 @@ jointly rather than choosing one.  % RESTORED
 \begin{figure}[tb]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-tool-relationships.pdf)
-%   ORIGINAL SPEC was a source-tool x offset heatmap. Rendered, that ran to
-%   26 rows and occupied 100.5%% of a column -- the largest single item in the
-%   paper -- to support a claim that is about the SHARE of tools with a
-%   confident successor, not about which ones. Replaced by the distribution:
-%   x = confidence threshold, y = share of tools at or above it, one line per
-%   offset, star marking the best-over-any-offset count at 0.9. The heatmap
-%   is still generated as fig-tool-relationships-detail if the per-tool view
-%   is wanted; swapping the filename below restores it.
-\includegraphics[width=\columnwidth]{figures/fig-tool-relationships}
-\caption{Distribution of best-successor confidence across AtomAgents tools,
-per offset $k$. Despite workflow-level nondeterminism, 17 of 26 tools have a
-successor at some offset with confidence above 0.9.}
-\label{fig:tool-relationships}
+% scripts/figures/make_figures.py -> figure_drafts/fig-prediction-signals.pdf)
+%   MERGED from the former fig:tool-relationships and fig:plan-accuracy, which
+%   backed the two paragraphs of this subsection and cost two captions and two
+%   floats. Top: share of AtomAgents tools whose best successor at offset k
+%   clears a given confidence, with a star at the best-over-any-k count.
+%   Bottom: plan compliance per planned step, order-only against positional,
+%   as grouped bars -- the two scorings for a step now sit side by side rather
+%   than a column apart, and the positional zeros are labelled because a
+%   zero-height bar is otherwise indistinguishable from a missing one.
+\includegraphics[width=\columnwidth]{figures/fig-prediction-signals}
+\caption{The two horizon signals. Top: 17 of 26 AtomAgents tools have a
+successor at some offset above 0.9 confidence. Bottom: plan compliance per
+step over 64 runs---scored on order alone the plan holds, scored positionally
+it collapses after the first retry, so planner orderings are accurate and
+planner-implied distances are not.}
+\label{fig:prediction-signals}
 \end{figure}
 
-\begin{figure}[tb]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-plan-accuracy.pdf)
-%   Realised as option (b): per-step compliance under order-only matching
-%   (top) against positional matching with retries penalised (bottom), same
-%   plan steps, shared x. AtomAgents only. The analysis is imported from
-%   experiments/plot_plan_accuracy.py so the two cannot drift.
-%   NOTE the original spec said "ordering accuracy (95\%)". The traces give
-%   76.3\% order-only and 40.8\% positional over 64 runs; 95\% is not
-%   reproducible from any artifact in this repository.
-\includegraphics[width=\columnwidth]{figures/fig-plan-accuracy}
-\caption{AtomAgents plan compliance per planned step, over 64 runs. Scored
-on order alone (top) the plan holds; scored positionally, with a retry
-consuming a plan slot (bottom), everything after the first divergence misses.}
-\label{fig:plan-accuracy}
-\end{figure}
 
 \paragraph{Local transition structure survives workflow-level nondeterminism.}
 Agentic workflows are dynamic in the large but structured in the small: tools
@@ -241,7 +226,7 @@ at some offset. Over the offsets our transition table records ($k \in
 \{1,2,3\}$), 17 of 26 AtomAgents tools---65\%---have a successor with
 empirical confidence of at least 0.9, and the signal is concentrated at $k=2$,
 where 58\% of tools clear that threshold
-(Figure~\ref{fig:tool-relationships}). Critically, these relationships persist
+(Figure~\ref{fig:prediction-signals}). Critically, these relationships persist
 across substantially
 different prompts and objectives within a framework, so traces from prior,
 unrelated executions supply useful priors on the first run of a workflow never
@@ -255,7 +240,7 @@ sequence---AtomAgents plans are 76.3\% compliant over 64 runs, far enough
 ahead to begin staging resources whose construction would otherwise be
 exposed. Scored positionally, so that a retry consumes a plan slot,
 compliance falls to 40.8\%, and every step after the first divergence reads
-as a miss (Figure~\ref{fig:plan-accuracy}). That gap is the shape of the
+as a miss (Figure~\ref{fig:prediction-signals}). That gap is the shape of the
 signal: agents insert calls to recover from syntax errors and retry failures,
 so a trace keeps the planned order while drifting from the planned offsets.
 Plans reach far but locate poorly, local transitions locate well but do not
