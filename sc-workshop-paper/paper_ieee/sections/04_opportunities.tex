@@ -8,35 +8,27 @@
 
 \section{Design of \sysname}
 
-\subsection{System Overview}
+\subsection{Overview}
 
-\sysname{} manages a single host-memory budget shared by two kinds of
-resource: the language models backing an agent's reasoning and tool-calling
-steps, and the scientific data artifacts those tools consume. The retention
-arbitrator is the primary component and acts wherever memory pressure forces a
-choice; the opportunistic prefetcher is deliberately subordinate to it. Both
-score candidates with one value function, so a decision to stage and a
-decision to keep are directly comparable rather than governed by separate
-policies competing for the same memory.
-
-\subsection{Residency States}
-
-A resource sits in one of three states. \emph{Active} is serving---a model
-answering requests on a device, an artifact activated in a live worker.
-\emph{Released} is the opposite: the process is gone and the next use pays
-full construction. Between them is \emph{held}, the state the arbitrator
-budgets, in which the resource is not serving but the expensive part of making
-it usable has been paid and is being kept. For a model that is parked weights
+\sysname{} manages two kinds of resource: the language models backing an
+agent's reasoning and tool-calling steps, and the scientific data artifacts
+those tools consume. Each sits in one of three states---\emph{active} and
+serving, \emph{released} so that the next use pays full construction, or
+\emph{held}, in which it is not serving but the expensive part of making it
+usable has been paid and is being kept. Held means parked weights for a model,
 with the serving process, device context and allocator still alive, so
-returning to active is a wake rather than a boot---782~s becomes 2.1~s. For an
-artifact it is a resident worker holding the parsed structure across
+returning to active is a wake rather than a boot: 782~s becomes 2.1~s. For an
+artifact it means a resident worker keeping the parsed structure across tool
 invocations.
 
 Held is the only state that costs host memory, and its two forms are the same
 object to the operating system: anonymous memory in a live process, invisible
-to any file-backed cache and charged to one allocation. Hence one arbitrator
-for both---a parked model and a retained database compete for exactly the same
-bytes.
+to any file-backed cache and charged to one allocation. \sysname{} therefore
+budgets them together rather than tiering them separately---a parked model and
+a retained database compete for exactly the same bytes. A retention arbitrator
+decides what stays held; a subordinate prefetcher moves resources toward
+residency ahead of need. Both score candidates with one value function, so
+staging and keeping are directly comparable.
 
 \subsection{The Retention Arbitrator}
 
