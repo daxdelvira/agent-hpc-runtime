@@ -1,15 +1,150 @@
 % Bibliography database for paper_ieee/main.tex.
 %
-% EMPTY ON PURPOSE. The authoritative main.tex ends with
-%   \bibliographystyle{IEEEtran}
-%   \bibliography{references}
-% so bibtex needs this file to exist, but the section prose currently contains
-% ZERO \cite commands -- every reference in the draft is named inline in words
-% ("DeepDriveMD", "AtomAgents", "AutoGen", "LAMMPS", the memory-wall scaling
-% figures, the DMSH prior work). Those all still need citations.
+% Entries supplied by the author 2026-08-10, reproduced verbatim except where
+% noted below. Cited from the section files; `bibtex main' now has work to do.
 %
-% Until at least one \cite exists, `bibtex main' reports "I found no \citation
-% commands" and produces no main.bbl; pdflatex then warns about the missing
-% .bbl but still completes. That is expected, not a break.
+% ONE FIX APPLIED. The amaro_covid_data entry as supplied had an unbalanced
+% brace -- the eprint field's closing brace, then a brace closing the entry,
+% then a THIRD stray brace. Left as-is, bibtex aborts on it and produces no
+% .bbl at all, which would silently drop every citation in the paper. The
+% stray brace is removed; nothing else about the entry is changed.
 %
-% TODO: add entries and \cite them from the section files.
+% STILL MISSING, and named in the prose without a citation: AutoGen and LAMMPS
+% (both in the AtomAgents workload description, sections/02_background.tex),
+% and vLLM if the sleep/wake mechanism is attributed in a later revision.
+
+@inproceedings{megammap,
+author = {Logan, Luke and Kougkas, Anthony and Sun, Xian-He},
+title = {MegaMmap: Blurring the Boundary Between Memory and Storage for Data-Intensive Workloads},
+year = {2024},
+isbn = {9798350352917},
+publisher = {IEEE Press},
+url = {https://doi.org/10.1109/SC41406.2024.00114},
+doi = {10.1109/SC41406.2024.00114},
+booktitle = {Proceedings of the International Conference for High Performance Computing, Networking, Storage, and Analysis},
+articleno = {108},
+numpages = {18},
+keywords = {HPC, Memory Tiering, Storage Tiering, Systems Software},
+location = {Atlanta, GA, USA},
+series = {SC '24}
+}
+
+@inproceedings{hermes,
+author = {Kougkas, Anthony and Devarajan, Hariharan and Sun, Xian-He},
+title = {Hermes: a heterogeneous-aware multi-tiered distributed I/O buffering system},
+year = {2018},
+isbn = {9781450357852},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3208040.3208059},
+doi = {10.1145/3208040.3208059},
+booktitle = {Proceedings of the 27th International Symposium on High-Performance Parallel and Distributed Computing},
+pages = {219--230},
+numpages = {12},
+keywords = {layered buffering, heterogeneous buffering, deep memory hierarchy, burst buffers, I/O buffering},
+location = {Tempe, Arizona},
+series = {HPDC '18}
+}
+
+@misc{ai_hpc_survey,
+      title={AI-coupled HPC Workflow Applications, Middleware and Performance},
+      author={Wes Brewer and Ana Gainaru and Fr\'ed\'eric Suter and Feiyi Wang and Murali Emani and Shantenu Jha},
+      year={2025},
+      eprint={2406.14315},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC},
+      url={https://arxiv.org/abs/2406.14315}
+}
+
+@article{amaro_covid_data,
+author = {Lorenzo Casalino and Abigail C Dommer and Zied Gaieb and Emilia P Barros and Terra Sztain and Surl-Hee Ahn and Anda Trifan and Alexander Brace and Anthony T Bogetti and Austin Clyde and Heng Ma and Hyungro Lee and Matteo Turilli and Syma Khalid and Lillian T Chong and Carlos Simmerling and David J Hardy and Julio DC Maia and James C Phillips and Thorsten Kurth and Abraham C Stern and Lei Huang and John D McCalpin and Mahidhar Tatineni and Tom Gibbs and John E Stone and Shantenu Jha and Arvind Ramanathan and Rommie E Amaro},
+title = {AI-driven multiscale simulations illuminate mechanisms of SARS-CoV-2 spike dynamics},
+journal = {The International Journal of High Performance Computing Applications},
+volume = {35},
+number = {5},
+pages = {432--451},
+year = {2021},
+doi = {10.1177/10943420211006452},
+url = {https://doi.org/10.1177/10943420211006452}
+}
+
+@inproceedings{deepdrivemd_og,
+  author={Lee, Hyungro and Turilli, Matteo and Jha, Shantenu and Bhowmik, Debsindhu and Ma, Heng and Ramanathan, Arvind},
+  booktitle={2019 IEEE/ACM Third Workshop on Deep Learning on Supercomputers (DLS)},
+  title={DeepDriveMD: Deep-Learning Driven Adaptive Molecular Simulations for Protein Folding},
+  year={2019},
+  pages={12--19},
+  doi={10.1109/DLS49591.2019.00007}
+}
+
+@article{atomagents,
+author = {Alireza Ghafarollahi and Markus J. Buehler},
+title = {Automating alloy design and discovery with physics-aware multimodal multiagent AI},
+journal = {Proceedings of the National Academy of Sciences},
+volume = {122},
+number = {4},
+pages = {e2414074122},
+year = {2025},
+doi = {10.1073/pnas.2414074122},
+url = {https://www.pnas.org/doi/abs/10.1073/pnas.2414074122}
+}
+
+@article{ai_memwall,
+  author={Gholami, Amir and Yao, Zhewei and Kim, Sehoon and Hooper, Coleman and Mahoney, Michael W. and Keutzer, Kurt},
+  journal={IEEE Micro},
+  title={AI and Memory Wall},
+  year={2024},
+  volume={44},
+  number={3},
+  pages={33--39},
+  doi={10.1109/MM.2024.3373763}
+}
+
+@incollection{hpc_astro_ex,
+  title     = "High-performance computing for astrophysical simulations and astroparticle observations",
+  booktitle = "Communications in Computer and Information Science",
+  author    = "Becerra, L M and Sarmiento-Cano, C and Mart{\'\i}nez-M{\'e}ndez, A and Dominguez, Y and N{\'u}{\~n}ez, L A",
+  publisher = "Springer Nature Switzerland",
+  pages     = "184--196",
+  series    = "Communications in Computer and Information Science",
+  year      =  2024,
+  address   = "Cham",
+  language  = "en"
+}
+
+@incollection{hpc_fluiddynamics_ex,
+  title     = "High-performance computing to accelerate large-scale computational fluid dynamics simulations: A comprehensive study",
+  booktitle = "International Conference on Advanced Intelligent Systems for Sustainable Development ({AI2SD'2023})",
+  author    = "Elmisaoui, Safae and Kissami, Imad and Ghidaglia, Jean-Michel",
+  publisher = "Springer Nature Switzerland",
+  pages     = "352--360",
+  series    = "Lecture Notes in Networks and Systems",
+  year      =  2024,
+  address   = "Cham"
+}
+
+@misc{nvidia_h200_costs,
+    author = {Vishnu Subramanian},
+    title = {{NVIDIA} {H}200 Price Guide 2026: {GPU} Cost, Rental and Cloud Pricing},
+    howpublished = {\url{https://docs.jarvislabs.ai/blog/h200-price}},
+    year = {2026},
+    note = {[Accessed 07-02-2026]}
+}
+
+@inproceedings{hades,
+  author={Cernuda, Jaime and Logan, Luke and Gainaru, Ana and Klasky, Scott and Lofstead, Jay and Kougkas, Anthony and Sun, Xian-He},
+  booktitle={2024 IEEE 24th International Symposium on Cluster, Cloud and Internet Computing (CCGrid)},
+  title={Hades: A Context-Aware Active Storage Framework for Accelerating Large-Scale Data Analysis},
+  year={2024},
+  pages={577--586},
+  doi={10.1109/CCGrid59990.2024.00070}
+}
+
+@misc{parslfest_ddmd_pres,
+  title={Coupling streaming {AI} and {HPC} ensembles to achieve 100--1000$\times$ faster biomolecular simulations},
+  author={Brace, Alexander and Yakushin, Igor and Ma, Heng and Munson, Todd and Foster, Ian and Ramanathan, Arvind and Lee, Hyungro and Turilli, Matteo and Jha, Shantenu},
+  publisher={University of Chicago},
+  address={Chicago, Illinois},
+  year={2023},
+  month={Oct}
+}

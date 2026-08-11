@@ -11,13 +11,15 @@ more AI agents---software components that use AI to make independent decisions
 on behalf of users---observe intermediate data results during execution and
 dynamically select the next phase(s). Agentic workflows have proven beneficial
 in various scientific fields, such as molecular dynamics, alloy discovery, and
-computational chemistry. For instance, agents that selectively prune data to
+computational chemistry~\cite{ai_hpc_survey}. For instance, agents that selectively prune data to
 limit simulation to high-potential pathways (protein configurations, material
-models, etc.) lead to significant performance gains, such as in DeepDriveMD,
-where performance improved by $2.33\times$. Other agentic workflows increase
+models, etc.) lead to significant performance gains, such as in
+DeepDriveMD~\cite{deepdrivemd_og,parslfest_ddmd_pres}, where performance
+improved by $2.33\times$, or in AI-driven multiscale simulation of viral
+protein dynamics~\cite{amaro_covid_data}. Other agentic workflows increase
 the flexibility of HPC workflows, allowing them to leverage out-of-domain
 knowledge to automate processes previously limited to human experts, such as
-metallic alloy design.
+metallic alloy design~\cite{atomagents}.
 
 % DECLARED HERE ON PURPOSE -- TARGET IS THE TOP OF COLUMN 2, PAGE 1.
 % A float goes to the top of the first column built AFTER its declaration, so
@@ -58,7 +60,7 @@ control. This poses a problem because scientific simulations ingest and
 produce large amounts of data---sometimes more than $O(100$~TB$)$---and
 therefore cannot feasibly hold all the data required for the workflow in CPU
 RAM or GPU VRAM at once, depending on the compute step. This manifestation of
-the infamous ``memory wall'' problem results in longer overall wall time for
+the infamous ``memory wall'' problem~\cite{ai_memwall} results in longer wall time for
 workflow executions and processing-unit idle time, during which processing
 units incur energy and financial costs while performing no simulation work.
 Simply adding DRAM is a costly measure that does not scale easily across
@@ -77,9 +79,9 @@ workflow, prefetching relevant data from storage and placing it in memory
 before the phase in which it was needed. Overlapping data movement for the
 next phase with computation in the current phase allowed storage to be used as
 an extension of memory for data-intensive workflows without exposing the
-overheads of storage access. This ``Deep Memory and Storage Hierarchy'' (DMSH)
-could be presented to applications as a massive memory pool without incurring
-significant performance penalties. As illustrated in
+overheads of storage access. This ``Deep Memory and Storage Hierarchy''
+(DMSH)~\cite{hermes,megammap,hades} could be presented to applications as a
+massive memory pool without incurring significant performance penalties. As illustrated in
 Figure~\ref{fig:intro-behavior}, this approach has worked for traditional HPC
 workflows because each phase has known inputs and outputs. The required data
 is therefore known before each phase begins, allowing retrieval to overlap
@@ -97,14 +99,15 @@ transfer: the data need becomes visible only after the agent has committed to
 it. Agentic workflows consequently stall while the required data is fetched
 from storage into memory. Incorrectly prefetched data also pollutes the memory
 cache when it is read but not used in the next workflow phase. The result is
-that a state-of-the-art DMSH system increases end-to-end wall time by
+that a state-of-the-art DMSH system~\cite{megammap} increases end-to-end wall time by
 $3.2\times$ on our workloads rather than decreasing it as it does for
 traditional workflows.
 
 Because DMSH solutions are not broadly applicable here, these performance
 losses become economic and sustainability costs. Idle accelerators and
 unnecessary transfers consume power and allocation on systems that are already
-constrained, and the usual escape---provisioning more DRAM or bandwidth---is
+constrained~\cite{nvidia_h200_costs}, and the usual escape---provisioning more
+DRAM or bandwidth---is
 least available to the institutions running fixed on-premise infrastructure or
 handling data that cannot leave it. Efficient data movement is therefore a
 first-order concern for making agentic workflows viable at all, not a
@@ -153,7 +156,8 @@ And where the budget is large enough that no eviction ever occurs---so the
 arbitrator is provably idle---staging alone still accounts for an 11.9-point
 margin.
 
-We evaluate \sysname{} on workflows built with the AtomAgents framework,
+We evaluate \sysname{} on workflows built with the AtomAgents
+framework~\cite{atomagents},
 reporting stall and end-to-end wall time, isolating each mechanism's
 contribution, measuring the CPU cost resident workers impose on foreground
 agent work, and characterizing sensitivity to the planning horizon,

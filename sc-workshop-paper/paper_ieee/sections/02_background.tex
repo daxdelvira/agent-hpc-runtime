@@ -5,13 +5,16 @@
 An HPC workflow is a multi-stage application whose phases each correspond to a
 computational task---a simulation, analysis, or visualization step---consuming
 data produced by earlier phases and generating data for later ones, often
-cyclically. Workflows of this shape underpin protein and alloy discovery,
-astronomical survey analysis, and computational fluid dynamics.
+cyclically. Workflows of this shape underpin protein and alloy
+discovery~\cite{atomagents,amaro_covid_data}, astronomical survey
+analysis~\cite{hpc_astro_ex}, and computational fluid
+dynamics~\cite{hpc_fluiddynamics_ex}.
 
 \subsection{Prior Solutions for Memory Bottlenecks}
 
 The datasets these workflows manipulate expose a growing imbalance between
-compute throughput and memory bandwidth: over the past twenty years hardware
+compute throughput and memory bandwidth~\cite{ai_memwall}: over the past twenty
+years hardware
 FLOPs have scaled $60000\times$, while DRAM bandwidth has scaled $100\times$
 and interconnect bandwidth only $20\times$. A workflow whose working set
 exceeds RAM becomes ``out-of-core'' for part or all of its execution, and the
@@ -21,7 +24,7 @@ across sites.
 
 Recent work instead exposes tiered memory and storage through software
 distributed shared memory, presenting the hierarchy as one large pool---a Deep
-Memory and Storage Hierarchy (DMSH). Coherency and placement are made
+Memory and Storage Hierarchy (DMSH)~\cite{hermes,megammap,hades}. Coherency and placement are made
 affordable by the predictability of phase-based execution: a workflow declares
 its intent and expected accesses through an API, and the system places data
 across tiers and prefetches it during preceding computation. That declaration
@@ -30,7 +33,8 @@ is the assumption agentic workflows remove.
 \subsection{Workload Description}
 
 \paragraph{AtomAgents.}
-AtomAgents is a multi-agent materials discovery framework built on AutoGen
+AtomAgents~\cite{atomagents} is a multi-agent materials discovery framework
+built on AutoGen
 that combines LLM reasoning with physics-based simulation tools such as
 LAMMPS. Specialized agents collaborate to plan, execute, and refine scientific
 workflows by invoking simulation tools through function-calling interfaces.
