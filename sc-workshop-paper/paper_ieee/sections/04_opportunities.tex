@@ -163,11 +163,10 @@ worth its host memory or should be released outright.
 %   this becomes a headline.
 \includegraphics[width=0.95\textwidth]{figures/fig-budget-sweep}
 \caption{Wall-time reduction against \textsc{Never} (top) and the share of
-decisions in which memory pressure forced an eviction (bottom), against
-host-memory budget at one and two device slots. Shading marks the span in
-which no eviction ever occurs. The policies separate most widely inside it:
-with the arbitrator idle, the remaining margin is speculative staging, which
-needs no eviction to spend the additional budget.}
+decisions in which memory pressure forced an eviction (bottom), by budget and
+device capacity. Shading marks the span where no eviction ever occurs: the
+policies separate most widely inside it, because with the arbitrator idle the
+remaining margin is staging.}
 \label{fig:budget-sweep}
 \end{figure*}
 \begin{figure}[tb]
@@ -179,8 +178,7 @@ needs no eviction to spend the additional budget.}
 %   bar with its reduction over \textsc{Lru}.
 \includegraphics[width=\columnwidth]{figures/fig-stall-ladder}
 \caption{Stall attributable to resource residency, by policy and
-configuration. \sysname{} removes 11.55\% of the stall \textsc{Lru} leaves at
-the production allocation and 50.69\% at a larger budget.}
+configuration.}
 \label{fig:stall-ladder}
 \end{figure}
 

@@ -37,21 +37,21 @@
 \section{Evaluation}
 \label{sec:eval}
 
-\begin{figure*}[t]
+\begin{figure}[tb]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
 % scripts/figures/make_figures.py -> figure_drafts/fig-ablation.pdf)
-%   horizontal cumulative bar, \textsc{Never} $\rightarrow$ +model parking 
-%   $\rightarrow$ +data retention $\rightarrow$ +cost-aware arbitration 
-%   $\rightarrow$ +slack staging, annotated with each marginal contribution. 
-%   Inset or second panel: Shapley split of the retention total at 256~GB 
-%   and 560~GB, showing the reversal.
-\includegraphics[width=0.95\textwidth]{figures/fig-ablation}
+%   horizontal cumulative bar, \textsc{Never} $\rightarrow$ +model parking
+%   $\rightarrow$ +data retention $\rightarrow$ +cost-aware arbitration
+%   $\rightarrow$ +slack staging, annotated with each marginal contribution.
+%   The original spec added a second panel for the Shapley split; that was
+%   four numbers the prose already states, drawn as two stacked bars, and it
+%   forced the float to full width. Dropped 2026-08-10.
+\includegraphics[width=\columnwidth]{figures/fig-ablation}
 \caption{Contribution of each mechanism at 256~GB with one device slot,
-cumulative against \textsc{Never}, and the order-independent split of the
-retention total at two budgets.}
+cumulative against \textsc{Never}.}
 \label{fig:ablation}
-\end{figure*}
+\end{figure}
 
 \subsection{Setup}
 
@@ -117,9 +117,9 @@ widens as the budget admits more of the working set: at 560~GB with two slots
 %   all+slack, all+outbid, as \% vs \textsc{Lru}. Optionally repeat at two 
 %   accuracies to show the safety rule's stability.
 \includegraphics[width=\columnwidth]{figures/fig-prefetch-variants}
-\caption{Two independent restrictions on speculative staging: which classes it
-may stage, and whether it may displace a retained resource. Reduction is
-against \textsc{Lru}.}
+\caption{Two independent restrictions on speculative staging: which
+classes it may stage, and whether it may displace a resident. Against
+\textsc{Lru}.}
 \label{fig:prefetch-variants}
 \end{figure}
 
@@ -155,8 +155,8 @@ and neither is a better predictor---both simply bound the cost of being wrong.
 %   to evidence the workers ran.
 \includegraphics[width=\columnwidth]{figures/fig-cpu-interference}
 \caption{Foreground latency under concurrent background construction. The
-rising CPU-seconds series is reported alongside the flat latency series
-because a null result and a broken probe are otherwise indistinguishable.}
+rising CPU-seconds series is reported alongside it because a null result and a
+broken probe are otherwise indistinguishable.}
 \label{fig:cpu-interference}
 \end{figure}
 
@@ -195,9 +195,9 @@ by this experiment.
 %   retention+staging (declining). Shade the region around the workload's 
 %   median inter-need gap.
 \includegraphics[width=\columnwidth]{figures/fig-h-sweep}
-\caption{Sensitivity to the planning horizon $H$, as wall-time reduction
-against \textsc{Never}. Retention is insensitive; staging degrades once $H$
-exceeds the window in which a stage can complete.}
+\caption{Sensitivity to the planning horizon $H$, against \textsc{Never}.
+Retention is insensitive; staging degrades once $H$ exceeds the window in
+which a stage can complete.}
 \label{fig:h-sweep}
 \end{figure}
 \begin{figure}[tb]
@@ -209,9 +209,9 @@ exceeds the window in which a stage can complete.}
 %   (crossing zero near 0.35). Mark the measured accuracy band. The zero 
 %   crossing is the reading.
 \includegraphics[width=\columnwidth]{figures/fig-accuracy-sweep}
-\caption{Sensitivity to horizon accuracy, as reduction against \textsc{Lru}.
-Retention and slack staging remain beneficial across the range; only
-displacement-permitting staging is accuracy-critical.}
+\caption{Sensitivity to horizon accuracy, against \textsc{Lru}. Retention and
+slack staging stay beneficial throughout; only displacement-permitting staging
+is accuracy-critical.}
 \label{fig:accuracy-sweep}
 \end{figure}
 

@@ -11,17 +11,15 @@ depends on, and the systems built on it fail structurally rather than for want
 of accuracy. The unit of work is wrong as well: for these workloads most of
 the cost of making data usable is a representation change performed inside a
 live process, and that structure and a parked model's weights are the same
-kind of object---anonymous memory drawn from one allocation. \sysname{}
-manages them together, ranking residency by stall avoided per gigabyte held
-and bounding speculation to memory that retention has not claimed.
+kind of object---anonymous memory drawn from one allocation. Treating them as
+one budget rather than two tiers is what makes the residency decision
+expressible at all.
 
-The result is bounded in ways we report rather than avoid. Retention cannot
-help a first use, so its advantage fades as the resource population grows;
-staging cannot help without a window, so it fades as inter-step gaps shrink;
-and above roughly 86\% of the total footprint no eviction occurs at all and
-the arbitration problem disappears, though staging continues to pay there. The
-policy results are trace-driven simulation over constants measured on
-hardware, and an end-to-end measurement of the full system is the single
-outstanding piece of evidence. The CPU-interference bound is established only
-for under-subscribed cores at small working sets, and memory-bandwidth
-contention at the scale of a fully activated artifact remains untested.
+\sysname{} makes that decision, ranking residency by stall avoided per
+gigabyte held and bounding speculation to memory retention has not claimed. It
+removes between a third and half of end-to-end wall time against a runtime
+that retains nothing, and a further tenth to sixth against a baseline that
+already retains both classes---on workflows where the byte-oriented
+alternative makes wall time three times worse. As agentic steering reaches
+workflows with larger artifacts and more models, the quantity worth scheduling
+is not which bytes to move, but which structures to keep.

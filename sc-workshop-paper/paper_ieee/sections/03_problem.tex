@@ -24,9 +24,8 @@
 %   as a rule. AtomAgents only -- experiments/plot_step_variation.py also
 %   renders ChemGraph, which is not used here.
 \includegraphics[width=\columnwidth]{figures/fig-predictability}
-\caption{Agreement with the modal action at each step index, across 137
-executions of an identical task. Agreement averages 58.4\%, so the same
-request produces materially different executions.}
+\caption{Agreement with the modal action at each step index, over 137
+executions of an identical task.}
 \label{fig:predictability}
 \end{figure}
 
@@ -109,9 +108,9 @@ on.
 %   at 0.34. Draw a horizontal rule at the 0.32~s/GB materialisation floor. 
 %   The models-in-the-middle geometry is the reading.
 \includegraphics[width=\columnwidth]{figures/fig-sgb-spread}
-\caption{Retention value per gigabyte across resources. Models occupy a narrow
-band set by transfer bandwidth; data artifacts span $65\times$ and bracket
-that band on both sides, so no fixed class priority is correct.}
+\caption{Retention value per gigabyte. Models occupy a narrow band set by
+transfer bandwidth; data artifacts bracket it on both sides, so no fixed class
+priority is correct.}
 \label{fig:sgb-spread}
 \end{figure}
 
@@ -124,9 +123,9 @@ that band on both sides, so no fixed class priority is correct.}
 %   lines that cross. Right axis: first-use share, rising 10.4\% 
 %   $\rightarrow$ 32.3\%. The crossing is the reading.
 \includegraphics[width=\columnwidth]{figures/fig-scale-sweep}
-\caption{As the resource population grows at fixed schedule length, first uses
-become a larger share of all needs and the advantage moves from retention to
-staging. Reduction is against the recency-ranked baseline.}
+\caption{As the resource population grows at fixed schedule length, first
+uses become a larger share of needs and the advantage moves from retention to
+staging. Against the recency-ranked baseline.}
 \label{fig:scale-sweep}
 \end{figure}
 
@@ -227,10 +226,9 @@ successor at some offset with confidence above 0.9.}
 %   76.3\% order-only and 40.8\% positional over 64 runs; 95\% is not
 %   reproducible from any artifact in this repository.
 \includegraphics[width=\columnwidth]{figures/fig-plan-accuracy}
-\caption{AtomAgents plan compliance over 64 runs, per planned step. Scored on
-order alone (top) the plan holds; scored positionally, with a retry consuming
-a plan slot (bottom), everything after the first divergence misses. Planner
-orderings are accurate; planner-implied distances are not.}
+\caption{AtomAgents plan compliance per planned step, over 64 runs. Scored
+on order alone (top) the plan holds; scored positionally, with a retry
+consuming a plan slot (bottom), everything after the first divergence misses.}
 \label{fig:plan-accuracy}
 \end{figure}
 

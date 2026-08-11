@@ -3,13 +3,10 @@
 \subsection{Traditional vs.\ Agentic Scientific Workflows}
 
 An HPC workflow is a multi-stage application whose phases each correspond to a
-computational task---a simulation, analysis, or visualization step---that
-consumes data produced by earlier phases and generates data for later ones.
-Phases are often cyclical, with the outputs of one series becoming the inputs
-to the next. Workflows of this shape underpin protein and alloy discovery,
-astronomical survey analysis, and computational fluid dynamics, and their use
-has produced advances from new therapeutic proteins to the identification of
-supernovae in telescope data streams.
+computational task---a simulation, analysis, or visualization step---consuming
+data produced by earlier phases and generating data for later ones, often
+cyclically. Workflows of this shape underpin protein and alloy discovery,
+astronomical survey analysis, and computational fluid dynamics.
 
 \subsection{Prior Solutions for Memory Bottlenecks}
 
@@ -26,9 +23,9 @@ Recent work instead exposes tiered memory and storage through software
 distributed shared memory, presenting the hierarchy as one large pool---a Deep
 Memory and Storage Hierarchy (DMSH). Coherency and placement are made
 affordable by the predictability of phase-based execution: a workflow declares
-its intent and expected accesses through an API, and the system uses that
-declaration to place data across tiers and to prefetch it during preceding
-computation. That declaration is the assumption agentic workflows remove.
+its intent and expected accesses through an API, and the system places data
+across tiers and prefetches it during preceding computation. That declaration
+is the assumption agentic workflows remove.
 
 \subsection{Workload Description}
 

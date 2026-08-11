@@ -8,22 +8,21 @@
 
 \begin{abstract}
 Agentic HPC workflows let AI agents decide which simulation or analysis step
-runs next. In doing so they remove the assumption that deep memory and storage
-hierarchy (DMSH) systems are built on---that a phase's data needs are known
-before the phase begins. Measured on such a workflow, a state-of-the-art DMSH
-system increases end-to-end wall time by $3.18\times$, and every stall it
-incurs is a staging window too short to complete; replacing its predictions
-with random ones does not make it worse, so the failure is the absence of a
-window rather than mis-prediction. We further show that byte placement is the
-wrong unit of work here: 93.0\% of the cost of making a scientific artifact
-usable is representation change performed inside the consumer process, and a
-gigabyte of retained memory varies $65\times$ in value across representations.
-We present \sysname, a runtime that manages the models backing an agentic
-workflow and the transformed data its tools consume against a single
-host-memory budget. A retention arbitrator treats residency as a
-subset-selection problem, ranking candidates by stall avoided per gigabyte
+runs next, removing the assumption deep memory and storage hierarchy (DMSH)
+systems are built on---that a phase's data needs are known before it begins.
+Measured on such a workflow, a state-of-the-art DMSH system increases
+end-to-end wall time by $3.18\times$, and every stall it incurs is a staging
+window too short to complete; replacing its predictions with random ones does
+not make it worse, so the failure is the absence of a window rather than
+mis-prediction. Byte placement is also the wrong unit of work here: 93.0\% of
+the cost of making a scientific artifact usable is representation change
+inside the consumer process, and a gigabyte of retained memory varies
+$65\times$ in value across representations. We present \sysname, a runtime
+managing the models backing an agentic workflow and the transformed data its
+tools consume against a single host-memory budget. A retention arbitrator
+treats residency as subset selection, ranking by stall avoided per gigabyte
 held and discounting by time to next use; a subordinate prefetcher stages only
-into memory the arbitrator has not claimed, which bounds the cost of a wrong
+into memory the arbitrator has not claimed, bounding the cost of a wrong
 prediction. \sysname{} reduces end-to-end wall time by 34.5--50.8\% against a
 runtime that retains nothing, and by a further 10.3--17.1\% against a
 recency-ranked baseline that already retains both resource classes.

@@ -342,16 +342,16 @@ def fig_sgb_spread():
             markeredgecolor=theme.SURFACE, markeredgewidth=1.2)
     ax.set_yticks(y)
     ax.set_yticklabels([labels.get(k, k) for k, _ in data])
-    ax.set_ylim(len(data) - 0.45, -0.95)         # headroom for the band labels
+    ax.set_ylim(len(data) - 0.45, -1.95)         # absolute room for the top labels
     ax.set_xscale("log")
     ax.set_xlabel("seconds saved per GB retained")
     ax.grid(axis="y", visible=False)
 
     ax.axvspan(2.78, 3.81, color=C[0], alpha=0.16, zorder=0)
-    ax.text(3.26, -0.50, "models", fontsize=7.5, color=C[0], ha="center",
+    ax.text(3.26, -1.05, "models", fontsize=7.5, color=C[0], ha="center",
             va="center")
-    ax.axvline(0.32, color=theme.MUTED, lw=0.8, zorder=0)
-    ax.text(0.32, -0.50, "floor", fontsize=6.6, color=theme.MUTED,
+    ax.axvline(0.32, ymin=0.0, ymax=0.82, color=theme.MUTED, lw=0.8, zorder=0)
+    ax.text(0.32, -1.05, "floor", fontsize=6.6, color=theme.MUTED,
             ha="center", va="center")
     for i, (_, v) in enumerate(data):
         ax.text(v * 1.16, i, f"{v:.2f}", va="center", fontsize=6.8, color=theme.INK)
@@ -524,19 +524,25 @@ def fig_compute_sweep():
 
 # ------------------------------------------------------------------ 12 ------
 def fig_ablation():
-    """Cumulative contribution of each mechanism, plus the Shapley reversal."""
+    """Cumulative contribution of each mechanism.
+
+    SINGLE COLUMN as of 2026-08-10. The former right panel showed the Shapley
+    split of the retention total as two stacked bars (2/98 at 256 GB, 61/39 at
+    560 GB) -- four numbers, all of which the Ablations paragraph already
+    states in the prose. Two stacked bars were not worth the 0.10 pages the
+    full-width float cost, and dropping the panel also leaves fig:budget-sweep
+    as the only figure* in the paper, so no two double-column floats can stack.
+    """
     hdr, rows = md_tables("01_attribution_ladder.md")[0]
     names = ["no residency system", "+ model parking", "+ data retention",
              "+ cost-aware arbitration", "+ slack staging"]
     vals = [num(r[2]) for r in rows]
 
-    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, theme.fh("fig-ablation", 2.35)),
-                             gridspec_kw={"width_ratios": [1.75, 1]})
-    a = axes[0]
+    fig, a = plt.subplots(figsize=(theme.COL, theme.fh("fig-ablation", 2.35)))
     y = np.arange(len(names))
     a.barh(y, vals, height=0.6, color=[theme.MUTED] + [C[0]] * 4, edgecolor="none")
     a.set_yticks(y)
-    a.set_yticklabels(names)
+    a.set_yticklabels(names, fontsize=7)
     a.invert_yaxis()
     a.set_xlabel("wall-time reduction (%)")
     a.grid(axis="y", visible=False)
@@ -545,30 +551,7 @@ def fig_ablation():
             a.text(v + 0.8, i, f"+{v - vals[i-1]:.2f}", va="center",
                    fontsize=6.8, color=theme.INK)
     a.set_xlim(0, max(vals) * 1.22)
-
-    b = axes[1]
-    budgets = ["256 GB", "560 GB"]
-    parking = [2.0, 61.0]
-    dataret = [98.0, 39.0]
-    x = np.arange(2)
-    # The 2pt separation between segments is drawn as a gap INSIDE the 100%
-    # total, not added on top of it -- otherwise the stack reads as >100%.
-    GAP = 1.4
-    b.bar(x, [p - GAP / 2 for p in parking], 0.5, color=C[1], edgecolor="none",
-          label="model parking")
-    b.bar(x, [d - GAP / 2 for d in dataret], 0.5,
-          bottom=[p + GAP / 2 for p in parking], color=C[0], edgecolor="none",
-          label="data retention")
-    for xi, p in zip(x, parking):
-        b.text(xi, 101.5, f"{p:.0f} / {100-p:.0f}", ha="center", fontsize=6.8)
-    b.set_xticks(x)
-    b.set_xticklabels(budgets)
-    b.set_ylabel("share (%)")
-    b.grid(axis="x", visible=False)
-    b.set_yticks([0, 25, 50, 75, 100])
-    b.set_ylim(0, 108)
-    theme.legend_above(b, ncol=2)
-    fig.tight_layout(w_pad=1.4)
+    fig.tight_layout()
     save(fig, "fig-ablation")
 
 
