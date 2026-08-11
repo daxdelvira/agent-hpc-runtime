@@ -219,32 +219,21 @@ planner-implied distances are not.}
 
 
 \paragraph{Local transition structure survives workflow-level nondeterminism.}
-Agentic workflows are dynamic in the large but structured in the small: tools
-exhibit high-confidence $k$-offset successor relationships, in which one tool
-consistently follows another a fixed number of invocations later. Not every
-tool has such a successor at every offset, but a substantial majority have one
-at some offset. Over the offsets our transition table records ($k \in
-\{1,2,3\}$), 17 of 26 AtomAgents tools---65\%---have a successor with
-empirical confidence of at least 0.9, and the signal is concentrated at $k=2$,
-where 58\% of tools clear that threshold
-(Figure~\ref{fig:prediction-signals}). Critically, these relationships persist
-across substantially
-different prompts and objectives within a framework, so traces from prior,
-unrelated executions supply useful priors on the first run of a workflow never
-seen before.
+Agentic workflows are dynamic in the large but structured in the small: one
+tool often follows another a fixed number of invocations later. Over the
+offsets our transition table records ($k \in \{1,2,3\}$), 17 of 26 AtomAgents
+tools have a successor with empirical confidence of at least 0.9, concentrated
+at $k=2$ (Figure~\ref{fig:prediction-signals}). These relationships persist
+across different prompts and objectives within a framework, so prior traces
+supply priors for a workflow never seen before.
 
 \paragraph{Plans predict order, not distance.}
-Frameworks organised by a planner agent expose a second, longer-range signal:
-a natural-language plan naming the tools to be invoked and their intended
-order. Scored on order alone---does each planned tool appear, in
-sequence---AtomAgents plans are 76.3\% compliant over 64 runs, far enough
-ahead to begin staging resources whose construction would otherwise be
-exposed. Scored positionally, so that a retry consumes a plan slot,
-compliance falls to 40.8\%, and every step after the first divergence reads
-as a miss (Figure~\ref{fig:prediction-signals}). That gap is the shape of the
-signal: agents insert calls to recover from syntax errors and retry failures,
+A planner agent exposes a second, longer-range signal: a declared plan naming
+the tools to be invoked and their order. Scored on order alone, AtomAgents
+plans are 76.3\% compliant over 64 runs, far enough ahead to be actionable.
+Scored positionally, so that a retry consumes a plan slot, compliance falls to
+40.8\% and every step after the first divergence reads as a miss
+(Figure~\ref{fig:prediction-signals}): agents insert recovery and retry calls,
 so a trace keeps the planned order while drifting from the planned offsets.
-Plans reach far but locate poorly, local transitions locate well but do not
-reach---which is why both are used.
-
-
+Plans reach far but locate poorly; local transitions locate well but do not
+reach.

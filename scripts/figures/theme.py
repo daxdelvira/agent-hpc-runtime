@@ -168,7 +168,9 @@ HSCALE_FOR = {
     "fig-prefetch-variants":  TIGHT,
     "fig-cpu-interference":   TIGHT_2PANEL,
     "fig-h-sweep":            TIGHT,
-    "fig-accuracy-sweep":     TIGHT,
+    # The measured-range band needs vertical room for its label; at TIGHT
+    # the annotation had nowhere to sit clear of three series.
+    "fig-accuracy-sweep":     0.70,
 }
 
 

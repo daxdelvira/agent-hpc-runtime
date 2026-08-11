@@ -688,7 +688,7 @@ def fig_accuracy_sweep():
     ax.plot(acc, slack, marker=M[1], color=C[1], label="staging, slack only")
     ax.plot(acc, outbid, marker=M[2], color=C[2], label="staging, may displace")
     ax.axvspan(0.45, 0.62, color=theme.MUTED, alpha=0.10, zorder=0)
-    ax.text(0.535, 14.5, "measured\nrange", fontsize=6.6, ha="center",
+    ax.text(0.535, 16.5, "measured\nrange", fontsize=7.0, ha="center",
             va="center", color=theme.INK)
     ax.set_xlabel("horizon accuracy")
     ax.set_ylabel("reduction (%)")
