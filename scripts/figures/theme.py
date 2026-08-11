@@ -146,7 +146,7 @@ TIGHT = 0.58
 # TIGHT drops, this does not follow it down.
 TIGHT_2PANEL = 0.80
 HSCALE_FOR = {
-    "fig-intro-behavior":     0.80,           # 0.72 read cramped
+    "fig-intro-behavior":     0.88,           # 0.72 and 0.80 both read cramped
     "fig-replacement-loss":   0.62,           # lower panel is ~8% filled
     "fig-predictability":     TIGHT,
     # Two panels, but ONE shared x axis and two short identical y labels,

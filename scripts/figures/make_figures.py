@@ -246,9 +246,13 @@ def fig_prediction_signals():
 
     a = axes[0]
     x = np.linspace(0.0, 1.0, 201)
+    # k=1 and k=3 track each other closely and colour alone cannot separate
+    # them where they coincide. Distinct dash patterns do, and they survive
+    # both overlap and greyscale printing.
+    DASH = [(0, ()), (0, (4, 1.6)), (0, (1, 1.4))]
     for i2, k in enumerate(offsets):
         a.plot(x, [(g[:, i2] >= t).mean() * 100 for t in x], color=C[i2],
-               label=f"$k{{=}}{k}$", lw=1.7)
+               label=f"$k{{=}}{k}$", lw=1.7, ls=DASH[i2 % len(DASH)])
     a.axvline(0.9, color=theme.MUTED, lw=0.8, zorder=0)
     best = g.max(axis=1)
     a.plot([0.9], [(best >= 0.9).mean() * 100], marker="*", ms=8, color=theme.INK,
@@ -654,9 +658,12 @@ def fig_h_sweep():
     fig, ax = plt.subplots(figsize=(theme.COL, theme.fh("fig-h-sweep", 2.15)))
     ax.plot(H, retain, marker=M[0], color=C[0], label="retention")
     ax.plot(H, stage, marker=M[1], color=C[1], label="retention + staging")
-    ax.axvspan(30, 120, color=theme.MUTED, alpha=0.14, zorder=0)
-    ax.text(62, 56.5, "typical\ninter-step gap", fontsize=6.6, ha="center",
-            color=theme.MUTED)
+    ax.axvspan(30, 120, color=theme.MUTED, alpha=0.10, zorder=0)
+    # Gray text on a gray band is unreadable at this size. The band lightens
+    # and the label goes to ink; the band still reads as a band because it is
+    # bounded by the plot's own gridlines.
+    ax.text(62, 60.3, "typical\ninter-step gap", fontsize=6.4, ha="center",
+            va="center", color=theme.INK)
     ax.set_xscale("log")
     ax.set_xlabel("planning horizon $H$ (s)")
     ax.set_ylabel("reduction (%)")
@@ -680,8 +687,9 @@ def fig_accuracy_sweep():
     ax.plot(acc, retain, marker=M[0], color=C[0], label="retention")
     ax.plot(acc, slack, marker=M[1], color=C[1], label="staging, slack only")
     ax.plot(acc, outbid, marker=M[2], color=C[2], label="staging, may displace")
-    ax.axvspan(0.45, 0.62, color=theme.MUTED, alpha=0.14, zorder=0)
-    ax.text(0.535, -4.4, "measured\nrange", fontsize=6.6, ha="center", color=theme.MUTED)
+    ax.axvspan(0.45, 0.62, color=theme.MUTED, alpha=0.10, zorder=0)
+    ax.text(0.535, 14.5, "measured\nrange", fontsize=6.6, ha="center",
+            va="center", color=theme.INK)
     ax.set_xlabel("horizon accuracy")
     ax.set_ylabel("reduction (%)")
     theme.legend_above(ax, ncol=3, fontsize=7)

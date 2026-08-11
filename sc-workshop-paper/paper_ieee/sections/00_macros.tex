@@ -58,15 +58,15 @@
 %   \dblfloatsep      between two stacked full-width floats
 %   \intextsep        around an [h] float (none are used here; set for safety)
 %
-% \abovecaptionskip is deliberately untouched: that is the gap between the
-% graphic and its own caption, and shrinking it detaches neither, it just
-% crowds them. Add \setlength{\abovecaptionskip}{0.7\abovecaptionskip} here if
-% more is needed after seeing a build.
+% \abovecaptionskip -- the gap between a graphic and its own caption -- is cut
+% only to 0.8. It is the one skip where shrinking crowds rather than tightens,
+% so it is the last to be touched and is not taken as far as the others.
 \setlength{\textfloatsep}{0.7\textfloatsep}
 \setlength{\floatsep}{0.7\floatsep}
 \setlength{\dbltextfloatsep}{0.7\dbltextfloatsep}
 \setlength{\dblfloatsep}{0.7\dblfloatsep}
 \setlength{\intextsep}{0.7\intextsep}
+\setlength{\abovecaptionskip}{0.8\abovecaptionskip}
 
 % ---------------------------------------------------------------------------
 % VERTICAL GLUE. In two-column mode LaTeX makes both columns the same height by
