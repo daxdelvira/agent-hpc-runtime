@@ -386,7 +386,13 @@ def fig_scale_sweep():
 
     b = axes[1]
     b.plot(n, first, marker=M[3], color=C[3])
-    b.set_ylabel("first uses (%)")
+    # The lower panel names its series IN the panel rather than on a rotated y
+    # label. Two rotated labels are what put a 0.80 floor under this figure --
+    # each is taller than its own panel below that. With only one label left,
+    # the floor does not apply and the figure compresses further. The series
+    # rises left to right, so the upper left is clear.
+    b.text(0.02, 0.93, "first uses (%)", transform=b.transAxes,
+           ha="left", va="top", fontsize=7.5, color=theme.INK)
     b.set_xlabel("distinct resources")
     b.set_xticks(n)
     fig.tight_layout(h_pad=0.8)

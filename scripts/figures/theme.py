@@ -146,13 +146,15 @@ TIGHT = 0.58
 # TIGHT drops, this does not follow it down.
 TIGHT_2PANEL = 0.80
 HSCALE_FOR = {
-    "fig-intro-behavior":     0.72,           # schematic; compresses well
+    "fig-intro-behavior":     0.80,           # 0.72 read cramped
     "fig-predictability":     TIGHT,
     # Two panels, but ONE shared x axis and two short identical y labels,
     # so the collision TIGHT_2PANEL guards against cannot occur here.
     "fig-plan-accuracy":      TIGHT,
     "fig-sgb-spread":         TIGHT,
-    "fig-scale-sweep":        TIGHT_2PANEL,
+    # Only one rotated y label now (the lower panel names its series
+    # in-panel), so the twin-label floor does not bind here.
+    "fig-scale-sweep":        0.72,
     "fig-topology-budget":    TIGHT,
     # Pinned: already the smallest float in the paper and reads cramped
     # at TIGHT. It does not follow TIGHT down.
