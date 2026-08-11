@@ -31,13 +31,13 @@ Theme lives in `scripts/figures/theme.py`.
 | 3 | `fig-replacement-loss` | `fig:replacement-loss` | **M**+**X** | model timeline measured; artifact series illustrative — see caveats |
 | 4 | `fig-sgb-spread` | `fig:sgb-spread` | **M** | `results/bench_format_activation_atl1-1-02-003-25-1.json.csv` |
 | 5 | `fig-scale-sweep` | `fig:scale-sweep` | **S** | `results_tables/05_scale_sweep.md` |
-| 6 | `fig-topology-budget` | `fig:topology-budget` | **S** | `results_tables/02_budget_sweep.md` |
+| — | `fig-topology-budget` | *(merged away)* | **S** | now the lower row of `fig-budget-sweep`; still generated, unreferenced |
 | 7 | `fig-tool-relationships` | `fig:tool-relationships` | **M** | `runtime/predictor/data/learned_transitions.json` |
 | — | `fig-tool-relationships-detail` | *(not referenced)* | **M** | per-tool heatmap, kept but unused — see caveats |
 | 8 | *(you have this)* | `fig:plan-accuracy` | — | not generated |
-| 9 | `fig-budget-sweep` | `fig:budget-sweep` | **S** | `results_tables/02_budget_sweep.md` |
+| 9 | `fig-budget-sweep` | `fig:budget-sweep` | **S** | `results_tables/02_budget_sweep.md` — MERGED, two rows: reduction over binding |
 | 10 | `fig-stall-ladder` | `fig:stall-ladder` | **S** | `results_tables/02_budget_sweep.md` |
-| 11 | `fig-compute-sweep` | `fig:compute-sweep` | **S** | `results_tables/03_compute_sweep.md` |
+| — | `fig-compute-sweep` | *(cut)* | **S** | finding kept as three numbers in prose; still generated, unreferenced |
 | 12 | `fig-ablation` | `fig:ablation` | **S** | `results_tables/01_attribution_ladder.md` |
 | 13 | `fig-prefetch-variants` | `fig:prefetch-variants` | **S** | `results_tables/06_prefetch_variants.md` |
 | 14 | `fig-cpu-interference` | `fig:cpu-interference` | **M** | `results/bench_preactivation_interference.json` |
@@ -90,6 +90,18 @@ a run to capture artifact residency, or relabel the figure as a schematic.
 > stay rebuilt. The figure now states the resident share rather than leaving
 > a flat band unexplained. It is a strong claim resting on a constructed
 > series, which is exactly why it needs the measurement above.
+
+**`fig-budget-sweep` now carries a claim that needs bracketing.** Merging
+binding into it as a second row exposed something the separated figures hid:
+the recency-ranked/Tandem gap is **widest where binding is zero**. At two
+device slots the baseline flattens at 68.4% the moment evictions stop while
+the full system climbs to 80.3% — an 11.9-point margin at 720 GB, the largest
+in the sweep. The mechanism is coherent (staging needs no eviction, and extra
+budget becomes extra slack, so the residual gap is the prefetcher), but it is
+a **prefetch** number arriving from a direction that flatters it. The project
+reporting rule applies: confirm the `binding == 0` cells against the
+oracle-vs-LRU gap at the same budget before this becomes a headline. A TODO to
+that effect sits above the float in `04_opportunities.tex`.
 
 **`fig-stall-ladder` assumes a compute share.** Stall is derived as
 `wall − compute` using the 10.8% compute share from the window-0.1 row, held

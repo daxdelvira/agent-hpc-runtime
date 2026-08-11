@@ -133,23 +133,6 @@ staging. Reduction is against the recency-ranked baseline.}
 \label{fig:scale-sweep}
 \end{figure}
 
-\begin{figure}[tb]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-topology-budget.pdf)
-%   $x$ = budget as \% of total footprint. $y$ = share of decisions in which 
-%   memory pressure forced an eviction, one line per accelerator-slot count, 
-%   falling to zero. Mark the packing thresholds with vertical rules so the 
-%   step structure is visible. This is the motivating view; 
-%   Figure~\ref{fig:budget-sweep} shows the same axis with performance 
-%   rather than pressure.
-\includegraphics[width=\columnwidth]{figures/fig-topology-budget}
-\caption{Share of decisions in which memory pressure forced an eviction, by
-budget and accelerator capacity. Above roughly 86\% of the total footprint
-nothing is ever evicted and the arbitration problem disappears; below it,
-budget admits resources in steps rather than smoothly.}
-\label{fig:topology-budget}
-\end{figure}
 
 \paragraph{Not Every GB Retained Is Equally Valuable.}
 If retention is the action, a scheduler needs a price: how many seconds of
@@ -206,9 +189,13 @@ Host memory behaves symmetrically: once the budget is large enough that
 nothing is ever evicted---in our configuration at roughly 86\% of the total
 footprint---the arbitration problem disappears and retaining everything is
 correct.  % RESTORED
-Budget also buys value in steps rather than smoothly, since additional memory
-pays only when it crosses a threshold admitting one more resource
-(Figure~\ref{fig:topology-budget}).
+That bound is on arbitration, not on residency management as a whole:
+speculative staging requires no eviction, so it keeps paying in exactly the
+regime where the arbitrator has nothing left to decide, and
+Figure~\ref{fig:budget-sweep} in Section~\ref{sec:eval} shows the two
+separating there. Budget also buys value in steps rather than smoothly, since
+additional memory pays only when it crosses a threshold admitting one more
+resource.
 
 Finally, the inter-need gap bounds what staging can achieve. A stage recovers
 only as much of a construction cost as fits into the window before the need

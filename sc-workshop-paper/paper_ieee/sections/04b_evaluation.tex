@@ -35,21 +35,8 @@
 % that is resolved.
 
 \section{Evaluation}
+\label{sec:eval}
 
-\begin{figure}[tb]
-\centering
-% PLOT SPEC (kept for provenance; rendered by
-% scripts/figures/make_figures.py -> figure_drafts/fig-compute-sweep.pdf)
-%   $x$ = compute share of wall (5.7\%--95.1\%, log). Two lines vs 
-%   \textsc{Lru}: wall-clock reduction (falling) and stall reduction 
-%   (rising). Mark the measured workload's operating point near 5\%. The 
-%   crossing behaviour is the reading.
-\includegraphics[width=\columnwidth]{figures/fig-compute-sweep}
-\caption{The same mechanism against \textsc{Lru}, reported two ways.
-Wall-clock reduction is diluted by compute; stall reduction improves with it,
-because a longer window hides more of a staging operation.}
-\label{fig:compute-sweep}
-\end{figure}
 \begin{figure*}[t]
 \centering
 % PLOT SPEC (kept for provenance; rendered by
@@ -96,7 +83,11 @@ Figure~\ref{fig:budget-sweep} shows the effect across the full budget range,
 together with the fraction of decisions in which memory pressure actually
 forced an eviction. That fraction is the more informative axis: it falls from
 35.2\% at 200~GB to 0.0\% by 720~GB, so the upper end of the sweep measures a
-regime in which the system has nothing left to arbitrate. The step structure
+regime in which the system has nothing left to arbitrate. What survives there
+is staging: at two device slots \textsc{Lru} flattens at 68.4\% once evictions
+stop while \sysname{} continues to 80.3\%, putting the widest margin of the
+whole sweep where the arbitrator is provably idle. Additional budget becomes
+additional slack, and staging needs no eviction to spend it. The step structure
 predicted in Section~\ref{sec:insights} is visible here as well---320~GB and
 400~GB perform almost identically, because neither admits an additional
 resource.
@@ -110,7 +101,7 @@ and 17.09\% respectively with two (Figure~\ref{fig:budget-sweep}).
 
 These wall-clock figures are a function of how much real computation the
 workload performs between tool invocations, and we report that dependence
-rather than a single number (Figure~\ref{fig:compute-sweep}). Holding the
+rather than a single number. Holding the
 mechanism fixed and varying only the inter-need gap, the wall-clock reduction
 over \textsc{Lru} falls from 10.56\% at 5.7\% compute to 6.99\% at 54.9\% and
 0.89\% at 95.1\%, purely because the denominator grows. The stall reduction

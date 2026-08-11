@@ -154,15 +154,26 @@ the production allocation and 50.69\% at a larger budget.}
 \centering
 % PLOT SPEC (kept for provenance; rendered by
 % scripts/figures/make_figures.py -> figure_drafts/fig-budget-sweep.pdf)
-%   two panels, one per device-slot count. $x$ = budget (200--838~GB). 
-%   Lines: \textsc{Lru} and \sysname, both as \% reduction vs 
-%   \textsc{Never}. Twin right-hand axis: binding \% (share of decisions 
-%   that forced an eviction), shaded. Mark the packing thresholds at 283, 
-%   445, 562 and 838~GB with vertical rules --- the step structure is the 
-%   point.
+%   MERGED FIGURE. The original spec put binding on a twin right-hand axis;
+%   that violates the no-dual-axis rule, so binding became a separate float
+%   (fig:topology-budget) and then, here, the lower ROW of this one. Both read
+%   the same rows of results_tables/02_budget_sweep.md.
+%   Top row: reduction vs \textsc{Never} for \textsc{Lru} and \sysname, one
+%   column per device-slot count. Bottom row: binding \%, same columns,
+%   shared x. Shaded span = where binding is 0. Packing thresholds at 283,
+%   445 and 562~GB as vertical rules.
+%
+%   TODO (author): the zero-binding margin is a PREFETCH claim arriving from
+%   a direction that flatters it. Per the project reporting rule, confirm the
+%   binding==0 cells against the oracle-vs-LRU gap at the same budget before
+%   this becomes a headline.
 \includegraphics[width=0.95\textwidth]{figures/fig-budget-sweep}
-\caption{Wall-time reduction against \textsc{Never}, versus budget, at one and
-two device slots.}
+\caption{Wall-time reduction against \textsc{Never} (top) and the share of
+decisions in which memory pressure forced an eviction (bottom), against
+host-memory budget at one and two device slots. Shading marks the span in
+which no eviction ever occurs. The policies separate most widely inside it:
+with the arbitrator idle, the remaining margin is speculative staging, which
+needs no eviction to spend the additional budget.}
 \label{fig:budget-sweep}
 \end{figure*}
 

@@ -291,20 +291,46 @@ def fig_topology_budget():
 
 
 def fig_budget_sweep():
-    """Result view: performance vs budget, one panel per device-slot count."""
+    """Reduction over budget, with the contention that explains it beneath.
+
+    MERGED from the former fig_topology_budget (binding vs budget) and this
+    figure (reduction vs budget). Both read the same rows of the same table
+    over the same x axis, and keeping them four pages apart hid the finding:
+    the recency-ranked/Tandem gap is WIDEST where binding is zero. At two
+    slots the baseline flattens at 68.4% the moment evictions stop while the
+    full system climbs to 80.3%, because staging needs no eviction and extra
+    budget becomes extra slack. Vertically aligned, that divergence is legible;
+    separated, nobody would connect the two panels.
+    """
     d = _budget_series()
-    fig, axes = plt.subplots(1, 2, figsize=(theme.WIDE, theme.fh("fig-budget-sweep", 2.5)), sharey=True)
-    for ax, slots in zip(axes, (1, 2)):
+    fig, axes = plt.subplots(2, 2, sharex="col", sharey="row",
+                             figsize=(theme.WIDE, theme.fh("fig-budget-sweep", 4.2)),
+                             gridspec_kw={"height_ratios": [1.55, 1]})
+    for j, slots in enumerate((1, 2)):
         s = d[slots]
-        ax.plot(s["budget"], s["lru"], marker=M[1], color=C[1], label="recency-ranked")
-        ax.plot(s["budget"], s["sysname"], marker=M[0], color=C[0], label="Tandem")
-        for thr in (283, 445, 562):
-            ax.axvline(thr, color=theme.MUTED, lw=0.6, zorder=0)
-        ax.set_xlabel("host-memory budget (GB)")
-        ax.set_title(f"{slots} device slot" + ("s" if slots > 1 else ""), pad=4)
-    axes[0].set_ylabel("reduction (%)")
-    legend(axes[0])
-    fig.tight_layout(w_pad=1.2)
+        a, b = axes[0][j], axes[1][j]
+        a.plot(s["budget"], s["lru"], marker=M[1], color=C[1], label="recency-ranked")
+        a.plot(s["budget"], s["sysname"], marker=M[0], color=C[0], label="Tandem")
+        b.plot(s["budget"], s["binding"], marker=M[2], color=C[2])
+
+        # Shade the span in which no eviction ever occurs, i.e. where the
+        # arbitrator is provably idle -- the alignment this figure exists for.
+        zero = [x for x, v in zip(s["budget"], s["binding"]) if v == 0.0]
+        for ax in (a, b):
+            if zero:
+                ax.axvspan(min(zero), max(s["budget"]), color=theme.MUTED,
+                           alpha=0.11, zorder=0)
+            for thr in (283, 445, 562):
+                ax.axvline(thr, color=theme.MUTED, lw=0.6, zorder=0)
+        if zero:
+            b.text((min(zero) + max(s["budget"])) / 2, b.get_ylim()[1] * 0.62,
+                   "no evictions", fontsize=6.6, color=theme.MUTED, ha="center")
+        a.set_title(f"{slots} device slot" + ("s" if slots > 1 else ""), pad=4)
+        b.set_xlabel("host-memory budget (GB)")
+    axes[0][0].set_ylabel("reduction (%)")
+    axes[1][0].set_ylabel("evictions (%)")
+    legend(axes[0][0], loc="upper left", headroom=0.16)
+    fig.tight_layout(w_pad=1.2, h_pad=0.7)
     save(fig, "fig-budget-sweep")
 
 

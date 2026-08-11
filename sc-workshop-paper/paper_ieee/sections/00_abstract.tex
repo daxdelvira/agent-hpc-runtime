@@ -1,27 +1,34 @@
-% ===========================================================================
-% STUB -- INTENTIONALLY EMPTY. This file contributes nothing to the compiled
-% document until it is written.
+% FIRST DRAFT, 2026-08-10. Written to make the page count real; every number
+% below is traceable to the body and nothing is stated here that the body does
+% not support. Check against sections/04b_evaluation.tex before submission --
+% if a body number moves, this moves with it.
 %
-% The authoritative main.tex \input's sections/00_abstract immediately after
-% \maketitle, but no abstract exists in the source draft
-% (sc-workshop-paper/paper/) and none was invented here.
-%
-% WHAT BELONGS HERE
-%   \begin{abstract} ... \end{abstract}  (IEEEtran provides the environment;
-%   it must appear after \maketitle and before the first \section, which is
-%   exactly where this file is \input'ed).
-%
-%   Optionally, IEEE keywords immediately after the abstract:
-%   \begin{IEEEkeywords} ... \end{IEEEkeywords}
-%
-%   Content should be condensed from sections/01_introduction.tex, which
-%   already states the problem (agentic steering breaks the phase-predictable
-%   assumption DMSH staging depends on), the two mechanisms (retention
-%   arbitrator, opportunistic prefetcher) and the headline results. Every
-%   number quoted must be traceable to the same source as the body text --
-%   see the provenance header of sections/04b_evaluation.tex. Do not restate
-%   a figure here that the body does not support.
-%
-% TODO: write the abstract. Do not copy numbers from memory; re-read them from
-% the cells named in sections/04b_evaluation.tex.
-% ===========================================================================
+% Keywords are left for the author: IEEE wants terms a reviewer would search,
+% and the right set depends on which track this goes to.
+
+\begin{abstract}
+Agentic HPC workflows let AI agents decide which simulation or analysis step
+runs next. In doing so they remove the assumption that deep memory and storage
+hierarchy (DMSH) systems are built on---that a phase's data needs are known
+before the phase begins. Measured on such a workflow, a state-of-the-art DMSH
+system increases end-to-end wall time by $3.18\times$, and every stall it
+incurs is a staging window too short to complete; replacing its predictions
+with random ones does not make it worse, so the failure is the absence of a
+window rather than mis-prediction. We further show that byte placement is the
+wrong unit of work here: 93.0\% of the cost of making a scientific artifact
+usable is representation change performed inside the consumer process, and a
+gigabyte of retained memory varies $65\times$ in value across representations.
+We present \sysname, a runtime that manages the models backing an agentic
+workflow and the transformed data its tools consume against a single
+host-memory budget. A retention arbitrator treats residency as a
+subset-selection problem, ranking candidates by stall avoided per gigabyte
+held and discounting by time to next use; a subordinate prefetcher stages only
+into memory the arbitrator has not claimed, which bounds the cost of a wrong
+prediction. \sysname{} reduces end-to-end wall time by 34.5--50.8\% against a
+runtime that retains nothing, and by a further 10.3--17.1\% against a
+recency-ranked baseline that already retains both resource classes.
+\end{abstract}
+
+% \begin{IEEEkeywords}
+% TODO (author): 4-6 terms.
+% \end{IEEEkeywords}
