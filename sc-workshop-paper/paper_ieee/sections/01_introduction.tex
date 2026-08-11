@@ -132,26 +132,26 @@ retention arbitrator that decides which models and transformed data structures
 remain resident between uses and (2) an opportunistic prefetcher that stages
 resources ahead of need using memory that the arbitrator has not claimed.
 
-The retention arbitrator treats residency as a budgeted choice rather than
-applying a fixed priority across resource classes. Both classes can be held in
-a state that makes their next use inexpensive: a model's weights can be parked
-in host memory, turning a 782~s cold start into a 2.1~s wake, while a parsed
-artifact can be retained in a live worker, turning a 93.7~s reconstruction
-into a 10.6~s reuse. Both charge the same memory allocation. Because held
-resources cannot be partially surrendered, the arbitrator solves a
-subset-selection problem rather than evicting one victim at a time. It ranks
-candidates by the seconds of stall avoided per gigabyte held and discounts
-each candidate according to the time until it is next required.
+The retention arbitrator treats residency as a budgeted choice rather than a
+fixed priority across classes. Both classes can be held in a state that makes
+the next use nearly free: parking a model's weights in host memory turns a
+782~s cold start into a 2.1~s wake, and retaining a parsed artifact in a live
+worker turns 93.7~s of reconstruction into 10.6~s. They draw on one
+allocation, and neither can be surrendered in part, so the arbitrator ranks by
+stall avoided per gigabyte held---discounted by time to next use---and solves
+for the best subset that fits rather than evicting one victim at a time.
 
-The opportunistic prefetcher provides what retention structurally cannot: a
-first use of a resource has nothing to retain. It draws time-to-next-need
-estimates from a lightweight predictor that combines a planning agent's
-declared sequence with learned tool-to-tool succession. By default it stages
-only into memory the arbitrator has left unclaimed, which is what makes
-speculation safe at realistic prediction quality; displacement is permitted
-only under a conjunction of strict conditions. Staging contributes a further
-1.6 percentage points at the production allocation, and its share grows with
-the number of distinct resources a workflow touches.
+The opportunistic prefetcher supplies what retention structurally cannot: a
+first use has nothing to retain. It stages only into memory the arbitrator has
+left unclaimed, taking horizons from a predictor that merges a planner's
+declared sequence with learned tool-to-tool succession. That restriction is
+what makes speculation pay at realistic prediction quality. Swept across
+horizon accuracies from 0.15 to 1.00, slack staging never turns negative,
+improving on the recency-ranked baseline by 5.7--18.7\%, while the same
+mechanism permitted to displace a resident swings to $-6.2$\% at the low end.
+And where the budget is large enough that no eviction ever occurs---so the
+arbitrator is provably idle---staging alone still accounts for an 11.9-point
+margin.
 
 We evaluate \sysname{} on workflows built with the AtomAgents framework,
 reporting stall and end-to-end wall time, isolating each mechanism's
