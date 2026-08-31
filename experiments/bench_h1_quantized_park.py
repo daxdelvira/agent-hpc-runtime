@@ -310,6 +310,84 @@ def is_degenerate(text: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------- backing
+
+
+def engine_pids(root_pid: int) -> list[int]:
+    """root pid plus every descendant, via /proc/<pid>/task/*/children."""
+    out, stack = [], [root_pid]
+    while stack:
+        pid = stack.pop()
+        out.append(pid)
+        try:
+            for tdir in Path(f"/proc/{pid}/task").iterdir():
+                kids = (tdir / "children").read_text().split()
+                stack.extend(int(k) for k in kids)
+        except Exception:  # noqa: BLE001
+            pass
+    return sorted(set(out))
+
+
+def classify_backing(path: str) -> str:
+    """What kind of thing is behind a mapping, for the R2 question.
+
+    cgroup v2 accounts BOTH real storage-backed page cache AND tmpfs/memfd/shm
+    mappings under `file`, and those are very different for this paper. A
+    storage-backed park is a file range a byte-oriented tier could in principle
+    stage; a tmpfs/memfd park never touches storage, so no such range exists
+    and the residency claim survives with "anonymous" simply being the wrong
+    word for it.
+    """
+    if not path:
+        return "anonymous"
+    if path.startswith("/memfd:"):
+        return "memfd (no storage)"
+    if path.startswith("/dev/shm") or path.startswith("/run/shm"):
+        return "shm tmpfs (no storage)"
+    if "(deleted)" in path:
+        return "deleted-file (likely tmpfs/memfd)"
+    if path.startswith("/dev/"):
+        return "device"
+    if path.startswith("[") and path.endswith("]"):
+        return f"kernel {path}"
+    return "FILE ON STORAGE"
+
+
+def dump_maps(pids: list[int], min_gib: float = 1.0) -> dict:
+    """Every mapping >= min_gib across the engine's process tree, classified.
+
+    This is the measurement that decides whether an L1 park is expressible as
+    a file range. Reads smaps so each mapping's actual resident size is known,
+    not just its virtual extent.
+    """
+    big, totals = [], {}
+    for pid in pids:
+        try:
+            lines = Path(f"/proc/{pid}/smaps").read_text().splitlines()
+        except Exception:  # noqa: BLE001
+            continue
+        cur = None
+        for line in lines:
+            parts = line.split()
+            if (parts and "-" in parts[0] and len(parts) >= 5
+                    and all(c in "0123456789abcdef-" for c in parts[0])):
+                path = " ".join(parts[5:]) if len(parts) > 5 else ""
+                cur = {"pid": pid, "perms": parts[1], "path": path,
+                       "backing": classify_backing(path), "rss_kb": 0}
+            elif cur is not None and line.startswith("Rss:"):
+                cur["rss_kb"] = int(line.split()[1])
+                gib = cur["rss_kb"] / 1024 / 1024
+                totals[cur["backing"]] = totals.get(cur["backing"], 0.0) + gib
+                if gib >= min_gib:
+                    big.append({**cur, "rss_gib": round(gib, 3)})
+                cur = None
+    big.sort(key=lambda r: -r["rss_gib"])
+    return {"largest_mappings": big[:25],
+            "rss_gib_by_backing": {k: round(v, 3) for k, v in
+                                   sorted(totals.items(), key=lambda kv: -kv[1])},
+            "n_pids": len(pids)}
+
+
 # ---------------------------------------------------------------- one arm
 
 
@@ -344,6 +422,13 @@ def run_arm(name: str, model_path: str, port: int, gpus: list[int], tp: int,
         sleep_s = time.perf_counter() - t0
         mem_slept = cgroup_mem()
         gpu_slept = gpu_mem_used_mib(gpus)
+
+        # --- THE R2 QUESTION: what is behind the parked bytes? ------------
+        pids = engine_pids(proc.pid)
+        maps = dump_maps(pids)
+        rec(arm=name, rung="park_backing", n_pids=len(pids),
+            rss_gib_by_backing=maps["rss_gib_by_backing"],
+            largest_mappings=maps["largest_mappings"])
 
         t1 = time.perf_counter()
         _post(port, "/wake_up")

@@ -370,6 +370,25 @@ ATOMAGENTS_CONFIGS: dict[str, dict] = {
     # MegaMmap. The ChemGraph result never had this arm, which is why its
     # 3.18x is a statement about staging-with-MegaMmap rather than about
     # MegaMmap.
+    # ---- TANDEM ---------------------------------------------------------
+    # explicit_only, and that is not caution: this arm wires a residency actor
+    # into the model prefetch executor, which changes what a prefetch is
+    # ALLOWED TO DO (it may now evict the GPU incumbent) and licenses the
+    # proactive-swap confidence-gate bypass. No previously collected exp3 trial
+    # had either, so a campaign run without --configs must never pick it up and
+    # pool it with the kill+cold-boot arms.
+    #
+    # The comparison this arm exists for: on the aligned campaign 16 of 16
+    # model prefetches failed, 10 of them within ~1 ms with "Cannot start
+    # qwen_32b: GPUs occupied", and the proactive-swap ones sat in a 600 s
+    # wait-for-GPUs loop before failing. Nothing about the predictor changes
+    # here -- only whether a correct prediction has somewhere to put its
+    # result.
+    "tandem": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--residency"],
+        "explicit_only": True,
+    },
     "page_cache_stage": {
         "mode": "real", "predictor": "learned",
         "flags": ["--stage-model-cache"],

@@ -280,7 +280,8 @@ def _megammap_settings(args) -> dict:
 def _build_executor(mode: RuntimeMode, orchestrator, metrics=None,
                     megammap: dict | None = None,
                     megammap_window: str = "4g", megammap_tx: str = "seq",
-                    model_paths: dict | None = None):
+                    model_paths: dict | None = None,
+                    residency: bool = False):
     if mode != RuntimeMode.REAL:
         return SimulatedPrefetchExecutor()
     try:
@@ -288,7 +289,28 @@ def _build_executor(mode: RuntimeMode, orchestrator, metrics=None,
         from runtime.prefetch.data_prefetch import FileStagingExecutor, CompositeExecutor
         executors = {}
         if orchestrator is not None:
-            executors["vllm_model"] = ModelPrefetchExecutor(orchestrator, probes=None)
+            # TANDEM (--residency). Wiring a residency actor is what lets a
+            # model prefetch EVICT the GPU incumbent instead of failing. On the
+            # aligned campaign 16 of 16 model prefetches died with
+            # "Cannot start qwen_32b: GPUs [0,1,2,3] occupied by qwen_72b",
+            # and the proactive-swap ones did not fail fast -- they sat in the
+            # executor's 600 s wait-for-GPUs loop and failed after 600.02,
+            # 600.02, 600.03 and 918.04 s.
+            #
+            # It also licenses the confidence-gate bypass in
+            # PrefetchScheduler._should_prefetch, which fires only when the
+            # executor for THIS resource answers can_evict_gpu_occupants. With
+            # residency off that answer is False and every decision_reason
+            # string, skip and admission is byte-identical to before -- which
+            # is why the existing arms are unaffected by this flag existing.
+            _actor = None
+            if residency:
+                from runtime.residency.model_actor import VllmModelActor
+                _actor = VllmModelActor(orchestrator)
+                print("[runtime] TANDEM: VllmModelActor wired "
+                      "(L1 park + GPU eviction + gate bypass)")
+            executors["vllm_model"] = ModelPrefetchExecutor(
+                orchestrator, probes=None, residency_actor=_actor)
             print("[runtime] Real executor: ModelPrefetchExecutor for vllm_model")
         executors["data_file"] = FileStagingExecutor()
         print(f"[runtime] Real executor: FileStagingExecutor → {executors['data_file'].scratch_dir}")
@@ -662,6 +684,7 @@ def run_exp3(args: argparse.Namespace) -> None:
         megammap_window=getattr(args, "megammap_window", "4g"),
         megammap_tx=getattr(args, "megammap_tx", "seq"),
         model_paths=_model_paths,
+        residency=getattr(args, "residency", False),
     )
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
@@ -963,6 +986,12 @@ def main() -> None:
     parser.add_argument("--no-plan-extraction", action="store_true", dest="no_plan_extraction")
     parser.add_argument("--no-divergence-guard", action="store_true", dest="no_divergence_guard")
     parser.add_argument("--naive-prefetch", action="store_true", dest="naive_prefetch")
+    parser.add_argument("--residency", action="store_true", dest="residency",
+                        help="TANDEM: wire VllmModelActor into the model "
+                             "prefetch executor, enabling L1 parking, GPU "
+                             "eviction of the incumbent, and the "
+                             "proactive-swap confidence-gate bypass. Off by "
+                             "default; with it off the runtime is unchanged.")
     parser.add_argument("--skip-resource-types", default="", dest="skip_resource_types")
     parser.add_argument("--condition", default=None)
 
