@@ -306,6 +306,14 @@ def trial_rows(base: dict, trace: dict, config: str, mode: str) -> list[dict]:
             "consumer_tool": (rec.get("consumer_tool")
                               or (pred or {}).get("consumer_tool", "")),
             "executor": rec.get("executor", ""),
+            # vLLM/orchestrator verdict on the staging attempt, straight from
+            # prefetch_completed.status.  It was parsed (parse_eval_traces.py
+            # rec["completion_status"]) but had no consumer, so a prefetch that
+            # failed instantly ("Cannot start X: GPUs occupied") was recorded
+            # with elapsed_s=0 and outcome 'wasted', i.e. indistinguishable
+            # from a real staging that nobody consumed.  Additive column only:
+            # no existing column's value changes.
+            "completion_status": rec.get("completion_status", ""),
             "backend": rec.get("backend", ""),
             "n_shards": rec.get("n_shards"),
             "predictor_id": (pred or {}).get("predictor_id", ""),
@@ -656,22 +664,25 @@ def atomagents_need_rows(base: dict, trial_dir: Path, config: str,
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    ap = argparse.ArgumentParser(
-        description=__doc__.split("\n")[1],
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    ap.add_argument("--eval-root", default=str(DEFAULT_EVAL_ROOT))
-    ap.add_argument("--workload", default=None, help="restrict to one workload")
-    ap.add_argument("--config", default=None, help="restrict to one config")
-    ap.add_argument("--include-failed", action="store_true",
-                    help="debug only — plots must not use failed trials")
-    args = ap.parse_args()
+def build(eval_root: Path, workload: str | None = None,
+          config: str | None = None, include_failed: bool = False) -> int:
+    """Write eval_prefetch_lifecycle.csv + eval_stall_taxonomy.csv.
 
-    eval_root = Path(args.eval_root)
+    Callable entry point so parse_eval_traces.py can regenerate these two CSVs
+    in the same pass as the Q1-Q4 aggregates.  They are derived from the SAME
+    run tree, so leaving them out of that pass lets them go stale silently:
+    the on-disk lifecycle CSV sat at its 2026-07-29 contents while three
+    campaigns landed underneath it (atomagents_exp3_aligned,
+    chemgraph_screen_pool, and later chemgraph_swap trials), and every
+    consumer — figures, replay scripts, the stall taxonomy — read zero rows
+    for them without any error.  Returns the number of rows written.
+    """
+    args = argparse.Namespace(workload=workload, config=config,
+                              include_failed=include_failed)
     runs = discover_runs(eval_root)
     if not runs:
         print(f"No runs under {eval_root}/runs", file=sys.stderr)
-        sys.exit(1)
+        return 0
 
     # first trial per SLURM allocation (same rule as parse_eval_traces)
     first_in_alloc: dict[str, tuple[str, str]] = {}
@@ -778,6 +789,24 @@ def main() -> None:
             n = len(n_trials[(wl, cfg)]) or 1
             w.writerow([wl, cfg, cls, round(s, 2), n, round(s / n, 2)])
     print(f"{tax}  ({len(agg)} cells)")
+    return len(all_rows)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n")[1],
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    ap.add_argument("--eval-root", default=str(DEFAULT_EVAL_ROOT))
+    ap.add_argument("--workload", default=None, help="restrict to one workload")
+    ap.add_argument("--config", default=None, help="restrict to one config")
+    ap.add_argument("--include-failed", action="store_true",
+                    help="debug only — plots must not use failed trials")
+    a = ap.parse_args()
+    root = Path(a.eval_root)
+    if not discover_runs(root):
+        print(f"No runs under {root}/runs", file=sys.stderr)
+        sys.exit(1)
+    build(root, a.workload, a.config, a.include_failed)
 
 
 if __name__ == "__main__":

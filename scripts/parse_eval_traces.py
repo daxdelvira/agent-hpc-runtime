@@ -926,6 +926,22 @@ def main() -> None:
     rp = eval_root / "eval_validation_report.txt"
     rp.write_text("\n".join(report) + "\n")
     print(f"  {rp}")
+
+    # ---- per-prefetch lifecycle + stall taxonomy -------------------------------
+    # eval_prefetch_lifecycle.csv / eval_stall_taxonomy.csv are derived from the
+    # same run tree as everything above, but used to be produced only by a
+    # separate manual invocation of scripts/extract_prefetch_lifecycle.py.  That
+    # made staleness invisible: the on-disk lifecycle CSV was last written
+    # 2026-07-29 and therefore contained ZERO rows for every campaign that
+    # landed afterwards (atomagents_exp3_aligned, chemgraph_screen_pool, the
+    # later chemgraph_swap trials) while still loading without error.  Regenerate
+    # them here so "rerun parse_eval_traces" cannot leave them behind.
+    # Lazy import: extract_prefetch_lifecycle imports FROM this module.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import extract_prefetch_lifecycle as _lifecycle  # noqa: E402
+    print("Writing prefetch lifecycle CSVs:")
+    _lifecycle.build(eval_root, include_failed=args.include_failed)
+
     print("\n".join(report[:40]))
 
 

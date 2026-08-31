@@ -244,7 +244,43 @@ def retarget_prompt_potentials(prompt: str, offered: tuple) -> str:
 # Build prefetch executor
 # ---------------------------------------------------------------------------
 
-def _build_executor(mode: RuntimeMode, orchestrator, metrics=None):
+def _megammap_settings(args) -> dict:
+    """Validate the MegaMmap/Hermes environment and return its paths.
+
+    Ported verbatim in spirit from experiments/chemgraph_exp.py:179, including
+    the decision to ABORT rather than degrade: a silent fallback to page-cache
+    staging would produce trials labelled "megammap" that measured nothing of
+    the sort, and the label is what the comparison rests on.
+    """
+    binary = os.environ.get(
+        "MEGA_MODEL_PRELOAD",
+        "/storage/project/r-ag117-0/shared/agent_hpc/mega_mmap_integration/"
+        "megammap_tests/build/bin/mm_model_preload",
+    )
+    interceptor = os.environ.get("HERMES_INTERCEPTOR", "")
+    hermes_conf = os.environ.get("HERMES_CONF", "")
+    problems = []
+    if not Path(binary).exists():
+        problems.append(f"mm_model_preload not found: {binary!r} "
+                        "(set MEGA_MODEL_PRELOAD)")
+    if not interceptor or not Path(interceptor).exists():
+        problems.append(f"libhermes_posix.so not found: {interceptor!r} "
+                        "(set HERMES_INTERCEPTOR)")
+    if problems:
+        for p in problems:
+            print(f"[megammap] ERROR: {p}")
+        print("[megammap] --megammap-stage requires the Hermes/MegaMmap stack "
+              "(source ~/scratch/mega_stack/mega_env.sh) and a running daemon "
+              "(hrun_start_runtime). Aborting rather than faking the condition.")
+        sys.exit(2)
+    return {"binary": binary, "interceptor": interceptor,
+            "hermes_conf": hermes_conf}
+
+
+def _build_executor(mode: RuntimeMode, orchestrator, metrics=None,
+                    megammap: dict | None = None,
+                    megammap_window: str = "4g", megammap_tx: str = "seq",
+                    model_paths: dict | None = None):
     if mode != RuntimeMode.REAL:
         return SimulatedPrefetchExecutor()
     try:
@@ -256,6 +292,29 @@ def _build_executor(mode: RuntimeMode, orchestrator, metrics=None):
             print("[runtime] Real executor: ModelPrefetchExecutor for vllm_model")
         executors["data_file"] = FileStagingExecutor()
         print(f"[runtime] Real executor: FileStagingExecutor → {executors['data_file'].scratch_dir}")
+        # model_cache is the host-I/O half of a model load, emitted by the
+        # adapter alongside each vllm_model (see adapters/atomagents.py
+        # _pair_model_cache). MegaMmap replaces the page-cache warm here; that
+        # substitution IS the external-system comparison.
+        if megammap:
+            from runtime.prefetch.megammap_stage import MegaMmapStagingExecutor
+            extra_env = {}
+            if megammap.get("hermes_conf"):
+                extra_env["HERMES_CONF"] = megammap["hermes_conf"]
+            executors["model_cache"] = MegaMmapStagingExecutor(
+                model_paths=model_paths,
+                binary=megammap["binary"],
+                window=megammap_window,
+                tx_type=megammap_tx,
+                extra_env=extra_env or None,
+            )
+            print(f"[runtime] Real executor: MegaMmapStagingExecutor for "
+                  f"model_cache (window={megammap_window}, tx={megammap_tx})")
+        else:
+            from runtime.prefetch.model_cache_prefetch import ModelCacheStagingExecutor
+            executors["model_cache"] = ModelCacheStagingExecutor(
+                model_paths=model_paths)
+            print("[runtime] Real executor: ModelCacheStagingExecutor for model_cache")
         return CompositeExecutor(executors=executors, default=SimulatedPrefetchExecutor())
     except Exception as exc:
         print(f"[runtime] WARNING: Could not build real executor ({exc}); falling back to simulated.")
@@ -412,6 +471,11 @@ def run_exp3(args: argparse.Namespace) -> None:
         print(f"[cluster] ERROR: AtomAgents not available: {e}")
         sys.exit(1)
 
+    # Validate the Hermes/MegaMmap stack up front, before any model is loaded:
+    # a missing interceptor discovered 700 s into a boot wastes the hold, and
+    # _megammap_settings() exits rather than degrading to page-cache staging.
+    _megammap = _megammap_settings(args) if getattr(args, "megammap_stage", False) else None
+
     # ------------------------------------------------------------------
     # Model orchestration
     # ------------------------------------------------------------------
@@ -473,6 +537,40 @@ def run_exp3(args: argparse.Namespace) -> None:
                     _mc["extra_env"] = _env
                 print(f"[cluster] Sleep/wake swaps ENABLED (level "
                       f"{args.sleep_level}) for {len(MODELS)} engines.")
+
+            # Every engine must read its weights THROUGH Hermes, or the staged
+            # cache is never consumed and the arm measures page-cache staging
+            # with extra overhead bolted on. ModelOrchestrator applies
+            # extra_env wholesale at launch (model_orchestrator.py:255), so
+            # setting it here is sufficient -- but it must happen before the
+            # orchestrator is constructed below.
+            if _megammap and MODELS:
+                from runtime.prefetch.megammap_stage import build_hermes_preload
+                _pre = build_hermes_preload(_megammap["interceptor"])
+                for _mc in MODELS.values():
+                    _env = dict(_mc.get("extra_env") or {})
+                    _env["LD_PRELOAD"] = _pre
+                    if _megammap.get("hermes_conf"):
+                        _env["HERMES_CONF"] = _megammap["hermes_conf"]
+                    _mc["extra_env"] = _env
+                print(f"[megammap] {len(MODELS)} engines will launch with "
+                      f"LD_PRELOAD={_pre}")
+
+            # Turn on the host-I/O half of a model load, and tell the adapter
+            # where each model's shards live. Both are read by
+            # AtomAgentsRuntimeAdapter._pair_model_cache; without them it emits
+            # nothing and a staging executor has no work.
+            #
+            # OFF BY DEFAULT ON PURPOSE. Every exp3 trial collected before this
+            # change ran without model_cache staging, so switching it on for the
+            # existing arms would make new runs incomparable with the recorded
+            # baseline (n=6) and full_system (n=9). It is enabled only when an
+            # arm explicitly asks for staging.
+            if MODELS and (_megammap or getattr(args, "stage_model_cache", False)):
+                cfg.model_paths = {k: v["model_name"] for k, v in MODELS.items()}
+                cfg.stage_worker_cache = True
+                print(f"[runtime] model_cache staging ENABLED for "
+                      f"{len(cfg.model_paths)} models")
 
             orchestrator = ModelOrchestrator(MODELS)
 
@@ -554,7 +652,17 @@ def run_exp3(args: argparse.Namespace) -> None:
         predictor = MockPredictor("atomagents")
 
     bus = EventBus(run_id=run_id, log_path=trace_path)
-    executor = _build_executor(mode, orchestrator, ml)
+    # Snapshot dirs keyed by the name the adapter puts on a ResourceSpec, so a
+    # staging executor can find the shards for a model it was handed by name.
+    _model_paths = ({k: v["model_name"] for k, v in MODELS.items()}
+                    if MODELS else {})
+    executor = _build_executor(
+        mode, orchestrator, ml,
+        megammap=_megammap,
+        megammap_window=getattr(args, "megammap_window", "4g"),
+        megammap_tx=getattr(args, "megammap_tx", "seq"),
+        model_paths=_model_paths,
+    )
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
 
@@ -857,6 +965,30 @@ def main() -> None:
     parser.add_argument("--naive-prefetch", action="store_true", dest="naive_prefetch")
     parser.add_argument("--skip-resource-types", default="", dest="skip_resource_types")
     parser.add_argument("--condition", default=None)
+
+    # External-system comparison: replace host-side weight staging with
+    # MegaMmap/Hermes. Mirrors experiments/chemgraph_exp.py. Requires the
+    # Hermes stack on PATH and a running daemon; the eval driver starts and
+    # stops one per trial for arms flagged needs_hermes.
+    parser.add_argument(
+        "--megammap-stage", action="store_true", dest="megammap_stage",
+        help="stage model weights through MegaMmap into the Hermes buffer pool "
+             "instead of warming the OS page cache; the worker vLLM servers are "
+             "launched with LD_PRELOAD=libhermes_posix.so so their reads hit it")
+    parser.add_argument(
+        "--stage-model-cache", action="store_true", dest="stage_model_cache",
+        help="warm model weight shards into the OS page cache during compute "
+             "windows. The page-cache control for --megammap-stage; off by "
+             "default so previously collected exp3 arms stay comparable.")
+    parser.add_argument(
+        "--megammap-window", default="4g", dest="megammap_window",
+        help="MegaMmap bounded DRAM window per staged model")
+    parser.add_argument(
+        "--megammap-tx", default="seq", choices=("seq", "rand"),
+        dest="megammap_tx",
+        help="page order for the staging transaction. 'rand' is the "
+             "no-prefetch-signal control: it models staging with no idea which "
+             "model comes next, and is what isolates window from prediction.")
 
     args = parser.parse_args()
     run_exp3(args)

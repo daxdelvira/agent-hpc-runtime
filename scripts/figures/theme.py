@@ -147,21 +147,34 @@ TIGHT = 0.58
 TIGHT_2PANEL = 0.80
 HSCALE_FOR = {
     "fig-intro-behavior":     0.88,           # 0.72 and 0.80 both read cramped
+    # Schematic, not a data plot: the boxes carry two lines of type each and
+    # the loop-back arrow needs vertical room, so it does not flatten.
+    "fig-agentic-workflow":   0.95,
     "fig-replacement-loss":   0.62,           # lower panel is ~8% filled
     "fig-predictability":     TIGHT,
     # Two panels, but ONE shared x axis and two short identical y labels,
     # so the collision TIGHT_2PANEL guards against cannot occur here.
     "fig-prediction-signals": TIGHT,
     "fig-sgb-spread":         TIGHT,
+    # The alt variant carries a 3-entry key above the axes and a two-line
+    # annotation below it, so it needs more room than the original.
+    "fig-sgb-spread-alt":     0.78,
     # Only one rotated y label now (the lower panel names its series
     # in-panel), so the twin-label floor does not bind here.
     "fig-scale-sweep":        0.62,
+    "fig-scale-sweep-alt":    0.62,
     "fig-topology-budget":    TIGHT,
     # Pinned: already the smallest float in the paper and reads cramped
     # at TIGHT. It does not follow TIGHT down.
     "fig-tool-relationships": 0.70,
     "fig-stall-ladder":       TIGHT,
     "fig-budget-sweep":       TIGHT,
+    # Two stacked panels but a single rotated label each, both short
+    # ("reduction (%)", "evicted (%)"), so the twin-label floor does not bind.
+    "fig-budget-staging":     0.70,
+    # Two panels, two short rotated labels, plus per-bar class text under the
+    # lower axis; below ~0.8 the class text collides with the tick labels.
+    "fig-megammap-breakdown": TIGHT_2PANEL,
     "fig-compute-sweep":      TIGHT,
     "fig-ablation":           TIGHT_2PANEL,   # 5 categorical rows need the height
                                               # (single column since 2026-08-10)

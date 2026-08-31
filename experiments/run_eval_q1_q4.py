@@ -357,6 +357,42 @@ ATOMAGENTS_CONFIGS: dict[str, dict] = {
     # args + swap path), so explicit_only keeps it out of the implicit
     # "all configs" set — a campaign run without --configs must never pick it
     # up and silently pool its trials with the kill+cold-boot arms.
+    # ---- host-side weight staging -------------------------------------
+    # All three are explicit_only: they enable model_cache staging, which no
+    # previously collected exp3 trial had, so a campaign run without --configs
+    # must never pick them up and pool them with the existing arms.
+    #
+    # page_cache_stage IS THE CONTROL AND IS NOT OPTIONAL. Comparing
+    # megammap_stage straight to baseline confounds two changes at once --
+    # "MegaMmap replaced the page cache" and "weight staging now happens at
+    # all". Only the page-cache arm separates them: baseline -> page_cache_stage
+    # is the cost of staging, page_cache_stage -> megammap_stage is the cost of
+    # MegaMmap. The ChemGraph result never had this arm, which is why its
+    # 3.18x is a statement about staging-with-MegaMmap rather than about
+    # MegaMmap.
+    "page_cache_stage": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--stage-model-cache"],
+        "explicit_only": True,
+        "desc": "warm weight shards into the OS page cache during compute "
+                "windows; the control arm for the MegaMmap comparison",
+    },
+    "megammap_stage": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--megammap-stage"],
+        "needs_hermes": True,
+        "explicit_only": True,
+        "desc": "weight staging through MegaMmap into the Hermes buffer pool; "
+                "engines read weights via libhermes_posix.so",
+    },
+    "megammap_stage_rand": {
+        "mode": "real", "predictor": "learned",
+        "flags": ["--megammap-stage", "--megammap-tx", "rand"],
+        "needs_hermes": True,
+        "explicit_only": True,
+        "desc": "MegaMmap staging with random page order — no prefetch signal, "
+                "so it isolates window from prediction quality",
+    },
     "sleep_wake": {
         "mode": "real", "predictor": "learned",
         "flags": ["--sleep-wake", "--sleep-level", "2"],

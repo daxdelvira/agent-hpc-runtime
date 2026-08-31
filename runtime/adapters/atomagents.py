@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING
 from runtime.config import RuntimeConfig, RuntimeMode
 from runtime.event_bus import EventBus
 from runtime.events import (
+    ResourceSpec,
     make_checkpoint_created_event,
     make_conservative_mode_event,
     make_divergence_detected_event,
@@ -98,6 +99,10 @@ class AtomAgentsRuntimeAdapter:
         self._plan_window_open = True
         self._lock = threading.Lock()
         self._installed = False
+        # Model names already given a model_cache staging task. Staging the same
+        # snapshot twice is pure waste: the shards are immutable, so a second
+        # warm of the same path can only re-read bytes that are already cached.
+        self._staged_models: set[str] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -274,6 +279,11 @@ class AtomAgentsRuntimeAdapter:
         if not result.resources:
             return
 
+        # Pair each predicted engine with a host-side weight-staging task. Done
+        # BEFORE the prediction event is emitted so the trace, the checkpoint
+        # and the scheduler all see one prediction carrying both resources.
+        self._pair_model_cache(result)
+
         self._bus.emit_event(make_prediction_result_event(
             self._config.run_id, step, result,
         ))
@@ -291,6 +301,77 @@ class AtomAgentsRuntimeAdapter:
                     current_step=step,
                     checkpoint_id=ckpt.checkpoint_id,
                 )
+
+    def _pair_model_cache(self, result) -> int:
+        """Append a `model_cache` resource for each predicted `vllm_model`.
+
+        WHY THIS EXISTS. Making a served model usable is two costs, not one:
+        moving its weight shards from storage into host memory, and bringing the
+        engine up on the accelerator. AtomAgents only ever expressed the second
+        -- it emitted `vllm_model` and `data_file` and nothing else -- so the
+        host-I/O half of a model load had no resource to attach to. That is what
+        blocked an external-tier comparison here: MegaMmapStagingExecutor is a
+        drop-in for `model_cache` (see runtime/prefetch/megammap_stage.py), and
+        with no such resource there was nothing for it to replace. ChemGraph has
+        carried this since adapters/chemgraph.py:710; this is the AtomAgents
+        counterpart, deliberately written to match it.
+
+        THE PAIRING IS BY MODEL NAME, AND THAT IS LOAD-BEARING.
+        extract_prefetch_lifecycle.py groups a staging task with its engine task
+        by `name` (`g["model"] == name`, :194), and aggregations take max() over
+        a gate_group rather than summing, because the two gate the SAME wall
+        interval. Emit a cache resource whose `name` differs from its engine's
+        and the two stop sharing a gate, at which point one stall is counted
+        twice and every taxonomy number for this workload is inflated. The
+        `name` below is therefore copied from the engine resource verbatim.
+
+        Returns the number of resources added.
+        """
+        if (
+            not self._config.stage_worker_cache
+            or self._config.mode == RuntimeMode.BASELINE
+            or "model_cache" in self._config.skip_resource_types
+        ):
+            return 0
+
+        import hashlib
+
+        added = []
+        for res in list(result.resources):
+            if res.resource_type != "vllm_model" or not res.name:
+                continue
+            if res.name in self._staged_models:
+                continue
+            path = self._config.model_paths.get(res.name)
+            if not path:
+                # No snapshot dir means nothing to warm. Staging a resource we
+                # cannot name a path for would schedule a task that can only
+                # fail, and a FAILED task is not the same as no task in the
+                # lifecycle extractor -- it would surface as an unattributed
+                # stall rather than as an absent mechanism.
+                continue
+            self._staged_models.add(res.name)
+            added.append(ResourceSpec(
+                resource_id="cache_" + hashlib.md5(res.name.encode()).hexdigest()[:12],
+                resource_type="model_cache",
+                name=res.name,
+                path=path,
+                estimated_size_bytes=_model_shard_bytes(path),
+                # Host-side warm only: no GPU is touched and no running engine
+                # is stopped, so this is always safe to cancel mid-flight.
+                cancellation_safe=True,
+                confidence=res.confidence,
+                consumer_tool=res.consumer_tool,
+                consumer_step_offset=res.consumer_step_offset,
+                expected_at_step=res.expected_at_step,
+            ))
+
+        result.resources.extend(added)
+        if added and self._bus:
+            self._bus.emit("model_cache_paired", {
+                "models": [r.name for r in added],
+            }, step=self._step)
+        return len(added)
 
     def _run_divergence_check(self, tool_name: str, step: int) -> None:
         """
@@ -464,6 +545,22 @@ class AtomAgentsRuntimeAdapter:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _model_shard_bytes(path: str | None) -> int | None:
+    """Total weight-shard bytes under a model snapshot dir, or None if unknown.
+
+    Uses the same shard enumeration the staging executors use, so the size the
+    scheduler budgets against is the size that will actually be moved. None on
+    any failure -- an absent estimate is handled downstream, a wrong one is not.
+    """
+    if not path:
+        return None
+    try:
+        from runtime.prefetch.model_cache_prefetch import list_model_shards
+        return sum(p.stat().st_size for p in list_model_shards(path)) or None
+    except Exception:
+        return None
+
 
 def _extract_tool_calls_from_response(response) -> list[dict]:
     """

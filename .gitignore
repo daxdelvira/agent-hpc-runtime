@@ -46,3 +46,6 @@ workloads/*/models/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Job/campaign logs (data, not code)
+*.log
