@@ -55,6 +55,7 @@ class _TaskRecord:
     wasted: bool = False
     hit: bool = False
     status: str = "unknown"
+    failed: bool = False          # prefetch_completed carried status=failed
 
     def is_simulated(self) -> bool:
         return self.elapsed_s < _SIMULATED_ELAPSED_THRESHOLD
@@ -121,7 +122,14 @@ def parse_events(events: list[dict]) -> list[_TaskRecord]:
             if tid in tasks:
                 elapsed = float(p.get("elapsed_s", 0.0))
                 tasks[tid].elapsed_s = elapsed
-                if tasks[tid].status not in ("used", "wasted", "cancelled"):
+                # payload.status is the executor's verdict; the event is
+                # emitted for failures too (scheduler.py:135-151).  Marking a
+                # failed staging "completed" made it look like a prefetch that
+                # had really landed and simply gone unused.
+                if str(p.get("status") or "").lower() == "failed":
+                    tasks[tid].failed = True
+                    tasks[tid].status = "failed"
+                elif tasks[tid].status not in ("used", "wasted", "cancelled"):
                     tasks[tid].status = "completed"
                 # Use start_epoch + elapsed_s so end_epoch reflects when the
                 # load actually finished, not when the poll thread logged it.
@@ -215,7 +223,7 @@ def _estimated_overlap(rec: _TaskRecord) -> float | None:
     """
     if not rec.is_simulated():
         return None
-    if rec.cancelled or rec.wasted:
+    if rec.cancelled or rec.wasted or rec.failed:
         return None
     return rec.estimated_load_s
 
@@ -228,7 +236,7 @@ def _estimated_benefit(rec: _TaskRecord) -> float | None:
     """
     if not rec.is_simulated():
         return None
-    if rec.cancelled or rec.wasted:
+    if rec.cancelled or rec.wasted or rec.failed:
         return None
     return rec.estimated_load_s
 
@@ -393,6 +401,7 @@ def build_json_summary(
             "estimated_benefit_s": _estimated_benefit(rec) if is_est else None,
             "cancelled": rec.cancelled,
             "wasted": rec.wasted,
+            "failed": rec.failed,
             "hit": rec.hit,
             "status": rec.status,
             "simulated": is_est,

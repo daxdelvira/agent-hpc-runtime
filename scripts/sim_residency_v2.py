@@ -115,9 +115,44 @@ not. Nothing here runs on a GPU.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import itertools
+import os
 import struct
+import sys
+
+# --- the simulator IMPORTS the runtime, it does not re-implement it ---------
+# WIRED 2026-08-30 (T1/T2). Until today this file carried its own copy of Eq. 1,
+# its own density, and its own eviction loops, and the runtime had none. Two
+# implementations of one policy drift, and when they drift the paper describes
+# the one nobody runs. So the shipped objective (`objective="horizon"`, the
+# retain-only currency of I5) is now `runtime.residency.contract.value`, and the
+# greedy eviction and greedy packing loops are
+# `runtime.residency.arbitrator.evict_until_fits` / `greedy_pack`.
+#
+# WHAT DELIBERATELY STAYS HERE, AND WHY:
+#   * objectives "rate" and "total" -- simulator-only control arms. "rate" is
+#     the broken shared currency (§0.3 item 1); putting it in the runtime would
+#     violate I5. They are kept so the paper can show why the shipped one wins.
+#   * the "prefetch" kind's min(load, dt) cap -- same reason: it IS the break.
+#   * the "exact" policy -- the arm the contract exists to argue against. The
+#     runtime has no exact solve and must not grow one.
+#   * `dt == inf` meaning "believed dead". That is an artifact of simulating a
+#     FINITE trace, not a horizon semantics. I3 forbids a real estimator from
+#     ever saying it, which is what `horizon_cap` models.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from runtime.residency.arbitrator import evict_until_fits, greedy_pack   # noqa: E402
+from runtime.residency.contract import (                                 # noqa: E402
+    ResourceClass,
+    ResourceSpec,
+    Rung,
+    value as eq1_value,
+    value_density as eq1_density,
+)
 
 # --- measured resources; see bench_arbitration_harness.py for provenance ------
 REAL_MODELS = [("qwen_32b", 129.7, 495.2, 1.03),
@@ -235,6 +270,61 @@ def _u01(*parts) -> float:
     order and call count, so every arm sees the same draw for the same key."""
     h = hashlib.blake2b(repr(parts).encode(), digest_size=8).digest()
     return struct.unpack("<Q", h)[0] / 2.0 ** 64
+
+
+# --- catalogue entry -> the contract's ResourceSpec -------------------------
+# The simulator's catalogue predates the contract, so this is the one place
+# that translates between them. The mapping is mechanical: a "model" is held at
+# R2 (anonymous host RAM, vLLM L1 sleep), activated data at R3 (a parsed
+# structure in a live worker). The simulator does not model Pattern B
+# separately, so all data maps to DATA_PATTERN_A; nothing here branches on the
+# class, and neither does the runtime (I4).
+_SPEC_CACHE: dict = {}
+
+
+def spec_for(cat: dict, name: str) -> ResourceSpec:
+    r = cat[name]
+    key = (name, r["cls"], r["held_gb"], r["cold_s"], r["ready_s"])
+    sp = _SPEC_CACHE.get(key)
+    if sp is None:
+        is_model = r["cls"] == "model"
+        sp = ResourceSpec(
+            resource_id=name,
+            resource_class=(ResourceClass.MODEL if is_model
+                            else ResourceClass.DATA_PATTERN_A),
+            held_rung=Rung.R2_PROCESS_BYTES if is_model else Rung.R3_ACTIVATED,
+            held_gb=r["held_gb"],
+            cold_s=r["cold_s"],
+            ready_s=r["ready_s"],
+        )
+        _SPEC_CACHE[key] = sp
+    return sp
+
+
+def _capped_spec(spec: ResourceSpec, dt: float) -> ResourceSpec:
+    """A spec whose benefit is capped at `dt` -- the PREFETCH kind only.
+
+    A prefetch can only hide as much of a load as the window actually gives, so
+    its benefit is min(cold - ready, dt) rather than cold - ready. Expressed as
+    a shortened cold_s so that the discount itself has exactly one
+    implementation (the contract's). This cap is the known-broken half of the
+    shared currency (I5) and is why it lives in the simulator.
+
+    NOTE ready_s=0.0, WHICH IS LOAD-BEARING AND NOT A SIMPLIFICATION. The first
+    version wrote `cold_s = spec.ready_s + min(benefit, dt)`, so benefit_s came
+    back as `(ready + m) - ready`, which is NOT bit-exactly `m`: measured over
+    the 28-resource catalogue, 33 of 224 (name, dt) pairs differed in the last
+    ULP, worst 3.55e-15. Invisible to any ranking -- but `_knapsack` tie-breaks
+    on exact float equality (`v == best_v and gb < best_gb`), so one ULP picks
+    a different subset and moves wall time. This is the same class of defect V
+    found in contract.value's grouping, in the prefetch arm rather than the
+    retain arm, and it was mine. Anchoring at ready_s=0.0 makes benefit_s
+    exactly min(benefit, dt); the ratio is unaffected because the prefetch
+    branch only ever reads benefit_s.
+    """
+    return dataclasses.replace(
+        spec, cold_s=max(min(spec.benefit_s, dt), 0.0), ready_s=0.0
+    )
 
 
 class Sim:
@@ -370,23 +460,44 @@ class Sim:
                       a resource needed in 10,000 s at H=600 scores 6% of one
                       needed within the horizon, so hoarding is still penalised.
                       H is a real knob and must be swept, not picked.
+
+        WHERE EACH BRANCH LIVES (wired 2026-08-30). "horizon" is the shipped
+        objective and is `runtime.residency.contract.value` -- Eq. 1 has one
+        implementation and this is not it. "rate" and "total" are control arms
+        and stay here; "rate" in particular is the broken shared currency that
+        I5 forbids the runtime to contain.
         """
-        r = self.cat[name]
-        full = r["cold_s"] - r["ready_s"]
+        spec = spec_for(self.cat, name)
         if dt == float("inf"):
             return 0.0                      # believed dead: worth nothing
-        benefit = full if kind == "retain" else min(full, dt)
+        if self.objective == "horizon":
+            # kind == "prefetch" only changes the BENEFIT (the min(load, dt)
+            # cap); the discount is the contract's either way.
+            # THE TWO TIME CONSTANTS map cleanly onto this simulator, which has
+            # always kept them apart: self.H is D (Eq. 1's decay scale, swept in
+            # 07_objective_check.md) and self.horizon_cap is L (how far the
+            # predictor can see). L is passed for completeness only -- it prices
+            # dt=None, and this simulator never emits None: it uses inf as its
+            # own "believed dead" sentinel, handled above. So L cannot move a
+            # simulator number, and the equivalence sweep confirms it.
+            return eq1_value(spec if kind == "retain" else _capped_spec(spec, dt),
+                             dt, self.H, self.horizon_cap)
+        benefit = spec.benefit_s if kind == "retain" else min(spec.benefit_s, dt)
         if self.objective == "rate":
             return benefit / max(dt, 1e-9)
         if self.objective == "total":
             return benefit
-        if self.objective == "horizon":
-            return benefit * (self.H / max(dt, self.H))
         raise ValueError(self.objective)
 
     def _density(self, name, dt, kind="retain"):
+        """v/g, the ranking key. The shipped objective routes through the
+        contract's value_density so the runtime and the simulator cannot end up
+        ranking by two different keys."""
         if dt == float("inf"):
             return float("-inf")            # evicted before anything finite
+        if self.objective == "horizon" and kind == "retain":
+            return eq1_density(spec_for(self.cat, name), dt, self.H,
+                               self.horizon_cap)
         return self._value(name, dt, kind) / max(self.cat[name]["held_gb"], 1e-9)
 
     # -- host-RAM selection -------------------------------------------------
@@ -400,7 +511,6 @@ class Sim:
     def _choose_ram(self, cands: dict, hor: dict) -> set:
         cat, budget = self.cat, self.budget
         cands = {k: v for k, v in cands.items() if self._retainable(k)}
-        fits = lambda s: sum(cat[x]["held_gb"] for x in s) <= budget
 
         # THE TRUE FLOOR: no L1 parking, no persistent data worker, no prefetch.
         # A displaced model falls all the way to disk and a data artifact is
@@ -411,18 +521,18 @@ class Sim:
         if self.policy == "never":
             return set()
 
+        # BOTH eviction loops are the runtime's `evict_until_fits`. The
+        # primitive is key-agnostic on purpose: the arms differ only in the
+        # currency they hand it -- LRU by last-use step, cost-aware by Eq. 1
+        # value density -- which is exactly the comparison the paper makes.
+        sizes = {x: cat[x]["held_gb"] for x in cands}
+
         if self.policy == "lru":
-            keep = set(cands)
-            while not fits(keep):
-                keep.discard(min(sorted(keep), key=lambda x: (cands[x], x)))
-            return keep
+            return evict_until_fits(sizes, lambda x: cands[x], budget)
 
         if self.policy == "greedy":
-            keep = set(cands)
-            while not fits(keep):
-                keep.discard(min(sorted(keep),
-                                 key=lambda x: (self._density(x, hor[x]), x)))
-            return keep
+            return evict_until_fits(sizes, lambda x: self._density(x, hor[x]),
+                                    budget)
 
         # exact. A6: dead resources are EXCLUDED, not scored as zero -- keeping
         # one used to tie and win by being enumerated first, burning budget.
@@ -591,12 +701,12 @@ class Sim:
     def _knapsack(self, items: dict) -> set:
         """Highest total value that fits, over retain AND prefetch candidates."""
         if self.policy == "greedy":
-            keep, used = set(), 0.0
-            # rank by DENSITY (value per GB); the budget is a GB ceiling
-            for n in sorted(items, key=lambda x: (-items[x][0] / max(items[x][1], 1e-9), x)):
-                if used + items[n][1] <= self.budget:
-                    keep.add(n); used += items[n][1]
-            return keep
+            # The runtime's greedy packer: rank by DENSITY (value per GB),
+            # because the budget is a GB ceiling. NOTE the currency handed to
+            # it here MIXES retain and prefetch candidates, which I5 forbids in
+            # the runtime -- this is the control arm that demonstrates why.
+            return greedy_pack({n: (v, g) for n, (v, g, _k) in items.items()},
+                               self.budget)
         pool = sorted(items)
         best, best_v, best_gb = set(), -1.0, float("inf")
         for r in range(len(pool), -1, -1):

@@ -51,17 +51,37 @@ offsets.  `lookahead` defaults to 2 (env override: RUNTIME_PREDICTOR_LOOKAHEAD).
 Confidence decay
 ----------------
 A long horizon without damping floods the scheduler, so far-out candidates are
-multiplied by `offset_decay ** (offset - _LEGACY_HORIZON)`.  The factor is
-DERIVED FROM THE TABLE, not hardcoded: for every (source, target) pair observed
-at both offset 1 and offset k>1 we take the per-step ratio
-(p_k / p_1) ** (1/(k-1)) and use the median.  On the shipped table
-(runtime/predictor/data/learned_transitions.json, 165 traces) that is 0.8404
-from n=9 pairs (e.g. run_ase→extract_output_json: 0.1951/0.4045 = 0.4823 at
-k=2, 0.2857/0.4045 → 0.8404 per step at k=3).  The median rather than the mean
-is used because one pair — smiles_to_coordinate_file→extract_output_json, whose
-offset-1 probability is only 0.0462 — has a ratio of 11.4 and dominates any
-mean.  `_FALLBACK_DECAY` is used only when a table has no paired evidence at
-all.  Recompute with:
+multiplied by `offset_decay ** (offset - _LEGACY_HORIZON)`.
+
+The factor is DERIVED FROM THE TABLE, never hardcoded, and it is a property of
+whichever table is loaded rather than a constant of this module.  Derivation:
+for every (source, target) pair observed at BOTH offset 1 and some offset k>1,
+take the per-step ratio (p_k / p_1) ** (1/(k-1)); the factor is the median over
+those pairs.  The median rather than the mean, because the ratio distribution
+has a long right tail driven by pairs whose offset-1 probability is tiny (a
+denominator near zero), and one such pair dominates any mean.
+`_FALLBACK_DECAY` applies only when a table has no paired evidence at all.
+
+**Do not read a specific value out of this docstring, and do not tune one in.**
+The value moves when the table is regenerated, and it has moved a lot:
+
+    table                                   pairs   median   effect
+    2026-07-07, n_traces=165                n=9     0.8404   damps beyond offset 2
+    2026-08-30, n_traces=490                n=11    1.0000   NO damping at all
+
+That second row deserves attention rather than acceptance.  At n=11 the median
+is the 6th sorted ratio, and it landed exactly on a single pair whose p_k
+equals its p_1 — so the damping term is currently the identity, and a
+`--lookahead` beyond 2 is undamped.  The sample is also more dispersed than
+before, not less (ratios span 0.084-96.6 at 490 traces vs 0.194-11.4 at 165),
+so this estimator is fragile at the sample sizes the corpus actually provides.
+If a long horizon is ever turned on in anger, re-derive this deliberately
+instead of trusting the median of ~10 ratios.
+
+The 165-trace table is frozen at
+runtime/tests/fixtures/learned_transitions_20260707.json (and backed up at
+runtime/predictor/data/_preA3_20260830/) if you need to reproduce the old
+behaviour.  Recompute the live value with:
 
     python3 -c "from runtime.predictor.learned_predictor import LearnedPredictor as L; \
 p=L(); print(p.offset_decay, p.offset_decay_provenance)"
@@ -150,6 +170,19 @@ from runtime.predictor.transition_learner import TransitionTable
 
 _DEFAULT_TRANSITIONS_PATH = Path(__file__).parent / "data" / "learned_transitions.json"
 _PLAN_CONFIDENCE_DEFAULT = 0.80   # used when plan says "next tool is X" but no learned prob
+# THIS CONSTANT IS A FLOOR (see _plan_confidence: max(entry.probability, it)),
+# and it sits BELOW RuntimeConfig.confidence_threshold = 0.85 — so a plan-only
+# prediction can never clear the prefetch gate, by arithmetic.  On the L40S rows
+# of atomagents_exp3_aligned that is 34 `confidence_below_threshold
+# (0.80 < 0.85)` skips against 10 admits.
+#
+# It is deliberately NOT retuned here.  Raising it would buy admissions by
+# asserting a confidence the data does not support, and the gate is the wrong
+# abstraction anyway: the question is whether the expected saving is worth the
+# GB (Eq. 1, runtime/residency/contract.py), not whether one probability clears
+# one line.  The repair is in PrefetchScheduler._should_prefetch, where a
+# proactive-swap prediction bypasses the gate ONLY when the executor can
+# actually evict the incumbent from the GPUs.
 
 # Horizon the pre-2026-08-03 code hardcoded.  Offsets up to and including this
 # are emitted with un-decayed confidence so --lookahead 2 reproduces the old

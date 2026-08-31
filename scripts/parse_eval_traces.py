@@ -271,12 +271,37 @@ def parse_trace(events: list[dict], consumer_of: dict[str, set] | None = None) -
 _LATE_EPS = 0.5   # seconds of grace before a hit counts as "late"
 
 
+def prefetch_failed(rec: dict) -> bool:
+    """True when the staging attempt itself failed.
+
+    `prefetch_completed` is emitted for EVERY terminal executor state, not only
+    success (runtime/prefetch/scheduler.py:135-151 says so explicitly), and the
+    verdict rides in payload.status.  Ignoring that status makes a prefetch
+    that died in under a millisecond —
+
+        Cannot start qwen_32b: GPUs [0,1,2,3] occupied by qwen_72b.
+        Call stop_model first.
+
+    — indistinguishable from a staging that really moved bytes and simply was
+    not consumed.  Anything that reads completed_t as evidence of work done
+    must consult this first.
+    """
+    return str(rec.get("completion_status") or "").lower() == "failed"
+
+
 def classify_task(rec: dict, used_resources: set[str] | None = None) -> str:
-    """useful | late | wasted | cancelled | duplicate | pending
+    """useful | late | wasted | cancelled | duplicate | failed | pending
 
     `used_resources`: resource_ids that were consumed via *some* task.  A
     completed-but-unconsumed task whose resource WAS served by another task is
     a scheduler dedup artifact (duplicate), not genuinely wasted speculation.
+
+    `failed` is a task whose prefetch_completed carried status=failed: it never
+    staged anything, so it is neither a success nor wasted *work* (it consumed
+    no bandwidth and no time).  It is kept as its own class rather than folded
+    into `wasted` so the two failure modes — "we staged the wrong thing" and
+    "we could not stage at all" — cannot be confused.  A task that was also
+    cancelled keeps `cancelled`: the guard's verdict is the one being scored.
     """
     consumed_t = rec.get("consumed_t")
     completed_t = rec.get("completed_t")
@@ -288,6 +313,8 @@ def classify_task(rec: dict, used_resources: set[str] | None = None) -> str:
         return "wasted"
     if rec.get("cancelled"):
         return "cancelled"
+    if prefetch_failed(rec):
+        return "failed"          # staging attempt errored out; nothing staged
     if completed_t is not None:
         if used_resources and rec.get("resource_id") in used_resources:
             return "duplicate"
@@ -681,7 +708,12 @@ def main() -> None:
         #   on_time_rate    = of resources served by prefetch, share whose
         #                     prefetch completed before the consumer needed it
         n_consumed_tasks = useful + by_class["late"] + by_class["duplicate"]
-        denom_adm = n_admitted - by_class["cancelled"]
+        # `failed` leaves the denominator for the same reason `cancelled` does:
+        # neither is evidence about the PREDICTION.  A staging that errored out
+        # in <1 ms because the GPUs were occupied says nothing about whether
+        # the resource was going to be needed, so scoring it as a false
+        # positive charges the predictor for the actuator's failure.
+        denom_adm = n_admitted - by_class["cancelled"] - by_class["failed"]
         precision = n_consumed_tasks / denom_adm if denom_adm else None
         served_rids = used_rids
         n_served = len(served_rids)
@@ -693,7 +725,7 @@ def main() -> None:
                         if n_served else None)
 
         # ---- Q4 bytes ---------------------------------------------------------
-        useful_b = wasted_b = cancelled_b = 0.0
+        useful_b = wasted_b = cancelled_b = failed_b = 0.0
         byte_sources = set()
         n_wasted_noncancellable = 0
         spec_read_s = 0.0
@@ -712,10 +744,17 @@ def main() -> None:
             elif c == "cancelled":
                 # measured bytes_staged reflects what was actually read before stop
                 cancelled_b += b if rec.get("bytes_measured") is not None else 0.0
-            if c in ("wasted", "cancelled") and first_diverg_t \
+            elif c == "failed":
+                # The staging errored out; task_bytes() falls back to the
+                # resource's ESTIMATED size when nothing was measured, so
+                # charging these to wasted_bytes booked the full declared size
+                # of a model that was never touched.  Reported separately, and
+                # only when bytes were actually measured.
+                failed_b += b if rec.get("bytes_measured") is not None else 0.0
+            if c in ("wasted", "cancelled", "failed") and first_diverg_t \
                     and (rec.get("started_t") or 0) >= first_diverg_t:
                 wrong_after_diverg += 1
-            if rec.get("elapsed_s"):
+            if rec.get("elapsed_s") and c != "failed":
                 spec_read_s += rec["elapsed_s"]
 
         conservative_steps = sum(e.get("duration_steps", 0)
@@ -777,6 +816,7 @@ def main() -> None:
             "late": by_class["late"],
             "wasted": by_class["wasted"],
             "cancelled": by_class["cancelled"],
+            "failed": by_class["failed"],
             "pending_at_end": by_class["pending"],
             "duplicate_prefetches": by_class["duplicate"],
             "expired_unvalidated": n_expired,
@@ -830,12 +870,14 @@ def main() -> None:
             "useful_bytes": int(useful_b),
             "wasted_bytes": int(wasted_b),
             "cancelled_bytes": int(cancelled_b),
+            "failed_bytes": int(failed_b),
             "byte_source": "+".join(sorted(byte_sources - {"unknown"})) or "unknown",
             "n_tasks": n_admitted,
             "n_useful": useful,
             "n_late": by_class["late"],
             "n_wasted": by_class["wasted"],
             "n_cancelled": by_class["cancelled"],
+            "n_failed": by_class["failed"],
             "n_wasted_noncancellable": n_wasted_noncancellable,
             "n_wrong_after_divergence": wrong_after_diverg,
             "speculative_read_s": round(spec_read_s, 2),
@@ -867,21 +909,31 @@ def main() -> None:
         print(f"  {path}  ({len(rows)} rows)")
 
     # Aggregate Q1 table: mean/std/N wall time, normalized to the same
-    # workload's baseline mean, and speedup (baseline / config).
+    # (workload, GPU) baseline mean, and speedup (baseline / config).
+    #
+    # FACETED BY gpu_name.  This table used to be keyed by (workload, config)
+    # alone, which is how the retracted exp3 speedups were produced:
+    # naive_prefetch was 83% Blackwell trials and no_plan 100%, against a
+    # baseline that was 88% L40S, so 1.3441x and 0.8224x were reporting the
+    # node mix, not the arm.  Both the mean AND its baseline are now per-GPU,
+    # so a cross-hardware ratio cannot be formed by accident; a config with no
+    # same-GPU baseline gets speedup=None instead of borrowing the other node
+    # type's.
     q1_agg_rows = []
-    by_cfg: dict[tuple[str, str], list[float]] = defaultdict(list)
+    by_cfg: dict[tuple[str, str, str], list[float]] = defaultdict(list)
     for r in q1_rows:
         if r.get("wall_time_s"):
-            by_cfg[(r["workload"], r["config"])].append(float(r["wall_time_s"]))
-    base_means = {wl: (sum(v) / len(v))
-                  for (wl, cfg), v in by_cfg.items() if cfg == "baseline"}
-    for (wl, cfg), vals in sorted(by_cfg.items()):
+            by_cfg[(r["workload"], r["config"],
+                    r.get("gpu_name") or "")].append(float(r["wall_time_s"]))
+    base_means = {(wl, gpu): (sum(v) / len(v))
+                  for (wl, cfg, gpu), v in by_cfg.items() if cfg == "baseline"}
+    for (wl, cfg, gpu), vals in sorted(by_cfg.items()):
         n = len(vals)
         mean = sum(vals) / n
         std = math.sqrt(sum((x - mean) ** 2 for x in vals) / (n - 1)) if n > 1 else 0.0
-        bm = base_means.get(wl)
+        bm = base_means.get((wl, gpu))
         q1_agg_rows.append({
-            "workload": wl, "config": cfg, "n_trials": n,
+            "workload": wl, "config": cfg, "gpu_name": gpu, "n_trials": n,
             "wall_time_mean_s": round(mean, 2), "wall_time_std_s": round(std, 2),
             "normalized_wall_time": round(mean / bm, 4) if bm else None,
             "speedup_vs_baseline": round(bm / mean, 4) if bm else None,

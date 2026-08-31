@@ -490,6 +490,11 @@ def plot_q2_timeline(eval_root: Path, fig_dir: Path,
             tid = p.get("task_id", "")
             if tid in task_start:
                 ts, rid = task_start.pop(tid)
+                # status=failed means nothing was staged; drawing it as a
+                # prefetch span puts a bar on the timeline for work that never
+                # happened (scheduler.py emits the event for failures too).
+                if str(p.get("status") or "").lower() == "failed":
+                    continue
                 el = fnum(p.get("elapsed_s"), 0.0)
                 end = ts + el if el and el > 0 else t
                 prefetch_spans.append((resource_names.get(rid, rid[:10]), ts, end))

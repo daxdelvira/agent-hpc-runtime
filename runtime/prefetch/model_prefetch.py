@@ -172,9 +172,20 @@ class ModelPrefetchExecutor(PrefetchExecutor):
         stop_wasted_models: bool = False,
         evict_conflicting: bool = False,
         sleep_wake: bool = False,
+        residency_actor=None,   # runtime.residency.model_actor.VllmModelActor
     ) -> None:
         self._orchestrator = orchestrator
         self._probes = probes
+        # T4a.  When a model residency actor is wired in, bring-up goes through
+        # it: it PARKS (L1 sleep) or stops whoever holds the GPUs, confirms the
+        # VRAM actually came back, probes the engine for coherent text, and
+        # measures the parked footprint.  The bare orchestrator path instead
+        # raises "Cannot start X: GPUs [...] occupied by Y. Call stop_model
+        # first." — which is how all 16 admitted model prefetches on the L40S
+        # exp3 rows failed: ten of them in <=1 ms, and four of them only after
+        # 600-918 s in the proactive-swap wait loop below.  Default None keeps
+        # every existing arm byte-identical.
+        self._residency_actor = residency_actor
         # Sleep/wake swap arm (RuntimeConfig.sleep_wake_swaps): prefer WAKING
         # a slept engine (weights already in CPU RAM — H2D copy, seconds) over
         # cold-booting a new server process (~185 s).  Cold boot remains the
@@ -201,6 +212,17 @@ class ModelPrefetchExecutor(PrefetchExecutor):
         self._futures: dict[str, Future] = {}
         self._cancelled_tasks: set[str] = set()
         self._lock = threading.Lock()
+
+    @property
+    def can_evict_gpu_occupants(self) -> bool:
+        """True when this executor can take the GPUs off an incumbent.
+
+        `PrefetchScheduler._should_prefetch` reads this before letting a
+        proactive-swap prediction past the confidence gate. The two ship
+        together on purpose: admitting a swap that the executor cannot
+        actually perform converts a silent skip into an instant failure.
+        """
+        return self._residency_actor is not None or bool(self._evict_conflicting)
 
     def start(self, task: PrefetchTask) -> None:
         """Launch model loading in the background thread pool."""
@@ -313,7 +335,16 @@ class ModelPrefetchExecutor(PrefetchExecutor):
                         self._orchestrator.stop_model(other)
 
             mechanism = None
-            if self._sleep_wake:
+            evicted: list = []
+            if self._residency_actor is not None:
+                # T4a: the GPU-occupancy path. Raises GpusNotFreed — naming the
+                # occupant and why it could not be moved — instead of the
+                # orchestrator's generic "Call stop_model first."
+                info = self._residency_actor.activate(task.resource.name)
+                elapsed = info["elapsed_s"]
+                mechanism = info["mechanism"]
+                evicted = [e["model"] for e in info.get("evicted", [])]
+            elif self._sleep_wake:
                 # Sleep/wake arm: wake-if-slept preferred over cold boot; the
                 # planner (or any conflicting engine) is slept, never stopped.
                 from runtime.prefetch.sleep_wake import swap_to_model
@@ -362,6 +393,11 @@ class ModelPrefetchExecutor(PrefetchExecutor):
             # is on — existing configs' traces stay byte-identical.
             if mechanism is not None:
                 result["mechanism"] = mechanism
+            if evicted:
+                # What the admission COST: whose GPUs were taken, and by which
+                # mechanism. Without this the trace shows a successful prefetch
+                # and not the eviction that paid for it.
+                result["evicted"] = evicted
             # A successful boot read the full weight snapshot: report it as
             # measured bytes so Q4/lifecycle byte provenance is not "estimated"
             # for vllm_model tasks (size itself comes from the snapshot dir's

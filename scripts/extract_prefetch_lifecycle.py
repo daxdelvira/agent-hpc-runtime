@@ -11,7 +11,10 @@ Output: results/eval_q1_q4/eval_prefetch_lifecycle.csv
           no_prefetch consumption stamps / disk mace loads in baseline or
           inert trials) so stall totals reconcile across configs.
         results/eval_q1_q4/eval_stall_taxonomy.csv
-          seconds of exposed stall per (workload, config, stall_class).
+          seconds of exposed stall per (workload, config, gpu_name,
+          stall_class).  gpu_name is part of the KEY: L40S and Blackwell
+          seconds are never summed into one row, because identical work
+          differs by up to 2.3-4.0x between them.
 
 Timeline semantics
 ------------------
@@ -119,6 +122,7 @@ from parse_eval_traces import (  # noqa: E402
     load_consumer_map,
     load_events,
     parse_trace,
+    prefetch_failed,
     task_bytes,
     used_resource_ids,
 )
@@ -505,7 +509,8 @@ def bringup_cost_s(r: dict) -> tuple[float | None, str]:
       unknown    neither available; caller falls back to the cold-boot-era caps.
     """
     t = r.get("transfer_s")
-    if isinstance(t, (int, float)) and t > 0:
+    if (isinstance(t, (int, float)) and t > 0
+            and str(r.get("completion_status") or "").lower() != "failed"):
         return float(t), "measured"
     e = r.get("estimated_load_s")
     if isinstance(e, (int, float)) and e > 0:
@@ -631,9 +636,16 @@ def atomagents_need_rows(base: dict, trial_dir: Path, config: str,
         if rec.get("resource_name"):
             tasks_by_name[rec["resource_name"]].append(rec)
     for start, end, model in intervals:
+        # A task only makes the wait a prefetch RESIDUAL if the staging was
+        # actually running.  prefetch_completed is emitted for failures too, so
+        # without the status check a prefetch that errored out in <1 ms
+        # ("Cannot start qwen_32b: GPUs [0,1,2,3] occupied by qwen_72b") was
+        # counted as in flight, and a swap wait that nothing was working on was
+        # booked as `residual_partial`/`late_start` instead of `no_prediction`.
         in_flight = next(
             (rec for rec in tasks_by_name.get(model, [])
              if rec.get("started_t") is not None
+             and not prefetch_failed(rec)
              and rec["started_t"] <= end
              and (rec.get("completed_t") or end) >= start - 5.0),
             None)
@@ -757,37 +769,48 @@ def build(eval_root: Path, workload: str | None = None,
           f"excluded={n_excluded})")
 
     # ---- taxonomy aggregate ----------------------------------------------
+    # FACETED BY gpu_name.  Until 2026-08-30 the key was (workload, config,
+    # stall_class) only, so every row in this file pooled L40S with Blackwell
+    # BY CONSTRUCTION — identical work differs by up to 2.3-4.0x across the two
+    # node types, so seconds from one cannot be averaged with seconds from the
+    # other.  gpu_name is part of the key, not an added column: a pooled row is
+    # now impossible to emit rather than merely discouraged.  Consumers that
+    # want a whole-campaign total must re-pool explicitly, and correctly —
+    # sum(exposed_stall_s) / sum(n_trials), never a mean of the per-facet means.
+    #
     # gate_group max-dedup: within one (run_id, gate_group) only the largest
     # exposure counts (server + cache rows share the same wall interval).
-    agg: dict[tuple[str, str, str], float] = defaultdict(float)
-    seen_gate: dict[tuple[str, str], tuple[str, float]] = {}
+    agg: dict[tuple[str, str, str, str], float] = defaultdict(float)
+    seen_gate: dict[tuple[str, str], tuple[str, str, float]] = {}
     for r in all_rows:
         cls = r.get("stall_class") or ""
         if not cls:
             continue
         exp = float(r.get("exposure_s") or 0.0)
+        gpu = r.get("gpu_name") or ""
         gg = r.get("gate_group") or ""
         if gg:
             key = (r["run_id"], gg)
             prev = seen_gate.get(key)
             if prev is not None:
-                prev_cls, prev_exp = prev
+                prev_gpu, prev_cls, prev_exp = prev
                 if exp <= prev_exp:
                     continue
-                agg[(r["workload"], r["config"], prev_cls)] -= prev_exp
-            seen_gate[key] = (cls, exp)
-        agg[(r["workload"], r["config"], cls)] += exp
-    n_trials: dict[tuple[str, str], set] = defaultdict(set)
+                agg[(r["workload"], r["config"], prev_gpu, prev_cls)] -= prev_exp
+            seen_gate[key] = (gpu, cls, exp)
+        agg[(r["workload"], r["config"], gpu, cls)] += exp
+    n_trials: dict[tuple[str, str, str], set] = defaultdict(set)
     for r in all_rows:
-        n_trials[(r["workload"], r["config"])].add(r["run_id"])
+        n_trials[(r["workload"], r["config"], r.get("gpu_name") or "")].add(
+            r["run_id"])
     tax = eval_root / "eval_stall_taxonomy.csv"
     with open(tax, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["workload", "config", "stall_class", "exposed_stall_s",
-                    "n_trials", "stall_s_per_trial"])
-        for (wl, cfg, cls), s in sorted(agg.items()):
-            n = len(n_trials[(wl, cfg)]) or 1
-            w.writerow([wl, cfg, cls, round(s, 2), n, round(s / n, 2)])
+        w.writerow(["workload", "config", "gpu_name", "stall_class",
+                    "exposed_stall_s", "n_trials", "stall_s_per_trial"])
+        for (wl, cfg, gpu, cls), s in sorted(agg.items()):
+            n = len(n_trials[(wl, cfg, gpu)]) or 1
+            w.writerow([wl, cfg, gpu, cls, round(s, 2), n, round(s / n, 2)])
     print(f"{tax}  ({len(agg)} cells)")
     return len(all_rows)
 

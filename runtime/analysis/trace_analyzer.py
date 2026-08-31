@@ -41,6 +41,7 @@ def analyze(events: list[dict]) -> dict:
     miss_count = 0
     prefetch_started_count = 0
     prefetch_completed_count = 0
+    prefetch_failed_count = 0
     prefetch_cancelled_count = 0
     wasted_count = 0
     divergence_count = 0
@@ -91,15 +92,27 @@ def analyze(events: list[dict]) -> dict:
             rec["estimated_load_s"] = decision_load_s.get(rid)
 
         elif et == "prefetch_completed":
-            prefetch_completed_count += 1
+            # prefetch_completed is emitted for EVERY terminal executor state
+            # (runtime/prefetch/scheduler.py:135-151), so payload.status is the
+            # only thing that says whether anything was staged.  Counting the
+            # event as a completion credited failures — e.g. a model prefetch
+            # that died in <1 ms with "Cannot start qwen_32b: GPUs occupied" —
+            # with the resource's full estimated load time as benefit_s below.
+            failed = str(p.get("status") or "").lower() == "failed"
+            if failed:
+                prefetch_failed_count += 1
+            else:
+                prefetch_completed_count += 1
             tid = p["task_id"]
             if tid in prefetch_tasks:
                 prefetch_tasks[tid]["completed"] = ev
             # Find resource_id for this task
             for rid, rec in resource_timings.items():
                 if rec.get("task_id") == tid:
-                    rec["completed_t"] = t
-                    rec["actual_load_s"] = p.get("elapsed_s")
+                    rec["failed"] = failed
+                    if not failed:
+                        rec["completed_t"] = t
+                        rec["actual_load_s"] = p.get("elapsed_s")
                     break
 
         elif et == "prefetch_cancelled":
@@ -162,8 +175,9 @@ def analyze(events: list[dict]) -> dict:
         completed = rec.get("completed_t")
         consumed = rec.get("consumed_t")
 
-        if status == "no_prefetch" or started is None:
-            # No prefetch was running — consumer stalled for full load time
+        if status == "no_prefetch" or started is None or rec.get("failed"):
+            # No prefetch was running (or the staging attempt errored out and
+            # therefore staged nothing) — consumer stalled for full load time
             total_stall_s += est
             continue
 
@@ -192,6 +206,7 @@ def analyze(events: list[dict]) -> dict:
         "honest_accuracy": honest_acc,  # conservative: unvalidated = wrong
         "prefetch_started": prefetch_started_count,
         "prefetch_completed": prefetch_completed_count,
+        "prefetch_failed": prefetch_failed_count,
         "prefetch_cancelled": prefetch_cancelled_count,
         "wasted_prefetch": wasted_count,
         "divergence_count": divergence_count,
@@ -234,6 +249,7 @@ def print_report(summary: dict, verbose: bool = True) -> None:
     print(f"  Divergences         : {summary['divergence_count']}")
     print(f"  Prefetch started    : {summary['prefetch_started']}")
     print(f"  Prefetch completed  : {summary['prefetch_completed']}")
+    print(f"  Prefetch FAILED     : {summary['prefetch_failed']}")
     print(f"  Prefetch cancelled  : {summary['prefetch_cancelled']}")
     print(f"  Wasted prefetches   : {summary['wasted_prefetch']}")
     stall   = summary.get("total_stall_s")

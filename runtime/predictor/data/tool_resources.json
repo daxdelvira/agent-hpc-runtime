@@ -4,6 +4,36 @@
     "_note": "Add new workflows here without editing Python. resource_type: vllm_model | mace_model | data_file | artifact"
   },
   {
+    "_comment": "D3 \u2014 RESIDENCY ARTIFACT (T4b). The activated EAM potential held at R3 inside runtime/residency/data_worker.py's worker process, registered so the ledger can charge it against the one budget.",
+    "_why_no_consumer_tool": "DELIBERATE. ResourceRegistry.from_json() skips entries with no `consumer_tool`, so this block is invisible to the legacy byte-oriented prefetch registry and no existing eval trace changes shape. That is not a workaround: R3 is an ACTIVATED STRUCTURE IN A LIVE PROCESS, not a file range, which is exactly why contract.py says a byte-oriented tier cannot express it. A prefetcher cannot stage this; only LammpsDataWorker.stage() can. Read it with runtime.residency.data_worker.load_residency_artifacts().",
+    "_provenance": "held_gb / cold_s / ready_s are MEASURED, not declared (invariant I1). cold_s 42.83 s = r2_parse_warm and ready_s 4.78 s = r3_reuse_live, both on a Blackwell node; benefit 38.05 s over 16.93 GB activated = 2.25 s/GB, the figure quoted in contract.py's static_density docstring and in sc-workshop-paper/cow_prefork_result_20260829.md. NAME THE NODE BEFORE REUSING THESE: the same warm parse measured 98.23 s on atl1-1-03-004-2-1, a 2.3x CPU spread, so the ratio travels and the seconds do not.",
+    "_do_not_confuse_with": "The `data_file` entry for w_eam4_big.fs elsewhere in this file. That one is the 3.32 GB FILE at R1 (page cache), whose recoverable part is ~5.5 s. This one is the ~16.93 GB ACTIVATED table at R3. Same artifact, different rung, different cost, and they must not be summed.",
+    "_expected_to_lose": "static_density 2.25 s/GB is BELOW the model band floor of 2.78 (qwen_72b_text), so a class-blind arbitrator is expected to decline this against any model. That is the arbitrator working, not a bug -- see contract.py I4 and the admit() docstring.",
+    "residency_artifact": {
+      "resource_id": "w_eam4_big_activated",
+      "resource_class": "data_pattern_b",
+      "held_rung": 3,
+      "held_gb": 16.93,
+      "cold_s": 42.83,
+      "ready_s": 4.78,
+      "potential_path": "workloads/AtomAgents/potential_repository/w_eam4_big.fs",
+      "pair_style": "eam/fs",
+      "element": "W",
+      "rewrite": true,
+      "actor": "runtime.residency.data_worker:LammpsDataWorker",
+      "consumer_tools": [
+        "computation_task_screw_dislocation",
+        "computation_task_elastic",
+        "computation_task_surface_energy",
+        "computation_task_NEB"
+      ],
+      "_only_this_one": "The other potentials in potential_repository/ (w_eam4.fs 9.3 MB, W_Zhou04.eam.alloy 145 KB, ...) are NOT registered because nobody has measured their activated footprint or reuse cost, and I1 forbids a declared held_gb. This does not narrow what the agent may select -- every potential still works, unretained, through the normal path.",
+      "_measured_cross_check_20260830": "FULL-SIZE RE-MEASUREMENT, and it does NOT agree with held_gb above. results/bench_residency_data_worker_BIG.json, produced by `sbatch experiments/job_residency_data_worker.sh` (job 12560044, embers, node atl1-1-01-005-24-2, LAMMPS 20240829 from envs/atoms) measured the activated table at 17.9177 GB (Private_Dirty delta over a 0.0153 GB worker baseline; whole-worker Private_Dirty 17.9334 GB, Rss 17.9736 GB -- do not budget against Rss). That is 5.8% above the 16.93 GB on record. held_gb is left at 16.93 because 42.83/4.78/16.93 is one self-consistent Blackwell measurement and 2.25 s/GB is quoted in contract.py and in the paper; moving one leg of it unilaterally would make the density untraceable. RESOLVE THIS BEFORE THE NUMBER IS CITED AGAIN. At 17.92 GB the density is 2.12 s/GB, which is still below the 2.78 model-band floor, so the arbitration verdict does not change. Note also that LammpsDataWorker.measure_held_gb() reports the MEASURED footprint at run time (I1); this field is the static estimate the ledger uses before anything is staged.",
+      "_timings_cross_check_20260830": "Same run, same node: warm parse 90.12 s, live reuse 7.91 s = 11.39x (11.53x wall); re-activation after a release 89.77 s. The Blackwell pair is 42.83/4.78 = 8.96x. Both are correct: this node is 2.10x slower on the text parse and 1.65x slower on the reuse, so the RATIO differs by node as well as the seconds. 90.12 s sits inside the 42.83-98.23 s band already on record. Report ratios, name the node.",
+      "_release_witness": "This artifact's actor (LammpsDataWorker) is a TEARDOWN actor: it releases by killing the worker process, so measure_held_gb() afterwards is 0.0 by construction and the ledger's own before/after drop confirms nothing. Its ResidencyActor.release_witness() returns the job cgroup's `anon` delta across the release (<cgroup>/memory.stat, not memory.current, which counts the page cache this 3.32 GB file leaves behind). Stamped with a monotonic release counter so a cached witness cannot be returned as a fresh one. Measured value is in results/bench_residency_data_worker_BIG.json under D2_eviction.release_witness_gb."
+    }
+  },
+  {
     "consumer_tool": "computation_task",
     "resource_type": "vllm_model",
     "name": "qwen_32b",

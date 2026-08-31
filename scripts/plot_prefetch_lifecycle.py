@@ -86,10 +86,14 @@ OUTCOME_FACE = {
     "useful": ("Useful prefetch",        PAL["green"]),
     "late":   ("Late prefetch",          PAL["orange"]),
     "wasted": ("Wasted (never needed)",  PAL["gray"]),
+    # A staging that errored out (prefetch_completed.status == failed) moved no
+    # bytes at all, so it must not share the "wasted" colour with speculation
+    # that really staged something nobody wanted.
+    "failed": ("Failed staging (0 bytes)", PAL["red"]),
 }
 NO_BAR_OUTCOMES = {"no_prediction", "no_prefetch_config"}   # red outline only
 
-SCATTER_MARKER = {"useful": "o", "late": "^", "wasted": "x"}
+SCATTER_MARKER = {"useful": "o", "late": "^", "wasted": "x", "failed": "s"}
 
 # stall_class → (label, color, hatch).  Stack order is the list order;
 # stack-adjacent hues follow the validated adjacent palette order, and each
@@ -489,7 +493,8 @@ def plot_gantt(trial_rows: list[dict], fig_dir: Path,
     ax.set_axisbelow(True)
 
     handles = [Patch(facecolor=OUTCOME_FACE[o][1], label=OUTCOME_FACE[o][0])
-               for o in ("useful", "late", "wasted") if o in seen_outcomes]
+               for o in ("useful", "late", "wasted", "failed")
+               if o in seen_outcomes]
     if any_expo:
         handles.append(Patch(facecolor="none", edgecolor=PAL["red"],
                              hatch="////", label="Exposed stall"))
@@ -629,13 +634,43 @@ def mean_exposed_vllm_gates(life_rows: list[dict], workload: str,
 
 
 def plot_stall_taxonomy(tax_rows: list[dict], life_rows: list[dict],
-                        fig_dir: Path) -> None:
-    data: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+                        fig_dir: Path, gpu_name: str | None = None) -> None:
+    """Stacked stall taxonomy.
+
+    eval_stall_taxonomy.csv is keyed by (workload, config, gpu_name,
+    stall_class) since 2026-08-30, so there is one row PER GPU TYPE per class.
+    Adding stall_s_per_trial across those rows would add a mean to a mean and
+    silently pool L40S with Blackwell.  Two supported modes:
+
+      gpu_name=<name>  facet — plot only that node type (what the paper does).
+      gpu_name=None    pool — re-derive the campaign total the only way that is
+                       arithmetically valid, sum(exposed_stall_s) over the
+                       facets divided by sum(n_trials), and say so out loud.
+    """
+    secs: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+    trials: dict[tuple[str, str], dict[str, int]] = defaultdict(dict)
+    gpus: dict[tuple[str, str], set] = defaultdict(set)
     for r in tax_rows:
+        gpu = r.get("gpu_name", "")
+        if gpu_name is not None and gpu != gpu_name:
+            continue
         key = (r["workload"], r["config"])
         sc = merge_class(r["stall_class"])
-        v = fnum(r["stall_s_per_trial"], 0.0) or 0.0
-        data[key][sc] = data[key].get(sc, 0.0) + v
+        gpus[key].add(gpu)
+        secs[key][sc] = secs[key].get(sc, 0.0) + (fnum(r["exposed_stall_s"], 0.0) or 0.0)
+        # n_trials is per (workload, config, gpu) and repeats on every class
+        # row of that facet, so record it once per facet, never accumulate it.
+        trials[key][gpu] = int(fnum(r["n_trials"], 0.0) or 0)
+    data: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+    for key, classes in secs.items():
+        n = sum(trials[key].values()) or 1
+        data[key] = {sc: v / n for sc, v in classes.items()}
+    mixed = {k: sorted(v) for k, v in gpus.items() if len(v) > 1}
+    if mixed:
+        print("  [taxonomy] POOLED across node types — seconds do not transfer "
+              "between them; pass gpu_name= to facet:")
+        for (wl, cfg), names in sorted(mixed.items()):
+            print(f"    {wl}/{cfg}: {names}")
 
     fig, axes = plt.subplots(1, len(TAXONOMY_WORKLOADS),
                              figsize=(DOUBLE_COL_W, 2.5))
@@ -737,6 +772,11 @@ def main() -> int:
                          "trial_dir contains this substring")
     ap.add_argument("--all-defaults", action="store_true",
                     help="render only the four representative default Gantts")
+    ap.add_argument("--gpu-name", default=None,
+                    help="facet the stall taxonomy to one node type, e.g. "
+                         "'NVIDIA L40S'.  Omitted = pool the facets (valid "
+                         "only as sum(seconds)/sum(trials); a warning names "
+                         "the mix).")
     args = ap.parse_args()
 
     life_csv = args.eval_root / "eval_prefetch_lifecycle.csv"
@@ -775,7 +815,8 @@ def main() -> int:
         plot_size_vs_window(rows, wl, args.fig_dir)
 
     print("Stall taxonomy figure:")
-    plot_stall_taxonomy(read_csv(tax_csv), rows, args.fig_dir)
+    plot_stall_taxonomy(read_csv(tax_csv), rows, args.fig_dir,
+                        gpu_name=args.gpu_name)
     return 0
 
 

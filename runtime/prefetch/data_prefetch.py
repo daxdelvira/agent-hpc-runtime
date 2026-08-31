@@ -218,6 +218,25 @@ class CompositeExecutor(PrefetchExecutor):
     def _route(self, task: PrefetchTask) -> PrefetchExecutor:
         return self._executors.get(task.resource.resource_type, self._default)
 
+    def executor_for_resource_type(self, resource_type: str) -> PrefetchExecutor:
+        """Which executor would handle this resource type.
+
+        The scheduler needs this to ask a CAPABILITY question about the
+        executor that will actually run a given prediction — e.g. "can you
+        evict the GPU incumbent?" — rather than about the router. Answering
+        with the composite's own capabilities would let one resource type be
+        admitted on the strength of another type's executor.
+        """
+        return self._executors.get(resource_type, self._default)
+
+    @property
+    def can_evict_gpu_occupants(self) -> bool:
+        """True if ANY routed executor can. Callers that know the resource type
+        should ask `executor_for_resource_type()` instead; this exists so the
+        composite is not silently less capable than its parts."""
+        return any(getattr(ex, "can_evict_gpu_occupants", False)
+                   for ex in list(self._executors.values()) + [self._default])
+
     def start(self, task: PrefetchTask) -> None:
         ex = self._route(task)
         with self._lock:

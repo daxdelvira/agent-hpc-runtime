@@ -238,6 +238,50 @@ class PrefetchScheduler:
         if cfg.naive_prefetch:
             return True, "naive_prefetch"
 
+        # ------------------------------------------------------------------
+        # The confidence gate is structurally unreachable for a plan-only
+        # prediction, and this is the fix — but ONLY when something downstream
+        # can act on the admission.
+        #
+        # THE ARITHMETIC.  _PLAN_CONFIDENCE_DEFAULT = 0.80
+        # (runtime/predictor/learned_predictor.py) is a FLOOR, applied as
+        # max(entry.probability, 0.80); confidence_threshold = 0.85
+        # (runtime/config.py).  So a plan-only prediction can never clear the
+        # gate.  On the L40S rows of atomagents_exp3_aligned that is 34
+        # `confidence_below_threshold (0.80 < 0.85)` skips against 10 admits.
+        #
+        # WHY THE CAPABILITY CHECK IS PART OF THE FIX AND NOT A KNOB.  Moving
+        # this above the confidence gates on its own converts silent skips into
+        # instant orchestrator failures: all three exp3 models declare
+        # gpus [0,1,2,3] at tp=4, so staging one requires EVICTING the
+        # incumbent, and without an actor that can do that the admission dies
+        # with "Cannot start X: GPUs [0,1,2,3] occupied by Y. Call stop_model
+        # first."  On the L40S exp3 rows that killed ALL 16 admitted model
+        # prefetches — ten of them in <=1 ms, and four only after 600-918 s in
+        # the executor's proactive-swap wait loop, which is the more expensive
+        # half of the failure.  So the
+        # bypass fires only when the executor says it can evict — the ordering
+        # (T4a before the gate) is enforced by construction rather than by a
+        # comment or a config flag someone can set early.
+        #
+        # NOTE ON THE ABSTRACTION, not on the tuning.  This is a local repair,
+        # not the answer.  A fixed threshold asks "is this prediction likely
+        # enough?" in isolation, when the question is whether the expected
+        # saving is worth the GB — which is Eq. 1's job
+        # (runtime/residency/contract.py).  The intended end state is that
+        # admissions are priced by the arbitrator and this gate disappears, so
+        # nothing here should grow into a second threshold to tune.
+        # SCOPE, deliberately narrow. Only the confidence gates are bypassed:
+        # the horizon condition is repeated here rather than jumped over, so a
+        # proactive-swap prediction that is too far ahead still falls through
+        # to the existing `horizon_exceeded` skip and reports it under that
+        # name. No decision_reason string in any trace gains a new value or
+        # changes which check produced it.
+        if (resource.proactive_swap
+                and resource.consumer_step_offset <= cfg.max_horizon
+                and self._can_evict_gpu_occupants(resource)):
+            return True, "proactive_swap_compute_window"
+
         if resource.confidence < cfg.confidence_threshold:
             return False, f"confidence_below_threshold ({resource.confidence:.2f} < {cfg.confidence_threshold})"
         if resource.consumer_step_offset > cfg.max_horizon:
@@ -258,6 +302,25 @@ class PrefetchScheduler:
         ):
             return False, "insufficient_compute_time_for_overlap"
         return True, "confidence_above_threshold"
+
+    def _can_evict_gpu_occupants(self, resource: ResourceSpec) -> bool:
+        """Can whatever will execute THIS prediction take the GPUs off the
+        incumbent?
+
+        Asked of the executor that would actually run it, not of the router: a
+        CompositeExecutor holding a GPU-capable model executor must not license
+        a data_file admission. Anything that does not answer is treated as not
+        capable, so an executor that has never heard of the question keeps the
+        old behaviour exactly.
+        """
+        ex = self._executor
+        router = getattr(ex, "executor_for_resource_type", None)
+        if callable(router):
+            try:
+                ex = router(resource.resource_type) or ex
+            except Exception:      # noqa: BLE001 - a router must never gate
+                pass
+        return bool(getattr(ex, "can_evict_gpu_occupants", False))
 
     # ------------------------------------------------------------------
     # Accessors
