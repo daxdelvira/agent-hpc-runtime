@@ -69,7 +69,17 @@ def _entry(port: int) -> dict:
         # /is_sleeping. Run 12684990 set only the first, so park() got a 404 and
         # the actor downgraded to stop -- forcing a 1256.63 s cold boot where a
         # wake is ~2 s. The same omission was live in the production tandem arm.
-        "extra_env": {"VLLM_SERVER_DEV_MODE": "1"},
+        "extra_env": {
+            "VLLM_SERVER_DEV_MODE": "1",
+            # vLLM's OWN engine-core startup cap, default 600 s. At tp=1 a
+            # single process loads all 18 shards serially at ~70 s each
+            # (~1260 s), so this is exceeded even though the orchestrator's
+            # load_timeout is generous. It bit run 12690221's round-trip arm
+            # after two identical boots in the same job had succeeded --
+            # the node simply got slower. Production exp3 does not hit it
+            # because tp=4 loads the shards across four ranks in parallel.
+            "VLLM_ENGINE_READY_TIMEOUT_S": "2400",
+        },
     }
 
 

@@ -659,6 +659,12 @@ def run_exp3(args: argparse.Namespace) -> None:
                     _mc["extra_args"] = _extra
                     _env = dict(_mc.get("extra_env") or {})
                     _env["VLLM_SERVER_DEV_MODE"] = "1"
+                    # Defensive: vLLM's engine-core startup cap defaults to
+                    # 600 s. exp3 does not hit it today because tp=4 loads
+                    # shards across four ranks, but a parked/woken engine
+                    # changes the timing and the failure is a hard crash with
+                    # rc=1, not a retry. Cost of setting it is zero.
+                    _env.setdefault("VLLM_ENGINE_READY_TIMEOUT_S", "2400")
                     # Sleep mode is incompatible with expandable_segments: the
                     # allocator cannot release segments it has expanded, so
                     # /sleep frees nothing and the next engine still OOMs.
