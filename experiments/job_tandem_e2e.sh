@@ -3,7 +3,7 @@
 #SBATCH -A gts-ag117
 #SBATCH -p gpu-rtxpro-blackwell
 #SBATCH -q embers
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:rtx_pro_6000_blackwell:4
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=256G
 #SBATCH -t 08:00:00
@@ -43,6 +43,21 @@ export LAMMPS_SLOWDOWN_S=0
 echo "[job] node=$(hostname) jobid=${SLURM_JOB_ID} start=$(date -Is)"
 echo "[job] commit=$(git rev-parse --short HEAD) branch=$(git branch --show-current)"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader || true
+
+# HARDWARE ASSERTION -- belt and braces with the typed --gres above.
+# Job 12694812 was submitted with an UNTYPED `--gres=gpu:1` and, despite naming
+# -p gpu-rtxpro-blackwell, SLURM placed it in Partition=gpu-v100 on a
+# Tesla V100-PCIE-32GB. A 68.28 GB model cannot load on a 32 GB card, so that
+# run failed loudly -- but a job that merely ran SLOWER on unexpected hardware
+# would have produced data that silently violates this project's never-pool
+# rule. Never let a run reach the measurement on hardware nobody checked.
+_GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+case "$_GPU" in
+  *Blackwell*) echo "[job] GPU OK: $_GPU" ;;
+  *) echo "[job] WRONG HARDWARE: expected Blackwell, got '${_GPU:-none}'." \
+          "Releasing the hold rather than producing unpoolable data."; exit 1 ;;
+esac
+
 
 # Baseline first: tops 8 -> 11, i.e. 3 fresh trials on THIS node.
 echo "=== ARM 1/2: baseline (3 fresh trials, this node) ==="
