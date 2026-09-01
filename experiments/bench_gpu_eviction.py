@@ -120,7 +120,33 @@ def main() -> int:
         ctl["failed_as_expected"] = True
         ctl["occupied_error"] = "occupied by" in str(exc) or "stop_model" in str(exc)
     ctl["elapsed_s"] = round(time.perf_counter() - t1, 3)
+    ctl["path"] = "orchestrator.start_model"
     rec["arms"]["control"] = ctl
+
+    # ---- CONTROL 2: the EXACT path the prefetcher used -------------------
+    # start_model() has no occupancy guard, so it launches vLLM and lets it
+    # crash on OOM (~30 s). The documented failure came from
+    # start_model_measured(), whose guard at model_orchestrator.py:597-598
+    # refuses BEFORE launching -- which is why those 10 prefetches died in
+    # under a millisecond rather than after a crash. Both prove contention;
+    # only this one reproduces the recorded error string.
+    print("\n=== CONTROL 2: start_model_measured (the prefetch path) ===",
+          flush=True)
+    c2: dict = {"path": "orchestrator.start_model_measured"}
+    t1b = time.perf_counter()
+    try:
+        orch.start_model_measured("model_b")
+        c2["result"] = "UNEXPECTED SUCCESS"
+        c2["failed_as_expected"] = False
+    except Exception as exc:
+        c2["result"] = f"{type(exc).__name__}: {exc}"[:400]
+        c2["failed_as_expected"] = True
+        c2["reproduces_recorded_error"] = (
+            "occupied by" in str(exc) and "stop_model" in str(exc))
+    c2["elapsed_s"] = round(time.perf_counter() - t1b, 4)
+    rec["arms"]["control_measured"] = c2
+    save()
+    print(f"[control2] {c2['result'][:170]}  ({c2['elapsed_s']}s)", flush=True)
     save()
     print(f"[control] {ctl['result'][:160]}  ({ctl['elapsed_s']}s)", flush=True)
 
@@ -158,9 +184,10 @@ def main() -> int:
     print(f"[tandem] {json.dumps({k: v for k, v in tan.items() if k != 'gpu_path'})[:300]}",
           flush=True)
 
-    verdict = ("MECHANISM WORKS" if tan.get("ok") and ctl.get("failed_as_expected")
-               else "INCONCLUSIVE" if not ctl.get("failed_as_expected")
-               else "MECHANISM FAILED")
+    contended = ctl.get("failed_as_expected") or c2.get("failed_as_expected")
+    verdict = ("MECHANISM WORKS" if tan.get("ok") and contended
+               else "INCONCLUSIVE — GPUs were not actually contended"
+               if not contended else "MECHANISM FAILED")
     rec["verdict"] = verdict
     save()
     print(f"\n=== VERDICT: {verdict} ===", flush=True)

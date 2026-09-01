@@ -576,7 +576,24 @@ def run_exp3(args: argparse.Namespace) -> None:
             # 56.2% of shards resident, so a "cold" L2 wake here is not fully
             # cold. Report it as contingent, not free.
             # ----------------------------------------------------------
-            if args.sleep_wake:
+            # --residency NEEDS THE SAME INJECTION, and this is not cosmetic.
+            # Measured 2026-09-01 (results/bench_gpu_eviction_12684990.json):
+            # with the endpoint absent, VllmModelActor.park() got
+            #   HTTPError 404 for http://localhost:8311/sleep?level=1
+            # and downgraded to `stop`. The actor then had to COLD BOOT the
+            # target -- 1256.63 s -- where a wake is ~2 s. Tandem would take the
+            # GPU (which is the part that failed 16/16 times before) and then
+            # throw away the retention benefit that is the point of the system.
+            #
+            # Worse, without the endpoint the park-vs-stop decision is not made
+            # by the arbitrator at all: it is made by a missing HTTP route. The
+            # budget callback that is supposed to decide whether a park FITS
+            # becomes dead code, because park fails on 404 before the budget is
+            # ever consulted.
+            #
+            # Both flags must be set before any engine starts -- neither can be
+            # turned on after the fact.
+            if args.sleep_wake or getattr(args, "residency", False):
                 for _mc in MODELS.values():
                     _extra = list(_mc.get("extra_args") or [])
                     if "--enable-sleep-mode" not in _extra:
@@ -594,8 +611,15 @@ def run_exp3(args: argparse.Namespace) -> None:
                               "PYTORCH_CUDA_ALLOC_CONF=expandable_segments "
                               "(incompatible with vLLM sleep mode)")
                     _mc["extra_env"] = _env
-                print(f"[cluster] Sleep/wake swaps ENABLED (level "
-                      f"{args.sleep_level}) for {len(MODELS)} engines.")
+                if args.sleep_wake:
+                    print(f"[cluster] Sleep/wake swaps ENABLED (level "
+                          f"{args.sleep_level}) for {len(MODELS)} engines.")
+                else:
+                    print(f"[cluster] TANDEM: sleep endpoint enabled for "
+                          f"{len(MODELS)} engines so the residency actor can "
+                          f"PARK rather than stop. Whether a park actually "
+                          f"fits the budget is then the arbitrator's decision, "
+                          f"which is the point.")
 
             # Every engine must read its weights THROUGH Hermes, or the staged
             # cache is never consumed and the arm measures page-cache staging
