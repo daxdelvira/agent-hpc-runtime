@@ -306,8 +306,50 @@ def _build_executor(mode: RuntimeMode, orchestrator, metrics=None,
             # is why the existing arms are unaffected by this flag existing.
             _actor = None
             if residency:
-                from runtime.residency.model_actor import VllmModelActor
-                _actor = VllmModelActor(orchestrator)
+                from runtime.residency.model_actor import (
+                    VllmModelActor, cgroup_mem)
+
+                # THE BUDGET GUARD, AND IT IS NOT OPTIONAL AT THIS ALLOCATION.
+                # can_park defaults to "allowed" -- the actor's docstring says
+                # the budget question belongs to the caller, and until now no
+                # caller answered it. That was harmless only while /sleep 404'd
+                # and every eviction downgraded to stop. Now that --residency
+                # enables the endpoint, an unguarded park is reachable, and at
+                # the production 256G hold it is dangerous:
+                #
+                #   a level-1 park of a 72B is ~245 GB (V0's measured 1.79x on
+                #   136.7 GiB of weights), so ONE park nearly fills the cgroup
+                #   and max_parked=2 would allow ~490 GB against it.
+                #
+                # The recorded failure mode for exceeding it is the NODE DYING
+                # rather than erroring cleanly (Stage-0 gate (b), k=3). So this
+                # answers from the real cgroup limit rather than a constant, and
+                # refuses when it cannot read one -- an unknown budget is not a
+                # permissive one.
+                _PARK_HEADROOM = 0.15      # keep 15% of the limit free
+
+                def _can_park(name: str, est_gb: float) -> bool:
+                    m = cgroup_mem()
+                    try:
+                        limit_raw = (Path(m["path"]) / "memory.max").read_text().strip()
+                    except Exception:
+                        print(f"[tandem] can_park({name}): no cgroup limit "
+                              f"readable -- REFUSING park (unknown budget is "
+                              f"not a permissive one)", flush=True)
+                        return False
+                    if limit_raw == "max":
+                        return True            # no cgroup cap; the node is ours
+                    limit_gb = int(limit_raw) / 1e9
+                    used_gb = max(m.get("current_gib", 0.0), 0.0) * 1024 ** 3 / 1e9
+                    free_gb = limit_gb * (1.0 - _PARK_HEADROOM) - used_gb
+                    ok = est_gb <= free_gb
+                    print(f"[tandem] can_park({name}): need {est_gb:.1f} GB, "
+                          f"{free_gb:.1f} GB spendable of {limit_gb:.1f} GB "
+                          f"limit ({used_gb:.1f} used, {_PARK_HEADROOM:.0%} "
+                          f"reserved) -> {'PARK' if ok else 'STOP'}", flush=True)
+                    return ok
+
+                _actor = VllmModelActor(orchestrator, can_park=_can_park)
                 print("[runtime] TANDEM: VllmModelActor wired "
                       "(L1 park + GPU eviction + gate bypass)")
             executors["vllm_model"] = ModelPrefetchExecutor(
