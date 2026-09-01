@@ -160,7 +160,14 @@ def main() -> int:
     # ---------------- TANDEM: the actor takes the GPU ---------------------
     print("\n=== TANDEM: actor.activate(model_b) with A holding GPU 0 ===",
           flush=True)
-    actor = VllmModelActor(orch, verbose=True)
+    # charge_columns: see V0 / V0b. A coherent engine's L1 park lands entirely
+    # in the cgroup's `file` column (/dev/zero shmem, 0.907 GiB storage-backed
+    # in the whole tree), so charging `anon` alone prices a real park at 0.0 GB
+    # and the actor's ParkNotMeasurable guard fires. That guard is correct; the
+    # condition it asks for has now been measured, so the column set is passed
+    # deliberately rather than left at the conservative default.
+    actor = VllmModelActor(orch, verbose=True,
+                           charge_columns=("anon", "file"))
     tan: dict = {"vram_before_mib": vram_mib()}
     t2 = time.perf_counter()
     try:

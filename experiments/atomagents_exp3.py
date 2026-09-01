@@ -349,7 +349,23 @@ def _build_executor(mode: RuntimeMode, orchestrator, metrics=None,
                           f"reserved) -> {'PARK' if ok else 'STOP'}", flush=True)
                     return ok
 
-                _actor = VllmModelActor(orchestrator, can_park=_can_park)
+                # charge_columns=("anon","file") IS A DELIBERATE CHOICE, and
+                # the actor's ParkNotMeasurable guard names the exact condition
+                # for making it: "if a coherent engine confirms the host backup
+                # is a shared mapping, pass charge_columns=('anon','file')
+                # deliberately". Two measurements confirm it:
+                #   V0  (bench_v0_park_column_12562458.json)  coherent fp16 32B:
+                #       anon unchanged 3.32 GiB, file 0.57 -> 114.61 GiB,
+                #       VRAM 84023 -> 1293 MiB. The park is real and not in anon.
+                #   V0b (bench_v0b_park_backing_12624728.json) all 114.18 GiB is
+                #       /dev/zero (deleted) shmem mappings; storage-backed memory
+                #       in the whole process tree totals 0.907 GiB.
+                # So the park is process-owned memory with no storage backing --
+                # charged to `file` only because shmem carries an inode. Reading
+                # `anon` alone would price a 114 GiB park at 0.0 GB, which is the
+                # I1 violation the guard exists to prevent.
+                _actor = VllmModelActor(orchestrator, can_park=_can_park,
+                                        charge_columns=("anon", "file"))
                 print("[runtime] TANDEM: VllmModelActor wired "
                       "(L1 park + GPU eviction + gate bypass)")
             executors["vllm_model"] = ModelPrefetchExecutor(
