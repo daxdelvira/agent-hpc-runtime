@@ -542,7 +542,34 @@ WORKLOADS: dict[str, dict] = {
                        "--lammps-slowdown", os.environ.get("LAMMPS_SLOWDOWN_S", "0")],
         "configs": ATOMAGENTS_CONFIGS,
         "timeout_s": 14400,
-        "est_run_s": 4200,
+        # MEASURED 2026-08-31, not estimated. Three completed Blackwell
+        # baselines on atl1-1-03-020-6-0 ran 8616.2 / 8587.4 / 6006.5 s, mean
+        # 7736.7. The old 4200 was a 2x underestimate and it cost a whole
+        # campaign: the driver packed three baselines into an 8 h hold on that
+        # arithmetic, then correctly declined to start the tandem arm with
+        # 35 min left. Budget ~2.4 h per trial, i.e. 3 trials per 8 h hold.
+        "est_run_s": 7700,
+    },
+    # A SEPARATE WORKLOAD KEY FOR tp=2, and the separation is the point: cold
+    # boot, KV headroom and swap latency all change with tensor-parallel degree,
+    # so these trials must never pool with the tp=4 ones. Identical to
+    # atomagents_exp3_aligned in every other respect.
+    #
+    # It exists because the production tp=4 topology needs a 4-GPU gap that the
+    # partition would not give us on 2026-09-01 (23/24 allocated, no start
+    # estimate on three separate 4-GPU requests). At tp=2 all three models still
+    # share one pool, so M=1 and forced eviction -- the property under test --
+    # are preserved exactly on half the hardware.
+    "atomagents_exp3_aligned_tp2": {
+        "script": "experiments/atomagents_exp3.py",
+        "python": ATOMS_PYTHON,
+        "base_flags": ["--hw-profile", "blackwell_swap_tp2", "--swap-models",
+                       "--prompt-variant", "aligned",
+                       "--potentials", "W_Zhou04.eam.alloy,w_eam4_big.fs",
+                       "--lammps-slowdown", os.environ.get("LAMMPS_SLOWDOWN_S", "0")],
+        "configs": ATOMAGENTS_CONFIGS,
+        "timeout_s": 14400,
+        "est_run_s": 7700,
     },
     # DeepDriveMD is not integrated with the runtime yet: there is no
     # runtime/adapters/deepdrivemd.py and no experiment entrypoint.  The key

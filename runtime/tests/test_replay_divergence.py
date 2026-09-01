@@ -1,7 +1,7 @@
 """
 test_replay_divergence.py — tests for scripts/replay_divergence.py.
 
-Three layers:
+Four layers:
 
   1. Trace parsing (assumptions A1-A3 in the script docstring): action ordering,
      the "next line is checkpoint_created" discriminator that separates scored
@@ -14,10 +14,24 @@ Three layers:
      recorded ChemGraph hit/miss counts exactly.  If this fails, no number the
      script prints for AtomAgents may be published.  Skipped when the corpus is
      not on disk.
+  4. THE ATOMAGENTS DIVERGENCE CHARACTERISATION.  The corpus now spans both
+     sides of the 96f5f28 detector fix (2026-08-03), so it contains two
+     populations: pre-fix trials that suppressed every miss (the e68d52b bug)
+     and post-fix trials that record them normally.  These tests pin that split
+     — divergences ARE recorded now, each recorded one is the shipped detector's
+     own verdict over the same stream, none was manufactured by a duplicate tool
+     emission, the guard acted on all of them, and no post-fix trial suppresses.
+
+     This layer replaces a single assertion that used to read
+     `assert sum(rec_diverged) == 0` with the comment "the bug's signature".
+     That pinned the DEFECT.  Once the defect was fixed the assertion went red
+     for the right reason, and it is inverted here rather than deleted.
 """
 from __future__ import annotations
 
+import functools
 import json
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -28,6 +42,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from runtime.config import RuntimeConfig                       # noqa: E402
+from runtime.guard.detector import DivergenceDetector          # noqa: E402
 from scripts.replay_divergence import (                        # noqa: E402
     CONTROL_EXPECT,
     RUNS_DIR,
@@ -40,6 +55,102 @@ from scripts.replay_divergence import (                        # noqa: E402
 )
 
 CFG = RuntimeConfig(run_id="test", max_horizon=2)
+
+# 96f5f28 "fix(detector): un-invert divergence semantics broken since e68d52b"
+# (2026-08-03).  Trials whose recorded commit descends from this ran with the
+# fixed detector and must not suppress a miss.
+DETECTOR_FIX_COMMIT = "96f5f28"
+
+# (divergence events, trials recording at least one), audited 2026-09-01 over
+# results/eval_q1_q4/runs/atomagents*/*/*/.  All 24 are in
+# atomagents_exp3_aligned, from post-96f5f28 commits 357260f and 55d0006.
+ATOMAGENTS_DIVERGENCE_SNAPSHOT = (24, 16)
+
+# A same-tool `tool_call` repeat closer together than this is a duplicate
+# emission rather than a genuine re-invocation.  Corpus evidence: the 66
+# same-tool repeats split cleanly at 0.327s..1.084s (duplicates) vs hundreds
+# of seconds (genuine), so any threshold in between selects the same set.
+DUPLICATE_EMISSION_WINDOW_S = 2.0
+
+
+# ---------------------------------------------------------------------------
+# Helpers for the AtomAgents divergence characterisation
+# ---------------------------------------------------------------------------
+
+def _events(path: Path) -> list[dict]:
+    out = []
+    with path.open() as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                pass
+    return out
+
+
+def _recorded_divergences(path: Path) -> list[tuple]:
+    """(step, expected_tool, actual_tool, checkpoint_id) per recorded event."""
+    return [
+        (ev.get("step"),
+         (ev.get("payload") or {}).get("expected_tool"),
+         (ev.get("payload") or {}).get("actual_tool"),
+         (ev.get("payload") or {}).get("checkpoint_id"))
+        for ev in _events(path)
+        if ev.get("event_type") == "divergence_detected"
+    ]
+
+
+def _replayed_divergences(pt, config: RuntimeConfig) -> list[tuple]:
+    """The same tuples, recovered by driving the SHIPPED fixed detector.
+
+    The detector mints its own checkpoint ids, so they are mapped back to the
+    real trace ids through Action.checkpoint_id (the id from the
+    `checkpoint_created` line that followed the prediction).
+    """
+    det = DivergenceDetector(scheduler=None, config=config, bus=None)
+    real_id: dict[str, str] = {}
+    out: list[tuple] = []
+    for act in pt.actions:
+        if act.kind == "predict":
+            ckpt = det.on_prediction(act.prediction, step=act.step)
+            real_id[ckpt.checkpoint_id] = act.checkpoint_id
+        else:
+            hit, _action, ckpt = det.on_tool_about_to_execute(act.tool,
+                                                              step=act.step)
+            if ckpt is None or hit:
+                continue
+            out.append((act.step,
+                        ckpt.prediction.resources[0].consumer_tool,
+                        act.tool,
+                        real_id.get(ckpt.checkpoint_id)))
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _ran_with_fixed_detector(trial_name: str) -> bool | None:
+    """True/False if the trial's commit is/is not a descendant of the detector
+    fix; None if git cannot resolve it (shallow clone, pruned commit).
+
+    Trial directories are named `t01__<UTC stamp>__<short sha>`.
+    """
+    parts = trial_name.split("__")
+    if len(parts) < 3:
+        return None
+    sha = parts[-1]
+    try:
+        if subprocess.run(["git", "-C", str(REPO), "cat-file", "-e",
+                           f"{sha}^{{commit}}"],
+                          capture_output=True).returncode != 0:
+            return None
+        return subprocess.run(
+            ["git", "-C", str(REPO), "merge-base", "--is-ancestor",
+             DETECTOR_FIX_COMMIT, sha],
+            capture_output=True).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -402,8 +513,237 @@ class TestCorpusControl:
         # AtomAgents has no staging predictions: every prediction_result became
         # a pending checkpoint.
         assert scored == pred_events
-        # The bug's signature: not one divergence was ever recorded.
-        assert sum(parsed[t.trace].rec_diverged for t in aa) == 0
+
+    # -- the e68d52b suppression bug: fixed, and now pinned as history --------
+    #
+    # This test used to end with
+    #
+    #     # The bug's signature: not one divergence was ever recorded.
+    #     assert sum(parsed[t.trace].rec_diverged for t in aa) == 0
+    #
+    # which pinned the DEFECT, not correctness: under e68d52b a genuine
+    # divergence returned (True, CONTINUE, None), the adapter branched on
+    # `ckpt is None` and emitted nothing, so no miss ever reached the trace.
+    # 96f5f28 (2026-08-03) fixed that, and every AtomAgents trial run since
+    # records divergences normally.  The assertion went red because its premise
+    # went stale, not because anything broke.
+    #
+    # Deleting it would give up the guarantee it was standing in for, so it is
+    # inverted below into three characterisation tests:
+    #
+    #   * divergences ARE recorded now                     (the defect is gone)
+    #   * every recorded divergence is reproduced, tuple for tuple, by driving
+    #     the shipped fixed detector over the same trace   (they are not
+    #                                                       logging artifacts)
+    #   * every trial is either AGREEING (live == replay) or SUPPRESSING
+    #     (recorded 0 while the replay finds misses = the old bug), and no
+    #     trial run after the fix may be SUPPRESSING
+    #                                                      (no regression)
+
+    def test_atomagents_now_records_divergences(self, replayed):
+        """CHARACTERISATION, replacing the assertion that pinned the bug.
+
+        Audited 2026-09-01 over the corpus on disk: 24 `divergence_detected`
+        events across 16 AtomAgents trials, all in `atomagents_exp3_aligned`,
+        all from trials whose recorded commit is a descendant of the 96f5f28
+        detector fix.  Reproduce with:
+
+            python3 -c "import json,glob; \\
+              print(sum(json.load(open(p))['divergence_count'] or 0 for p in \\
+              glob.glob('results/eval_q1_q4/runs/atomagents*/*/*/summary.json')))"
+        """
+        trials, parsed = replayed
+        aa = [t for t in trials if t.family == "atomagents"]
+        assert sum(parsed[t.trace].rec_diverged for t in aa) > 0, (
+            "No AtomAgents trial recorded a divergence.  Either the corpus "
+            "lost its post-96f5f28 trials, or the e68d52b suppression bug has "
+            "regressed and misses are being dropped before they reach the bus."
+        )
+
+    def test_every_recorded_atomagents_divergence_is_reproduced_by_the_replay(
+            self, replayed):
+        """The load-bearing test: recorded divergences are the fixed detector's
+        own verdicts, not artifacts of the trace stream.
+
+        For every trial that recorded a divergence, driving the SHIPPED
+        DivergenceDetector over that trial's recorded prediction/tool stream
+        must yield the same misses in the same order, agreeing on all four of
+        (step, expected_tool, actual_tool, checkpoint_id).
+
+        Note what this does NOT establish.  It does not rule out the
+        double-emission artifact, because the replay is INSENSITIVE to a
+        duplicate: the second emission finds the checkpoint already consumed by
+        the first, so the detector returns no-opinion and the tuples still
+        agree.  Verified by mutation — injecting a duplicate `tool` action into
+        a divergence-bearing stream leaves this assertion green.  The duplicate
+        hypothesis is excluded separately, by
+        `test_no_divergence_bearing_atomagents_trace_contains_a_duplicate_emission`.
+        """
+        trials, parsed = replayed
+        checked = 0
+        for t in trials:
+            if t.family != "atomagents" or parsed[t.trace].rec_diverged == 0:
+                continue
+            recorded = _recorded_divergences(t.trace)
+            replayed_ = _replayed_divergences(parsed[t.trace], CFG)
+            assert recorded == replayed_, (
+                f"{t.workload}/{t.config}/{t.trial}: the fixed detector does "
+                f"not reproduce the recorded divergences.\n"
+                f"  recorded: {recorded}\n  replayed: {replayed_}"
+            )
+            checked += 1
+        assert checked > 0
+
+    def test_no_divergence_bearing_atomagents_trace_contains_a_duplicate_emission(
+            self, replayed):
+        """Excludes the double-emission artifact directly, at the trace level.
+
+        AtomAgents emits some tool calls twice in quick succession (median
+        0.39 s apart, n=66 over the corpus).  For `plan_task` those repeats are
+        a logging duplicate; for `analyze_screw_core` and
+        `computation_task_screw_dislocation` they are genuine re-invocations.
+        A divergence manufactured by scoring a duplicate emission against the
+        next real call would be spurious, and the recorded expected/actual
+        pairs involve exactly those tools — so it has to be checked, and it
+        cannot be checked by replay (see the test above).
+
+        It is checked here instead: NO trace that recorded a divergence
+        contains a fast same-tool repeat at all.  Audited 2026-09-01 — all 66
+        repeats live in `atomagents_exp2` / `atomagents_exp3`, and their
+        intersection with the 16 divergence-bearing traces is empty.  Every
+        divergence therefore compares two distinct tool calls.
+        """
+        trials, parsed = replayed
+        checked = 0
+        for t in trials:
+            if t.family != "atomagents" or parsed[t.trace].rec_diverged == 0:
+                continue
+            calls = [(ev.get("step"), (ev.get("payload") or {}).get("tool"),
+                      ev.get("epoch_time"))
+                     for ev in _events(t.trace)
+                     if ev.get("event_type") == "tool_call"]
+            for prev, cur in zip(calls, calls[1:]):
+                same_tool = prev[1] == cur[1]
+                fast = (prev[2] is not None and cur[2] is not None
+                        and (cur[2] - prev[2]) < DUPLICATE_EMISSION_WINDOW_S)
+                assert not (same_tool and fast), (
+                    f"{t.workload}/{t.config}/{t.trial}: tool {cur[1]!r} "
+                    f"emitted twice {cur[2] - prev[2]:.2f}s apart (steps "
+                    f"{prev[0]}->{cur[0]}) in a trace that recorded a "
+                    f"divergence.  A divergence scored against a duplicate "
+                    f"emission may be spurious — audit it before publishing."
+                )
+            checked += 1
+        assert checked > 0
+
+    def test_every_recorded_atomagents_divergence_invalidated_and_went_conservative(
+            self, replayed):
+        """The guard acted on every divergence it recorded.
+
+        `divergence_detected` carries action=INVALIDATE_ALL and is immediately
+        followed by a `conservative_mode` event.  A divergence that scored but
+        did not act would mean the detector and the adapter disagree.
+        """
+        trials, parsed = replayed
+        seen = 0
+        for t in trials:
+            if t.family != "atomagents" or parsed[t.trace].rec_diverged == 0:
+                continue
+            events = _events(t.trace)
+            for i, ev in enumerate(events):
+                if ev.get("event_type") != "divergence_detected":
+                    continue
+                seen += 1
+                payload = ev.get("payload") or {}
+                assert payload.get("action") == "INVALIDATE_ALL", (
+                    f"{t.trial} step {ev.get('step')}: divergence recorded "
+                    f"with action={payload.get('action')!r}")
+                nxt = events[i + 1] if i + 1 < len(events) else {}
+                assert nxt.get("event_type") == "conservative_mode", (
+                    f"{t.trial} step {ev.get('step')}: divergence not followed "
+                    f"by conservative_mode (got "
+                    f"{nxt.get('event_type')!r}) — the guard scored the miss "
+                    f"but did not act on it")
+                assert (nxt.get("payload") or {}).get("reason") == "divergence"
+        assert seen > 0
+
+    def test_no_trial_run_after_the_detector_fix_suppresses_a_miss(self, replayed):
+        """Regression guard on e68d52b, stated without reference to a count.
+
+        Every AtomAgents trial falls into exactly one of two classes:
+
+          AGREEING     recorded divergences == the replay's misses.  The live
+                       detector scored what the fixed detector scores.
+          SUPPRESSING  recorded 0 divergences while the replay finds misses.
+                       That is the e68d52b signature: the misses happened and
+                       were dropped before reaching the bus.
+
+        A trial in neither class — recording a nonzero number of divergences
+        that disagrees with the replay — is a new defect and fails outright.
+
+        SUPPRESSING is permitted only for trials that ran BEFORE 96f5f28.  A
+        post-fix trial that suppresses means the bug came back.  Era comes from
+        the commit hash in the trial directory name; if git cannot resolve one,
+        that trial is skipped rather than guessed at.
+        """
+        trials, parsed = replayed
+        unresolvable = 0
+        classes = Counter()
+        for t in trials:
+            if t.family != "atomagents":
+                continue
+            rec = parsed[t.trace].rec_diverged
+            rep = score_detector(parsed[t.trace].actions, CFG).misses
+            if rec == rep:
+                klass = "agreeing"
+            elif rec == 0 and rep > 0:
+                klass = "suppressing"
+            else:
+                pytest.fail(
+                    f"{t.workload}/{t.config}/{t.trial}: recorded {rec} "
+                    f"divergences but the fixed detector scores {rep} misses. "
+                    f"This is neither a clean trial nor the known suppression "
+                    f"bug — investigate before publishing any AtomAgents number."
+                )
+            classes[klass] += 1
+            if klass != "suppressing":
+                continue
+            post_fix = _ran_with_fixed_detector(t.trial)
+            if post_fix is None:
+                unresolvable += 1
+                continue
+            assert not post_fix, (
+                f"{t.workload}/{t.config}/{t.trial} ran at a commit descended "
+                f"from the {DETECTOR_FIX_COMMIT} detector fix, yet recorded 0 "
+                f"divergences while the fixed detector scores {rep} misses. "
+                f"The e68d52b suppression bug has regressed."
+            )
+        assert classes["agreeing"] > 0 and classes["suppressing"] > 0, classes
+        if unresolvable:
+            pytest.skip(
+                f"{unresolvable} suppressing trial(s) name a commit git cannot "
+                f"resolve; the rest of the classification held")
+
+    def test_atomagents_divergences_match_the_2026_09_01_audit_snapshot(self, replayed):
+        """Pins the audited divergence population.  Same convention as the
+        ChemGraph snapshot above: the campaign is live, so a GROWN corpus skips;
+        one that shrank or was rewritten fails."""
+        trials, parsed = replayed
+        aa = [t for t in trials if t.family == "atomagents"]
+        n_div = sum(parsed[t.trace].rec_diverged for t in aa)
+        n_trials = sum(1 for t in aa if parsed[t.trace].rec_diverged)
+        want_div, want_trials = ATOMAGENTS_DIVERGENCE_SNAPSHOT
+        if (n_div, n_trials) == (want_div, want_trials):
+            return
+        if n_div >= want_div and n_trials >= want_trials:
+            pytest.skip(
+                f"corpus has grown since the 2026-09-01 audit: {n_div} "
+                f"divergences over {n_trials} trials vs audited {want_div}/"
+                f"{want_trials}; the per-trial checks above still apply")
+        pytest.fail(
+            f"AtomAgents recorded divergences moved DOWN or sideways: {n_div} "
+            f"over {n_trials} trials vs audited {want_div}/{want_trials} — the "
+            f"corpus was rewritten, or the detector is suppressing again")
 
     def test_atomagents_accounting_is_total(self, replayed):
         """Nothing may vanish: every scored prediction is a hit, a miss, or

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import io
 import json
+from collections import Counter
 import math
 import tokenize
 from pathlib import Path
@@ -478,12 +479,12 @@ def test_the_two_signals_are_simultaneous_not_a_fallback_chain():
     must still change the answer. If the code short-circuited on the plan, this
     would be equal."""
     demand = DEMAND
-    # A hand-built signal, enabled explicitly. 0.9893 is the corrected
-    # offset-1 self-loop; it is a fixture here, not a claim about the table.
+    # A hand-built signal, enabled explicitly. 0.8752 is the filtered offset-1
+    # self-loop; it is a fixture here, not a claim about the table.
     tbl = TransitionSignal(
         model_transitions={"Qwen/Qwen2.5-VL-72B-Instruct":
                            {1: [{"target": "Qwen/Qwen2.5-VL-72B-Instruct",
-                                 "target_type": "model", "probability": 0.9893}]}},
+                                 "target_type": "model", "probability": 0.8752}]}},
         use_model_transitions=True,
     )
     plan = FakePlan(["plan_task", "code_task",
@@ -511,14 +512,15 @@ def test_the_two_signals_are_simultaneous_not_a_fallback_chain():
 
 
 def test_explain_shows_the_working_for_every_signal():
-    # A hand-built signal, enabled explicitly. 0.9893 is the corrected
-    # offset-1 self-loop; it is a fixture here, not a claim about the table.
+    # A hand-built signal, enabled explicitly. 0.8752 is the filtered offset-1
+    # self-loop; it is a fixture here, not a claim about the table.
     tbl = TransitionSignal(
         model_transitions={"Qwen/Qwen2.5-VL-72B-Instruct":
                            {1: [{"target": "Qwen/Qwen2.5-VL-72B-Instruct",
-                                 "probability": 0.9893}]}},
+                                 "probability": 0.8752}]}},
         use_model_transitions=True)
-    h = PlanTransitionHorizon(DEMAND, STEP, horizon_s=L, transitions=tbl)
+    h = PlanTransitionHorizon(DEMAND, STEP, horizon_s=L, transitions=tbl,
+                              llm_step_s=STEP / 4.0)
     h.set_plan(FakePlan(["plan_task", "computation_task_screw_dislocation"]), 0)
     h.observe(0.0, tool="plan_task", model="Qwen/Qwen2.5-VL-72B-Instruct")
     out = h.explain("qwen_72b", 0.0)
@@ -529,70 +531,73 @@ def test_explain_shows_the_working_for_every_signal():
     assert out["lookahead_s"] == L
 
 
-def test_both_halves_of_the_table_are_off_by_default():
-    """Kept off, but for entirely different reasons than before A3's fix.
+def test_tool_transitions_off_model_transitions_on():
+    """The two halves go different ways, and both defaults are measurements.
 
-    The old justification — that a table offset was not a plan step — is GONE:
-    the corrected file declares `tool_call_subsequence`, and on that basis an
-    offset IS a plan step. What keeps the default False now is what is in the
-    corpus, not how it is indexed:
+    MODEL: ON. Disabled here on 2026-08-31 because the offset-1 self-loop
+    barely beat its base rate; that finding came from an unfiltered corpus and
+    inverted when the harness traces came out (the harness was driving the base
+    rate toward 1.0, the one regime where conditioning cannot pay). Filtered:
+    self-loop 0.8752 against a 0.7433 base rate, +13.2 points, and the minority
+    model is +44.3. It also carries switching now (72B->32B 0.1248/0.2057/
+    0.2329), which is the half a residency decision actually needs, and it is
+    not itself a logging artifact -- `llm_call` is UNDER-recorded against
+    `metrics.csv`, never over-recorded.
 
-      * 88.8% of `tool_call` events and 84.6% of `llm_call` events in
-        `logs/workflow_traces/runtime_trace_*.jsonl` come from traces whose
-        median inter-`llm_call` gap is under a second, and nothing filters them.
-      * `plan_task`'s n=45 offset-1 self-loop is 42 sub-second logging pairs and
-        3 genuine ones.
-      * the model self-loop (p=0.9893) barely beats its own base rate (0.9524
-        pooled, 0.7805 on real traces only) and is a SELF-loop, so it says
-        nothing about switching — the only thing a residency decision needs
-        from a model predictor.
-
-    Every one of those is fixable, which is why the machinery and the flags
-    stay. This test exists so the default is re-examined deliberately rather
-    than drifting.
+    TOOL: OFF, for one reason that survived the filter. `plan_task ->
+    plan_task` is n=43 of which 40 are sub-second double emissions, so the
+    table reports 0.3613 where the truth is nearer 3/119 and `code_task` at
+    0.5882 where its true share of real successors is 70/79. The mass is
+    MISALLOCATED, not merely diluted, so a horizon reading it holds the wrong
+    resource. Fixable with `adjudicate_needs` over the corpus before learning.
     """
     sig = TransitionSignal.load()
     assert sig.use_tool_transitions is False
-    assert sig.use_model_transitions is False
+    assert sig.use_model_transitions is True
     assert sig.tool_offsets("run_ase") == ()
-    assert sig.model_offsets("Qwen/Qwen2.5-VL-72B-Instruct") == ()
-    on = TransitionSignal.load(use_tool_transitions=True,
-                               use_model_transitions=True)
+    assert sig.model_offsets("Qwen/Qwen2.5-VL-72B-Instruct") != ()
+    on = TransitionSignal.load(use_tool_transitions=True)
     assert on.tool_offsets("run_ase") != ()
-    assert on.model_offsets("Qwen/Qwen2.5-VL-72B-Instruct") != ()
 
 
-def test_enabling_a_half_requires_its_declared_offset_basis(tmp_path):
-    """A pre-fix table's offsets were counted over a MIXED tool_call+llm_call
-    sequence, so they are on NEITHER basis, and converting them with either step
-    constant is an arithmetic error. Loading such a file with a half enabled
-    must raise, not approximate."""
+def test_enabling_a_half_requires_basis_and_synthetic_filter(tmp_path):
+    """Both provenance keys are load-bearing and both defects were live in this
+    file within two days. A pre-fix table's offsets are on neither basis; a
+    pre-filter table's probabilities are dominated by replay-harness traces.
+    Either yields a plausible number that is wrong, so this raises."""
     path = REPO / "runtime" / "predictor" / "data" / "learned_transitions.json"
     if not path.exists():
         pytest.skip("learned_transitions.json not present")
     raw = json.loads(path.read_text())
     assert raw["offset_basis"]["tool_transitions"] == EXPECTED_TOOL_BASIS
     assert raw["offset_basis"]["model_transitions"] == EXPECTED_MODEL_BASIS
+    assert raw["synthetic_filter"]["applied"] is True
+    assert raw["version"] == "3"
 
-    stale = dict(raw)
-    stale.pop("offset_basis")
-    q = tmp_path / "prefix_table.json"
-    q.write_text(json.dumps(stale))
-    # reading it is fine; ENABLING a half of it is not
-    assert TransitionSignal.load(q).use_tool_transitions is False
-    for kw in ({"use_tool_transitions": True}, {"use_model_transitions": True}):
+    for drop in ("offset_basis", "synthetic_filter"):
+        stale = {k: v for k, v in raw.items() if k != drop}
+        q = tmp_path / f"no_{drop}.json"
+        q.write_text(json.dumps(stale))
         with pytest.raises(TransitionBasisMismatch):
-            TransitionSignal.load(q, **kw)
+            TransitionSignal.load(q, use_model_transitions=True)
+        with pytest.raises(TransitionBasisMismatch):
+            TransitionSignal.load(q, use_tool_transitions=True,
+                                  use_model_transitions=False)
+        # reading it with both halves off is always allowed
+        assert TransitionSignal.load(
+            q, use_model_transitions=False).use_model_transitions is False
 
 
 def test_the_corrected_table_indexes_the_tool_subsequence():
-    """The fix, pinned to its reason rather than to the symptom it removed.
+    """The offset-basis fix, pinned to its reason rather than to the symptom.
 
-    Before A3's fix `plan_task` had one row — a self-transition at offset 2 —
-    because the learner counted offsets over a mixed tool_call+llm_call sequence
-    and `plan_task`'s real successor fell outside `max_offset=3`. On the
-    corrected basis the entry tool of the workload the paper evaluates has its
-    real successors back."""
+    Before it, `plan_task` had one row — a self-transition at offset 2 — because
+    the learner counted offsets over a mixed tool_call+llm_call sequence and the
+    real successor fell outside `max_offset=3`. On the corrected basis the entry
+    tool of the workload the paper evaluates has its successors back. The
+    PROBABILITY moved again when the synthetic filter landed (0.5455/n=78 ->
+    0.5882/n=70, denominator 143 -> 119); the structural claim did not, and it
+    is the structural claim this test defends."""
     path = REPO / "runtime" / "predictor" / "data" / "learned_transitions.json"
     if not path.exists():
         pytest.skip("learned_transitions.json not present")
@@ -603,27 +608,107 @@ def test_the_corrected_table_indexes_the_tool_subsequence():
     assert sorted(pt) == ["1", "2", "3"]
     top = pt["1"][0]
     assert top["target"] == "code_task"
-    assert top["probability"] == pytest.approx(0.5455, abs=5e-4)
-    assert top["count"] == 78
+    assert top["probability"] == pytest.approx(0.5882, abs=5e-4)
+    assert top["count"] == 70
 
 
-def test_the_model_self_loop_does_not_beat_its_base_rate():
-    """The measurement that removed the reason for enabling model_transitions.
+def test_the_model_self_loop_beats_its_base_rate_once_the_corpus_is_filtered():
+    """The measurement that reversed the model-half default.
 
-    The corrected offset-1 self-loop is p=0.9893 (n=11311); the p=0.9973 once
-    quoted came from the mixed-basis file and is void. Against an unconditional
-    base rate of 0.9524 for the same model among `llm_call` events, knowing the
-    current model is worth about three points."""
+    Unfiltered the offset-1 self-loop was 0.9893 (n=11311) against a 0.9685 base
+    rate — +2.1 points, and worthless. Filtered it is 0.8752 (n=652) against
+    0.7433 — +13.2 points. The self-loop went DOWN and the signal went UP,
+    because the harness traces were inflating the base rate toward the one value
+    at which conditioning on the current model cannot pay.
+
+    The base rate is recomputed here from the corpus rather than hard-coded, so
+    this fails if the corpus moves under the table."""
     path = REPO / "runtime" / "predictor" / "data" / "learned_transitions.json"
     if not path.exists():
         pytest.skip("learned_transitions.json not present")
+    traces = sorted((REPO / "logs" / "workflow_traces").glob("*.jsonl"))
+    if not traces:
+        pytest.skip("workflow traces not present on this checkout")
+
     raw = json.loads(path.read_text())
     mt = raw["model_transitions"]["Qwen/Qwen2.5-VL-72B-Instruct"]["1"]
     loop = next(r for r in mt if r["target"] == "Qwen/Qwen2.5-VL-72B-Instruct")
-    assert loop["probability"] == pytest.approx(0.9893, abs=5e-4)
-    assert loop["count"] == 11311
-    # if this ever rises materially above the base rate, revisit the default
-    assert loop["probability"] - 0.9524 < 0.10
+    assert loop["probability"] == pytest.approx(0.8752, abs=5e-4)
+    assert loop["count"] == 652
+
+    # the same filter, reimplemented from the thresholds the file declares
+    th = raw["synthetic_filter"]["thresholds"]
+    base = Counter()
+    for tp in traces:
+        llm, tools = [], []
+        for line in tp.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            pl = ev.get("payload") or {}
+            if ev.get("event_type") == "llm_call" and pl.get("model"):
+                llm.append((float(ev["epoch_time"]), pl["model"]))
+            elif ev.get("event_type") == "tool_call" and pl.get("tool"):
+                tools.append(float(ev["epoch_time"]))
+        llm.sort()
+        if len(llm) >= 2:
+            burst = worst = 0
+            for a, b in zip(llm, llm[1:]):
+                burst = burst + 1 if b[0] - a[0] < th["min_llm_turn_seconds"] else 0
+                worst = max(worst, burst)
+            if worst > th["max_consecutive_fast_turns"]:
+                continue
+            span = max([t for t, _ in llm] + tools) - min([t for t, _ in llm] + tools)
+            if tools and span / len(tools) < th["min_seconds_per_tool_call"]:
+                continue
+        for _, m in llm:
+            base[m] += 1
+
+    n = sum(base.values())
+    rate = base["Qwen/Qwen2.5-VL-72B-Instruct"] / n
+    assert rate == pytest.approx(0.7433, abs=5e-3), rate
+    advantage = loop["probability"] - rate
+    assert advantage > 0.10, (
+        f"the model self-loop's advantage over its base rate fell to "
+        f"{advantage:+.4f}; that was the reason for enabling it")
+
+
+def test_model_transitions_refuse_to_borrow_the_tool_step_constant():
+    """An llm_call_subsequence offset converted with a tool-step constant is
+    wrong by a factor of two on the same facet (374.46 s against 751.55 s at
+    atomagents_exp3/Blackwell). There is deliberately no fallback: enabling the
+    model half without `llm_step_s` raises rather than defaulting."""
+    tbl = TransitionSignal(
+        model_transitions={"Qwen/Qwen2.5-VL-72B-Instruct":
+                           {1: [{"target": "Qwen/Qwen2.5-VL-72B-Instruct",
+                                 "probability": 0.8752}]}},
+        use_model_transitions=True)
+    with pytest.raises(ValueError, match="llm_step_s"):
+        PlanTransitionHorizon(DEMAND, STEP, horizon_s=L, transitions=tbl)
+    ok = PlanTransitionHorizon(DEMAND, STEP, horizon_s=L, transitions=tbl,
+                               llm_step_s=MEASURED_LLM_STEP_S[
+                                   ("atomagents_exp3", "Blackwell")])
+    assert ok.horizon_s == L
+    # the tool half needs no separate constant: its offsets ARE tool steps
+    tool_only = TransitionSignal(
+        tool_transitions={"plan_task": {1: [{"target": "code_task",
+                                             "probability": 0.5882}]}},
+        use_tool_transitions=True, use_model_transitions=False)
+    PlanTransitionHorizon(DEMAND, STEP, horizon_s=L, transitions=tool_only)
+
+
+def test_the_two_step_constants_are_not_interchangeable():
+    """The measurement behind that refusal, pinned so neither table can drift
+    into agreeing with the other."""
+    for facet in (("atomagents_exp3", "Blackwell"),
+                  ("atomagents_exp3_aligned", "Blackwell"),
+                  ("atomagents_exp3_aligned", "L40S")):
+        tool = MEASURED_TOOL_STEP_S[facet]
+        llm = MEASURED_LLM_STEP_S[facet]
+        assert tool / llm > 1.5, (facet, tool, llm)
 
 
 def test_resync_keeps_the_cursor_from_drifting_on_divergence():

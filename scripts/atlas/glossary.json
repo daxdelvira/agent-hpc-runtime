@@ -1,0 +1,46 @@
+{
+ "_note": "Every definition cites the file that defines it. Where the code does not define a term, the entry says so rather than guessing.",
+ "files": {
+  "eval_q1_summary.csv": {"claim": "Q1 — does the system improve end-to-end workflow time?", "what": "One row per trial: wall time, stall, and the arm it belongs to. The headline speedup table is built from this.", "caution": "Has no gpu_name. Facet using meta.json gpus[0] before comparing arms."},
+  "eval_q1_agg.csv": {"claim": "Q1 — the aggregated speedup per arm.", "what": "Means and standard deviations per (workload, config, gpu). Now keyed by gpu_name so a hardware-pooled row cannot be emitted.", "caution": "This file produced every retracted speedup while it pooled GPU families. Pre-2026-08-30 copies are unfaceted."},
+  "eval_q2_breakdown.csv": {"claim": "Q2 — where does the saved time come from?", "what": "Per-trial decomposition of wall time into load, stall, compute and overlap.", "caution": ""},
+  "eval_q3_prediction_quality.csv": {"claim": "Q3 — is the predictor any good?", "what": "Per-trial precision, recall, lead time and prediction counts.", "caution": "precision excludes failed and cancelled stagings from the denominator. A value of 1.0000 can mean 8 of 8 where most admissions failed and left the denominator entirely."},
+  "eval_q3_predictions_long.csv": {"claim": "Q3 — one row per individual prediction.", "what": "The long form behind the per-trial quality table; use it to audit a specific prediction.", "caution": ""},
+  "eval_q4_speculation_cost.csv": {"claim": "Q4 — what does speculation cost when wrong?", "what": "Wasted bytes, wasted seconds and cancelled work per trial.", "caution": "wasted_bytes is 0 for failed stagings because they carry no measured bytes — a failed prefetch costs time, not bandwidth."},
+  "eval_prefetch_lifecycle.csv": {"claim": "Q2/Q4 — the life of every resource need: predicted, staged, hit or stalled.", "what": "One row per (trial, resource) with the decision, the timing gates and the stall classification. The richest file here and the one behind the stall taxonomy.", "caution": "One row per resource per trial, keyed on that resource's FIRST decision. A resource skipped then later started still shows the skip reason, so row counts are not decision counts."},
+  "eval_stall_taxonomy.csv": {"claim": "Q2 — how much stall falls into each class, per arm.", "what": "Aggregated exposed stall seconds by (workload, config, gpu_name, stall_class).", "caution": "gpu_name is part of the aggregation key as of 2026-08-30. Earlier copies pooled L40S with Blackwell by construction."}
+ },
+ "terms": {
+  "stall_class": {"source": "scripts/extract_prefetch_lifecycle.py:46-57", "why": "Classifies WHY a need stalled. This is the field that says whether a miss was the predictor's fault, the window's, or unavoidable.", "values": {
+    "baseline_no_prefetch": "A need in an arm that never prefetches. The reference, not a failure.",
+    "no_prediction": "The need happened and nothing ever predicted that resource. A predictor coverage gap.",
+    "no_window": "The prediction arrived, but window_s was below the minimum — effectively at need time. There was no time to act.",
+    "window_too_small": "A window existed but was shorter than transfer plus spin-up, so the need was unhideable however perfect the prediction.",
+    "late_start": "The window was sufficient, but start_delay_s consumed it. A scheduling failure, not a prediction failure.",
+    "residual_partial": "The transfer started early and finished after the need. Partially hidden.",
+    "gpu_serialization_residual": "A vllm_model gate stalled even though the model's I/O was already done — the GPU, not the bytes, was the constraint."
+  }},
+  "outcome": {"source": "scripts/extract_prefetch_lifecycle.py (row construction); values counted from the shipped CSV", "why": "What became of the staging attempt.", "values": {
+    "useful": "Staged early and consumed by the need. The success case.",
+    "late": "Staged, but finished after the need began.",
+    "duplicate": "The resource was already resident; the staging was redundant. Counts toward consumption but is a scheduler dedup artifact, not a win.",
+    "wasted": "Staged and never consumed.",
+    "failed": "The staging attempt errored. On AtomAgents these are overwhelmingly 'Cannot start <model>: GPUs occupied' — the prefetcher colliding with its own prior placement.",
+    "skipped": "A prediction existed but the scheduler declined to act on it.",
+    "cancelled": "Killed in flight, usually by the divergence guard.",
+    "no_prediction": "No prediction was made for this need.",
+    "no_prefetch_config": "The arm does not prefetch at all.",
+    "direct_prefetch": "Staged without going through the normal gate path."
+  }},
+  "decision_action": {"source": "scripts/extract_prefetch_lifecycle.py", "why": "What the scheduler decided at the resource's FIRST decision point.", "values": {"start": "Admitted — begin staging.", "skip": "Declined.", "(blank)": "No decision recorded for this row."}},
+  "decision_reason": {"source": "runtime/prefetch/scheduler.py:_should_prefetch", "why": "Why the scheduler admitted or declined. The string names the gate that fired.", "values": {"confidence_above_threshold": "Admitted: predicted confidence cleared confidence_threshold.", "confidence_below_threshold (0.80 < 0.85)": "Declined. Note the arithmetic: the plan predictor's floor is 0.80 and the threshold is 0.85, so a plan-only prediction can never clear it.", "naive_prefetch": "Admitted because the arm bypasses the confidence gate entirely.", "proactive_swap_compute_window": "Admitted via the Tandem bypass — only fires when a residency actor is wired and can evict the GPU incumbent."}},
+  "gate_group": {"source": "scripts/extract_prefetch_lifecycle.py:169-180", "why": "Groups the rows belonging to one blocking event, so a single stall is not counted twice when several resources gate on it.", "values": {}},
+  "gate_on_demand": {"source": "scripts/extract_prefetch_lifecycle.py:169,180 — bool(w.get('on_demand_swap')) / bool(w.get('on_demand_start'))", "why": "True when the resource was fetched reactively AT the moment of need rather than staged ahead. It is the direct negation of what the system is trying to achieve: an on-demand gate is a stall the prefetcher did not prevent.", "values": {"True": "Fetched reactively at need time.", "False": "A staging attempt preceded the need.", "(blank)": "No gate recorded for this row."}},
+  "gate_prefetch_scheduled": {"source": "scripts/extract_prefetch_lifecycle.py:415 — direct = gate['prefetch_scheduled'] and not gate['on_demand']", "why": "Whether a prefetch had been scheduled for the resource this gate was waiting on. Combined with gate_on_demand it separates 'we never tried' from 'we tried and were too late'.", "values": {}},
+  "window_s": {"source": "scripts/extract_prefetch_lifecycle.py", "why": "Seconds between the prediction being actionable and the need arriving — the time available to hide the cost. The single most important quantity in this file: no window means no opportunity, whatever the predictor did.", "values": {}},
+  "start_delay_s": {"source": "scripts/extract_prefetch_lifecycle.py", "why": "How long after the window opened the staging actually began. Large values with a sufficient window produce late_start.", "values": {}},
+  "completion_status": {"source": "scripts/extract_prefetch_lifecycle.py:316 (added 2026-08-30)", "why": "Terminal state of the staging task. Added because prefetch_completed is emitted for EVERY terminal state — including failure — and five consumers were reading the event as success without checking.", "values": {"completed": "Finished.", "used": "Finished and consumed.", "failed": "Errored. 158 rows, all with transfer_s = 0.0."}},
+  "wall_time_s": {"source": "trial summary.json", "why": "End-to-end trial duration. The Q1 headline metric.", "values": {}},
+  "divergence_count": {"source": "trial summary.json", "why": "Times the agent ran a different tool than predicted, so the guard invalidated pending work.", "values": {"note": "Zero in every trial before commit 96f5f28 — the detector's semantics were inverted, so pre-fix zeros mean 'not recorded', not 'did not happen'."}}
+ }
+}

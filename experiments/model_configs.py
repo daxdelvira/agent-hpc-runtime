@@ -359,3 +359,33 @@ MODELS_L40S = {
         ],
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Blackwell profile, TWO GPUs (exp3 tp=2 shared pool)
+#
+# WHY THIS EXISTS. MODELS_BLACKWELL_SWAP puts all three models on GPUs 0-3 at
+# tp=4, which is the production topology but needs a 4-GPU gap. On 2026-09-01
+# the partition sat at 23/24 GPUs allocated with seven 1-GPU jobs pending, and
+# none of three 4-GPU requests ever got a start estimate.
+#
+# The property the experiment depends on is CONTENTION -- all models sharing one
+# pool so that M=1 and every swap forces an eviction. That property does not
+# need four cards. At tp=2 all three models share GPUs [0,1], so M=1 is
+# preserved exactly, on hardware that actually schedules.
+#
+# The arithmetic (97887 MiB/card, gpu_memory_utilization 0.95):
+#   usable across 2 cards      181.6 GiB
+#   qwen_72b / qwen_72b_text   136.7 GiB weights  ->  ~45 GiB for KV
+#   qwen_32b                    63.6 GiB weights  -> ~118 GiB for KV
+# Comfortable at max_model_len 16384.
+#
+# THIS IS A DIFFERENT HARDWARE CONFIGURATION AND MUST NOT POOL WITH tp=4 DATA.
+# Cold-boot cost, KV headroom and swap latency all change with tp. It is wired
+# to its own workload key (atomagents_exp3_aligned_tp2) for that reason, the
+# same way exp3_aligned was split from exp3.
+# ---------------------------------------------------------------------------
+MODELS_BLACKWELL_SWAP_TP2 = {
+    name: {**cfg, "gpus": [0, 1], "tensor_parallel_size": 2}
+    for name, cfg in MODELS_BLACKWELL_SWAP.items()
+}

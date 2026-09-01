@@ -55,9 +55,19 @@ from runtime.predictor.plan_extractor import PlanContext
 from runtime.predictor.resource_registry import ResourceRegistry
 from runtime.predictor.transition_learner import (
     LEGACY_OFFSET_BASIS,
+    LEGACY_SYNTHETIC_FILTER,
+    MAX_CONSECUTIVE_FAST_TURNS,
+    MIN_LLM_TURN_SECONDS,
+    MIN_SECONDS_PER_TOOL_CALL,
     OFFSET_BASIS,
+    SYNTHETIC_FILTER_RULE,
     TABLE_VERSION,
     TransitionTable,
+    VERDICT_EXCLUDED_BURST,
+    VERDICT_EXCLUDED_RATE,
+    VERDICT_KEPT,
+    VERDICT_OUT_OF_SCOPE,
+    classify_trace,
 )
 
 # Frozen copy of the 2026-07-07 table (n_traces=165).  Byte-identical to what
@@ -67,10 +77,33 @@ from runtime.predictor.transition_learner import (
 FIXTURE_TABLE_PATH = (Path(__file__).resolve().parent / "fixtures"
                       / "learned_transitions_20260707.json")
 
+# Frozen copy of the 2026-08-31 table (version 2, n_traces=490): the last one
+# generated with NO synthetic-trace filter, i.e. counting replay-harness runs
+# alongside real ones.  Frozen on 2026-09-01 so the "the filter moved only the
+# AtomAgents rows" invariant below is checkable without the untracked
+# runtime/predictor/data/_preB4_mockfilter_20260901/ backup.  NEVER regenerate.
+PREFILTER_TABLE_PATH = (Path(__file__).resolve().parent / "fixtures"
+                        / "learned_transitions_prefilter_20260831.json")
+
 # The live artifact.  Only TestShippedTableIsWellFormed reads this, and only
 # for properties that must hold for ANY regeneration.
 SHIPPED_TABLE_PATH = (Path(__file__).resolve().parents[1] / "predictor" / "data"
                       / "learned_transitions.json")
+
+# Tools that occur ONLY in chemgraph_trace_*.jsonl.  Those traces carry zero
+# llm_call events, so the 2026-09-01 synthetic filter cannot judge them and
+# always keeps them; these rows must therefore be byte-identical across the
+# filter.  (Verified disjoint from the AtomAgents vocabulary: the two workloads
+# share no tool name -- see the GLOB ALL OF THEM note in transition_learner.)
+CHEMGRAPH_ONLY_TOOLS = (
+    "calculator",
+    "extract_output_json",
+    "file_to_atomsdata",
+    "molecule_name_to_smiles",
+    "run_ase",
+    "run_mace_ensemble",
+    "smiles_to_coordinate_file",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +367,253 @@ class TestShippedTableIsWellFormed:
             assert _consistent_denominators(entries), (kind, source, offset)
             assert sum(e["probability"] for e in entries) <= 1.0 + 1e-3
 
+    # ------------------------------------------------------------------
+    # 2026-09-01: the synthetic-trace filter
+    # ------------------------------------------------------------------
+
+    def test_the_synthetic_filter_is_declared(self, raw):
+        """A filtered table must be distinguishable from an unfiltered one.
+
+        Same argument as test_the_offset_basis_is_declared: the numbers in
+        this file are only interpretable next to a statement of which traces
+        produced them.  Before 2026-09-01 nothing separated the AtomAgents
+        replay-harness runs from real ones, so `create_potential_file +2 ->
+        create_potential_file` sat in the table at n=4628 of which 4432 came
+        from two harness run_ids holding the SAME 2265-call sequence.  The
+        header now records the rule, its thresholds and exactly what it
+        dropped, whether or not it was applied.
+        """
+        sf = raw.get("synthetic_filter")
+        assert sf, (
+            "no synthetic_filter in the shipped table — it predates the "
+            "2026-09-01 filter and counts replay-harness traces alongside "
+            "real ones. Regenerate: python3 -m "
+            "runtime.predictor.transition_learner logs/workflow_traces/*.jsonl "
+            "--output runtime/predictor/data/learned_transitions.json")
+        assert isinstance(sf["applied"], bool)
+        assert sf["scope"] == "traces with >= 2 llm_call events"
+        # thresholds are reported as the code's own constants, not retyped
+        assert sf["thresholds"] == {
+            "min_llm_turn_seconds": MIN_LLM_TURN_SECONDS,
+            "max_consecutive_fast_turns": MAX_CONSECUTIVE_FAST_TURNS,
+            "min_seconds_per_tool_call": MIN_SECONDS_PER_TOOL_CALL,
+        }
+        if sf["applied"]:
+            assert sf["rule"] == SYNTHETIC_FILTER_RULE
+        # the census must add up: every scanned trace got exactly one verdict
+        assert (sf["kept_traces"] + sf["out_of_scope_traces"]
+                + sf["excluded_traces"]) == sf["scanned_traces"]
+        # ...and n_traces counts the ones that were actually learned from
+        assert raw["n_traces"] == sf["kept_traces"] + sf["out_of_scope_traces"]
+        by_clause = sf["excluded_by_clause"]
+        assert (sum(c["traces"] for c in by_clause.values())
+                == sf["excluded_traces"])
+        assert (sum(c["tool_events"] for c in by_clause.values())
+                == sf["excluded_tool_events"])
+        assert (sum(c["llm_events"] for c in by_clause.values())
+                == sf["excluded_llm_events"])
+
+    def test_a_pre_filter_table_is_detectable_as_legacy(self):
+        """Absence of the key must be REPORTED, never defaulted away.
+
+        Exactly the precedent set by offset_basis: a table written before the
+        filter existed is unfiltered, and a loader that quietly filled in
+        `applied: False` would make a table nobody filtered look like a table
+        somebody deliberately chose not to filter.
+        """
+        for path in (FIXTURE_TABLE_PATH, PREFILTER_TABLE_PATH):
+            legacy = json.loads(path.read_text())
+            assert "synthetic_filter" not in legacy, path
+            loaded = TransitionTable.load(path)
+            assert loaded.synthetic_filter == LEGACY_SYNTHETIC_FILTER, path
+            assert loaded.synthetic_filter["applied"] is False
+            assert loaded.synthetic_filter["rule"] is None
+        shipped = TransitionTable.load(SHIPPED_TABLE_PATH)
+        assert shipped.synthetic_filter != LEGACY_SYNTHETIC_FILTER
+        assert shipped.synthetic_filter["rule"] == SYNTHETIC_FILTER_RULE
+
+    def test_characterisation_the_filter_moved_only_the_atomagents_rows(self):
+        """CHARACTERISATION of the 2026-09-01 filter's blast radius.
+
+        ChemGraph traces contain zero llm_call events, so the rule -- which
+        reads llm_call timestamps only -- cannot judge them and keeps all 338
+        as `out_of_scope`.  Their rows must therefore be BYTE-IDENTICAL to the
+        pre-filter table.  If one moves, the filter is reaching somewhere it
+        was never calibrated for and the AtomAgents numbers cannot be trusted
+        either.
+
+        The converse half matters just as much: the AtomAgents rows DID move,
+        so a green suite here is not evidence that the filter did nothing.
+        """
+        before = json.loads(PREFILTER_TABLE_PATH.read_text())["tool_transitions"]
+        after = json.loads(SHIPPED_TABLE_PATH.read_text())["tool_transitions"]
+        for tool in CHEMGRAPH_ONLY_TOOLS:
+            assert before.get(tool) == after.get(tool), (
+                f"{tool} moved across the synthetic filter, but ChemGraph "
+                f"traces carry no llm_call events and are out of its scope")
+        # ...and the filter is not a no-op on the other workload.
+        assert before["create_potential_file"] != after["create_potential_file"]
+        assert before["plan_task"] != after["plan_task"]
+
+    def test_characterisation_what_the_filter_costs_the_atomagents_rows(self):
+        """CHARACTERISATION — the price, recorded so it is not rediscovered.
+
+        Excluding the harness leaves the AtomAgents half with 610 of its 5977
+        tool_call events.  Seven tool sources lose EVERY bucket: after the drop
+        they are seen too few times for --min-count 2 to admit a single
+        transition.  That is a finding about how little real AtomAgents data
+        exists, not a bug in the filter; the pre-filter buckets for these tools
+        (get_DD_map_path n=19, compute_dislocation_distribution_map n=20) were
+        harness artifacts end to end.
+
+        If this goes red the corpus grew or the rule changed — re-derive the
+        list, do not delete the test.
+        """
+        before = json.loads(PREFILTER_TABLE_PATH.read_text())["tool_transitions"]
+        after = json.loads(SHIPPED_TABLE_PATH.read_text())["tool_transitions"]
+        lost = sorted(set(before) - set(after))
+        assert lost == [
+            "compute_dislocation_distribution_map",
+            "execute_task",
+            "generate_visualizations",
+            "get_DD_map_path",
+            "get_computation_results",
+            "retrieve_atomic_positions",
+            "save_image_data",
+        ]
+        assert not set(after) - set(before), "the filter cannot ADD a source"
+        # The survivors are thin.  Four AtomAgents sources rest on a
+        # denominator of 2 at offset 1 — p=1.0 on two observations, which is
+        # not a prediction.  Named so nobody quotes them as evidence.
+        thin = sorted(
+            src for src, offs in after.items()
+            if src not in CHEMGRAPH_ONLY_TOOLS
+            and offs.get("1")
+            and sum(e["count"] for e in offs["1"]) <= 2
+        )
+        assert thin == [
+            "analyze_plot",
+            "computation_task_NEB",
+            "computation_task_surface_energy",
+            "run_neb_calculation",
+        ]
+
+
+class TestSyntheticTraceFilter:
+    """The rule itself (runtime/predictor/transition_learner.classify_trace).
+
+    Offline and corpus-free: each case is a hand-built event list standing for
+    one shape the corpus actually contains, so the rule stays testable when
+    logs/ is not on disk (it is gitignored).
+    """
+
+    @staticmethod
+    def _events(gaps, n_tool=0, tool_span=None):
+        """llm_call events separated by `gaps`, plus `n_tool` tool_call events.
+
+        tool_span defaults to the llm span, which is what a real trace looks
+        like; pass it explicitly to exercise clause 2 independently.
+        """
+        out, t = [], 0.0
+        out.append({"event_type": "llm_call", "epoch_time": t,
+                    "payload": {"model": "m"}})
+        for g in gaps:
+            t += g
+            out.append({"event_type": "llm_call", "epoch_time": t,
+                        "payload": {"model": "m"}})
+        span = t if tool_span is None else tool_span
+        for i in range(n_tool):
+            out.append({"event_type": "tool_call",
+                        "epoch_time": (span * (i + 1) / max(n_tool, 1)),
+                        "payload": {"tool": "plan_task"}})
+        return out
+
+    def test_a_trace_with_no_llm_timing_is_out_of_scope_not_excluded(self):
+        """Every ChemGraph trace is this case: tool_calls, zero llm_calls."""
+        events = [{"event_type": "tool_call", "epoch_time": float(i),
+                   "payload": {"tool": "run_ase"}} for i in range(5)]
+        assert classify_trace(events) == VERDICT_OUT_OF_SCOPE
+        # one llm_call is still no measurable turn
+        assert classify_trace(events + [{"event_type": "llm_call",
+                                         "epoch_time": 9.0,
+                                         "payload": {"model": "m"}}]) \
+            == VERDICT_OUT_OF_SCOPE
+
+    def test_the_double_observation_artifact_does_not_trip_the_rule(self):
+        """The confound the burst threshold exists to survive.
+
+        In observation mode one agent step emits its llm_call twice ~0.37 s
+        apart (adapters/atomagents.py:80).  A real trial therefore has a
+        SUB-SECOND MEDIAN gap while running for 1822 s — this is the shape of
+        eval_atomagents_exp2_full_system_t01..t06, and filtering on the median
+        would have thrown all six away.
+        """
+        # verbatim from runtime_trace_20260716_112906_eval_atomagents_exp2_
+        # full_system_t01_20260716-112856_d0f85d9.jsonl: 1822 s of wall clock,
+        # two 910 s LAMMPS gaps, four duplicate observations.
+        gaps = [909.36, 910.93, 0.51, 0.48, 0.52, 0.46]
+        assert statistics.median(gaps) < MIN_LLM_TURN_SECONDS   # median says mock
+        assert classify_trace(self._events(gaps, n_tool=4)) == VERDICT_KEPT
+
+    def test_an_unbroken_chain_of_fast_turns_is_excluded(self):
+        """runtime_trace_20260602_135508_f89eba12-582: 29 tool calls in 58 s,
+        16 consecutive sub-second turns."""
+        gaps = [0.3] * (MAX_CONSECUTIVE_FAST_TURNS + 1)
+        assert classify_trace(self._events(gaps, tool_span=1e6)) \
+            == VERDICT_EXCLUDED_BURST
+
+    def test_the_burst_threshold_is_inclusive_at_the_boundary(self):
+        """Exactly MAX_CONSECUTIVE_FAST_TURNS is kept; one more is not.
+
+        The corpus has nothing at the boundary (real traces top out at a burst
+        of 6, harness traces start at 8), so this pins the code's intent
+        rather than a data point."""
+        assert classify_trace(
+            self._events([0.3] * MAX_CONSECUTIVE_FAST_TURNS, tool_span=1e6)
+        ) == VERDICT_KEPT
+        assert classify_trace(
+            self._events([0.3] * (MAX_CONSECUTIVE_FAST_TURNS + 1), tool_span=1e6)
+        ) == VERDICT_EXCLUDED_BURST
+
+    def test_a_long_gap_resets_the_burst(self):
+        """Two separate short bursts are a real trace, not one long one."""
+        gaps = ([0.3] * MAX_CONSECUTIVE_FAST_TURNS + [900.0]
+                + [0.3] * MAX_CONSECUTIVE_FAST_TURNS)
+        assert classify_trace(self._events(gaps, tool_span=1e6)) == VERDICT_KEPT
+
+    def test_a_short_trace_too_fast_for_its_tools_is_excluded_by_rate(self):
+        """Clause 2: the 0.6 s aborted eval trials and the tiny harness runs,
+        whose gap chains are too short to trip clause 1."""
+        events = self._events([0.13] * 4, n_tool=2, tool_span=0.6)
+        assert classify_trace(events) == VERDICT_EXCLUDED_RATE
+
+    def test_the_rate_clause_needs_a_tool_call_to_apply(self):
+        """workflow_trace_* files hold llm_calls and no tool_calls; clause 2
+        must not divide by zero, and clause 1 still judges them."""
+        assert classify_trace(self._events([2.0, 3.0])) == VERDICT_KEPT
+
+    def test_learning_with_the_filter_off_is_recorded_as_such(self, tmp_path):
+        """Off by default is not on offer, but off on request must be labelled.
+
+        The whole point of the header is that a reader can tell the two apart
+        without rerunning anything.
+        """
+        from runtime.predictor.transition_learner import learn_from_traces
+        trace = tmp_path / "runtime_trace_synthetic.jsonl"
+        trace.write_text("\n".join(
+            json.dumps(e) for e in self._events(
+                [0.3] * (MAX_CONSECUTIVE_FAST_TURNS + 1), n_tool=3, tool_span=1.0)))
+        on = learn_from_traces([str(trace)], min_count=1)
+        off = learn_from_traces([str(trace)], min_count=1, exclude_synthetic=False)
+        assert on.synthetic_filter["applied"] is True
+        assert on.n_traces == 0 and on.n_tool_events == 0
+        assert on.synthetic_filter["excluded_traces"] == 1
+        assert on.synthetic_filter["excluded_tool_events"] == 3
+        assert off.synthetic_filter["applied"] is False
+        assert off.synthetic_filter["rule"] is None
+        assert off.n_traces == 1 and off.n_tool_events == 3
+        assert off.synthetic_filter["excluded_traces"] == 0
+
 
 # ---------------------------------------------------------------------------
 # A1: simultaneous signals, union + dedup, provenance
@@ -539,6 +819,23 @@ class TestOffsetDecay:
         run_ase bucket is byte-identical across that change.  The AtomAgents
         rows moved a great deal — see test_the_offset_basis_is_declared.
 
+        2026-09-01, THE SYNTHETIC-TRACE FILTER: offset 3 moved 0.8957 ->
+        0.8841 and the number below was updated deliberately.  The run_ase
+        TABLE ENTRY did not move at all — it is still p=0.8957, n=41, and
+        test_characterisation_the_filter_moved_only_the_atomagents_rows pins
+        the whole row as byte-identical, exactly as ChemGraph rows must be.
+        What moved is `offset_decay`, which LearnedPredictor derives from the
+        WHOLE table and multiplies into every offset >= 3.  That derivation
+        ran over 78 (source, target) pairs and returned a median ratio of
+        EXACTLY 1.0 — i.e. no decay at all — because the harness rows it was
+        dominated by (create_potential_file and friends at p=1.0 across every
+        offset) do not decay.  With the harness gone it runs over 46 pairs and
+        returns 0.9870.
+
+        So a ChemGraph-only confidence is coupled to the AtomAgents corpus
+        through a table-wide constant.  Worth knowing before quoting any
+        offset >= 3 confidence as a property of one workload: it is not.
+
         If this test goes red, the shipped table's run_ase distribution moved
         again — update the numbers here deliberately, do not delete the test.
         """
@@ -550,12 +847,21 @@ class TestOffsetDecay:
                      if r.name == "mace_mp:medium"}
         assert 1 not in by_offset, "offset-1 self-loop is back above the gate"
         assert 2 not in by_offset, "offset-2 self-loop is back above the gate"
-        assert by_offset[3] == pytest.approx(0.8957, abs=1e-4)
+        assert by_offset[3] == pytest.approx(0.8841, abs=1e-4)
 
         raw = json.loads(SHIPPED_TABLE_PATH.read_text())["tool_transitions"]
         p1 = next(e["probability"] for e in raw["run_ase"]["1"]
                   if e["target"] == "run_ase")
         assert p1 < shipped._min_confidence
+
+        # The 0.8957 -> 0.8841 move is the table-wide decay, NOT the ChemGraph
+        # data.  Both halves asserted, so a future drift cannot be blamed on
+        # the wrong one.
+        p3 = next(e["probability"] for e in raw["run_ase"]["3"]
+                  if e["target"] == "run_ase")
+        assert p3 == pytest.approx(0.8957, abs=1e-4)
+        assert shipped.offset_decay == pytest.approx(0.9870, abs=1e-4)
+        assert by_offset[3] == pytest.approx(p3 * shipped.offset_decay)
 
         # ...and the signal itself is alive: at the same step it still names a
         # registry-covered resource for the NEW top successor.

@@ -10,8 +10,16 @@ Interception points
    Fires after every LLM response: extract tool_calls → predict → schedule prefetch.
 
 2. Reply handler registered on admin_agent at position=1
-   Fires before tool execution (before text_tool_call_fallback at position=2):
-   extract tool_calls from message → divergence check.
+   Fires when a message NAMING a tool is observed (before text_tool_call_fallback
+   at position=2 decides whether to run it): extract tool_calls from message →
+   divergence check.
+
+3. _function_map wrapper on admin_agent (execution mode only, default off)
+   Fires immediately before a tool body actually runs.  Both execution paths --
+   autogen_hook's text_tool_call_fallback and AutoGen's own execute_function --
+   look the callable up in _function_map, so this is the one point that sees
+   every execution exactly once.  Used to emit tool_call on execution instead
+   of on observation; see TOOL_CALL_EMISSION_* below.
 
 Timing
 ------
@@ -68,6 +76,60 @@ if TYPE_CHECKING:
     pass
 
 
+# ---------------------------------------------------------------------------
+# tool_call emission mode
+# ---------------------------------------------------------------------------
+# "observation" (DEFAULT, legacy):
+#     One tool_call event per *observed* message that names a tool, emitted
+#     from the position=1 reply handler.  Two consecutive LLM completions that
+#     both name the same tool therefore produce two events even though the
+#     tool runs once (62 of the 1237 tool_call events in the eval corpus;
+#     28 of 159 in the 47-trial AtomAgents adjudication set).
+#
+# "execution":
+#     One tool_call event per *execution*, emitted from a wrapper installed
+#     over the agent's _function_map — the single point every execution path
+#     (AutoGen's structured tool-call reply AND autogen_hook's position=2
+#     text_tool_call_fallback) funnels through.  Each execution consumes the
+#     nearest unmatched observation of the same tool and inherits its step;
+#     unmatched observations are dropped.  There is NO time threshold, so two
+#     genuine back-to-back executions always yield two events no matter how
+#     close together they are (the tightest real pair in the corpus is
+#     analyze_screw_core at 0.947 s, exp2/full_system/t06__20260729-073419).
+#
+# Selected by RuntimeConfig.tool_call_emission if that field exists, else by
+# the AGENT_HPC_TOOL_CALL_EMISSION environment variable.  Default is
+# "observation": every trial in flight during the Blackwell campaign must stay
+# byte-identical to the t09/t10/t11 baselines it is compared against.
+TOOL_CALL_EMISSION_OBSERVATION = "observation"
+TOOL_CALL_EMISSION_EXECUTION = "execution"
+TOOL_CALL_EMISSION_ENV = "AGENT_HPC_TOOL_CALL_EMISSION"
+
+# Bumped whenever tool_call emission semantics change.  Written into the trace
+# as a `runtime_schema` event, but ONLY in execution mode -- a trace with no
+# runtime_schema event is a pre-fix (observation-mode) trace, which keeps
+# every existing trace identifiable without rewriting any of them.
+TOOL_CALL_SCHEMA_VERSION = 2
+
+# Cap on unmatched observations retained per tool.  A pathological run that
+# observes a tool hundreds of times without ever executing it must not grow
+# this list without bound; the oldest entries are the least useful anyway.
+_MAX_PENDING_OBS_PER_TOOL = 8
+
+
+def _resolve_emission_mode(config) -> bool:
+    """True if tool_call events should be emitted on execution, not observation.
+
+    Config field wins over the environment so an experiment runner can pin the
+    mode explicitly.  Anything unrecognised falls back to legacy behaviour --
+    a typo must never silently change the instrumentation of a live campaign.
+    """
+    raw = getattr(config, "tool_call_emission", None)
+    if raw is None:
+        raw = os.environ.get(TOOL_CALL_EMISSION_ENV, "")
+    return str(raw).strip().lower() == TOOL_CALL_EMISSION_EXECUTION
+
+
 class AtomAgentsRuntimeAdapter:
     """
     Non-invasive runtime adapter for AtomAgents / AutoGen.
@@ -99,6 +161,19 @@ class AtomAgentsRuntimeAdapter:
         self._plan_window_open = True
         self._lock = threading.Lock()
         self._installed = False
+        # --- tool_call emission mode (see TOOL_CALL_EMISSION_* below) ---------
+        self._emit_on_execution = _resolve_emission_mode(config)
+        # tool name -> LIFO stack of (step, monotonic_time) observations that
+        # have not yet been matched to an execution.  Only used in execution
+        # mode; in observation mode it stays empty and costs nothing.
+        self._pending_obs: dict[str, list[tuple[int, float]]] = {}
+        self._obs_count = 0
+        self._exec_emitted = 0
+        self._exec_unobserved = 0
+        # id() of agents whose _function_map has already been wrapped, so a
+        # second install() (or an agent reachable by two paths) does not
+        # double-wrap and double-count.
+        self._exec_hooked: set[int] = set()
         # Model names already given a model_cache staging task. Staging the same
         # snapshot twice is pure waste: the shards are immutable, so a second
         # warm of the same path can only re-read bytes that are already cached.
@@ -130,8 +205,19 @@ class AtomAgentsRuntimeAdapter:
         except ImportError:
             pass
 
+        # Trace schema marker.  Execution mode only: in observation mode the
+        # trace must stay byte-identical to every trace already collected, so
+        # the marker's ABSENCE is what identifies a pre-fix trace.
+        if self._emit_on_execution:
+            self._bus.emit("runtime_schema", {
+                "tool_call_emission": TOOL_CALL_EMISSION_EXECUTION,
+                "tool_call_schema_version": TOOL_CALL_SCHEMA_VERSION,
+                "adapter": "atomagents",
+            }, step=self._step)
+
         self._patch_oai_wrapper()
         self._install_reply_handler(admin_agent)
+        self._install_execution_hook(admin_agent)
 
         # Also watch the inner admin agent used inside computation_task
         # sub-conversations so tool calls there (e.g. create_screw_dislocation
@@ -140,6 +226,7 @@ class AtomAgentsRuntimeAdapter:
             from atomagents.agents import admin as inner_admin  # type: ignore
             if inner_admin is not admin_agent:
                 self._install_reply_handler(inner_admin)
+                self._install_execution_hook(inner_admin)
                 # The inner admin's default is_termination_msg fires on any message
                 # whose last line is "TERMINATE" — including the model's bash-style
                 # multi-call blocks that pack all tool calls + TERMINATE in one reply.
@@ -375,8 +462,18 @@ class AtomAgentsRuntimeAdapter:
 
     def _run_divergence_check(self, tool_name: str, step: int) -> None:
         """
-        Called just before a tool executes at the given step.
+        Called when a message naming `tool_name` is OBSERVED at the given step.
         Checks the pending prediction targeting this step.
+
+        Note on the name: this fires on observation, not execution.  Execution
+        happens later, in autogen_hook's text_tool_call_fallback at position=2
+        (or in AutoGen's own structured tool-call reply).  When two consecutive
+        LLM completions name the same tool, this runs twice and the tool runs
+        once.  Every side effect below is deliberately kept on the observation
+        edge -- in particular self._detector.on_tool_about_to_execute, whose
+        call point is pinned by the recorded-divergence replay corpus -- and
+        ONLY the tool_call bus emission is redirected to the execution edge
+        when execution mode is enabled.
         """
         with self._lock:
             self._tool_call_count += 1
@@ -384,7 +481,10 @@ class AtomAgentsRuntimeAdapter:
             # A real tool is about to run: the planning phase is over.
             self._plan_window_open = False
         self._bus.set_step(step)
-        self._bus.emit("tool_call", {"tool": tool_name}, step=step)
+        if self._emit_on_execution:
+            self._note_tool_observed(tool_name, step)
+        else:
+            self._bus.emit("tool_call", {"tool": tool_name}, step=step)
         self._stamp_consumed(tool_name, step)
         hit, action, ckpt_out = self._detector.on_tool_about_to_execute(
             tool_name, step=step,
@@ -412,6 +512,107 @@ class AtomAgentsRuntimeAdapter:
                 self._config.run_id, step, "divergence",
                 self._config.conservative_mode_steps,
             ))
+
+    # ------------------------------------------------------------------
+    # tool_call emission: observation <-> execution pairing
+    # ------------------------------------------------------------------
+
+    def _note_tool_observed(self, tool_name: str, step: int) -> None:
+        """Record an observation of `tool_name` without emitting anything.
+
+        Execution mode only.  The event is emitted later, by
+        _on_tool_execution, if and only if the tool actually runs.
+        """
+        with self._lock:
+            self._obs_count += 1
+            stack = self._pending_obs.setdefault(tool_name, [])
+            stack.append((step, time.monotonic()))
+            if len(stack) > _MAX_PENDING_OBS_PER_TOOL:
+                del stack[0]
+
+    def _on_tool_execution(self, tool_name: str) -> None:
+        """Emit exactly one tool_call event for one execution of `tool_name`.
+
+        Called from the _function_map wrapper immediately BEFORE the tool body
+        runs, so the event keeps the same "just before the tool executes"
+        position in the trace that observation-mode events had.
+
+        Pairing rule: consume the MOST RECENT unmatched observation of this
+        tool and inherit its step.  Most recent (not oldest) because a
+        duplicated observation is two consecutive LLM completions naming the
+        same tool, and it is the second reply cycle that actually executes --
+        so the second observation's step is the one that describes this run.
+
+        This rule cannot collapse a genuine repeat: it counts executions, and
+        two executions consume two observations and emit two events regardless
+        of how little time separates them.  There is no time window anywhere in
+        this path.  Conversely a duplicated observation with a single execution
+        emits once and leaves one observation unmatched, which is dropped.
+        """
+        with self._lock:
+            stack = self._pending_obs.get(tool_name) or []
+            if stack:
+                step, _t = stack.pop()
+                observed = True
+            else:
+                step = self._step
+                observed = False
+                self._exec_unobserved += 1
+            self._exec_emitted += 1
+
+        payload = {"tool": tool_name, "emitted_on": TOOL_CALL_EMISSION_EXECUTION}
+        if not observed:
+            # An execution the position=1 handler never saw (e.g. a tool call
+            # in a message format _extract_text_tool_name does not parse).  In
+            # observation mode this execution produced no event at all; flag it
+            # rather than let it masquerade as a matched one.
+            payload["observed"] = False
+        self._bus.set_step(step)
+        self._bus.emit("tool_call", payload, step=step)
+
+    def _install_execution_hook(self, agent) -> None:
+        """Wrap every entry of `agent._function_map` to report its execution.
+
+        _function_map is the one place BOTH execution paths converge:
+        autogen_hook's text_tool_call_fallback does
+        `recipient._function_map.get(func_name)`, and AutoGen's own
+        execute_function does `self._function_map[func_name]`.  Hooking here
+        rather than the position=2 reply avoids having to infer "did it run?"
+        from the reply text (the fallback also returns redirects, type errors
+        and unknown-tool messages without running anything).
+
+        functools.wraps sets __wrapped__, so the fallback's inspect.signature
+        based argument remapping and type validation still see the real
+        signature.  Wrapping is a no-op unless execution mode is enabled.
+        """
+        if not self._emit_on_execution:
+            return
+        fmap = getattr(agent, "_function_map", None)
+        if not isinstance(fmap, dict):
+            return
+        if id(agent) in self._exec_hooked:
+            return
+        self._exec_hooked.add(id(agent))
+
+        adapter = self
+        for name, func in list(fmap.items()):
+            if getattr(func, "_runtime_exec_hooked", False) or not callable(func):
+                continue
+
+            def _make(tool_name, inner):
+                @functools.wraps(inner)
+                def _hooked(*args, **kwargs):
+                    try:
+                        adapter._on_tool_execution(tool_name)
+                    except Exception as _exc:
+                        import sys
+                        print(f"[runtime] tool_call emit error: {_exc}",
+                              file=sys.stderr)
+                    return inner(*args, **kwargs)
+                _hooked._runtime_exec_hooked = True
+                return _hooked
+
+            fmap[name] = _make(name, func)
 
     def _stamp_consumed(self, tool_name: str, step: int) -> None:
         """Mark prefetched resources whose consumer tool is firing as consumed.
@@ -540,6 +741,24 @@ class AtomAgentsRuntimeAdapter:
     def step(self) -> int:
         with self._lock:
             return self._step
+
+    @property
+    def emits_on_execution(self) -> bool:
+        return self._emit_on_execution
+
+    @property
+    def tool_call_emission_stats(self) -> dict:
+        """Observation/execution accounting, for tests and post-run reporting."""
+        with self._lock:
+            return {
+                "mode": (TOOL_CALL_EMISSION_EXECUTION if self._emit_on_execution
+                         else TOOL_CALL_EMISSION_OBSERVATION),
+                "observations": self._obs_count,
+                "events_emitted": self._exec_emitted,
+                "executions_without_observation": self._exec_unobserved,
+                "observations_unmatched": sum(
+                    len(v) for v in self._pending_obs.values()),
+            }
 
 
 # ---------------------------------------------------------------------------

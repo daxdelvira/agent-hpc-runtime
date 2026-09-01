@@ -24,7 +24,8 @@ Usage
     HW_PROFILE=blackwell_swap bash experiments/run_blackwell.sh --condition full_system
 
 Flags (same as exp2 plus):
-    --hw-profile   l40s | blackwell | blackwell_swap (default: l40s)
+    --hw-profile   l40s | blackwell | blackwell_swap | blackwell_swap_tp2
+                   (default: l40s)
 """
 from __future__ import annotations
 
@@ -368,7 +369,40 @@ def _make_code_task(text72b_url: str):
         Returns the specialist's response (parameters, pseudocode, or a script outline).
         Use the output as guidance when calling computation_task_screw_dislocation.
         """
+        from contextlib import nullcontext as _nullctx
+
         from atomagents.runtime.model_router import get_router
+
+        # INSTRUMENTATION: emit an `agent:code_task` phase, the way every tool in
+        # orchestration_tools.py does. code_task is defined here rather than in
+        # the submodule, so it was the ONE tool whose executions never reached
+        # metrics.csv -- and metrics.csv is the only instrumentation that can
+        # adjudicate a duplicate tool_call emission from a genuine repeat (time
+        # cannot: the populations abut at 0.35 s and 0.947 s).
+        #
+        # Two findings are blocked on this and both are recorded in the plan:
+        #   * qwen_72b_text's reuse distance is a BRACKET, 764.3-1297.3 s, rather
+        #     than a point estimate -- on the second-largest resource in the
+        #     catalogue -- because code_task executions are unadjudicable.
+        #   * the plan_task transition row cannot be repaired by adjudicate_needs
+        #     without a code_task phase to anchor against.
+        #
+        # Additive: a new row type in metrics.csv. It does not touch trace.jsonl,
+        # the tool's return value, or its error path, so arms collected with and
+        # without it stay comparable on wall_time_s.
+        try:
+            from atomagents.instrumentation.metrics_logger import get_metrics_logger
+            _ml = get_metrics_logger()
+        except Exception:            # instrumentation must never break the tool
+            _ml = None
+        _phase = (_ml.phase("agent:code_task", category="reasoning")
+                  if _ml is not None else _nullctx())
+
+        with _phase:
+            return _code_task_body(task, context, text72b_url, get_router,
+                                   _json, _urllib)
+
+    def _code_task_body(task, context, text72b_url, get_router, _json, _urllib):
         router = get_router()
         if router is not None:
             router.ensure_ready(text72b_url)
@@ -510,6 +544,9 @@ def run_exp3(args: argparse.Namespace) -> None:
                 from experiments.model_configs import MODELS_L40S as MODELS
             elif args.hw_profile == "blackwell_swap":
                 from experiments.model_configs import MODELS_BLACKWELL_SWAP as MODELS
+            elif args.hw_profile == "blackwell_swap_tp2":
+                from experiments.model_configs import (
+                    MODELS_BLACKWELL_SWAP_TP2 as MODELS)
             elif args.hw_profile == "blackwell":
                 from experiments.model_configs import MODELS_BLACKWELL as MODELS
             elif args.hw_profile == "rtx6000":
@@ -909,7 +946,8 @@ def main() -> None:
     parser.add_argument("--run-id", default=None)
     parser.add_argument(
         "--hw-profile",
-        choices=["l40s", "blackwell", "blackwell_swap", "rtx6000"],
+        choices=["l40s", "blackwell", "blackwell_swap",
+                 "blackwell_swap_tp2", "rtx6000"],
         default="l40s",
         help="Hardware profile: l40s and blackwell_swap use shared GPU pool (forced swaps); "
              "blackwell uses original separate-pair layout (no forced swaps).",

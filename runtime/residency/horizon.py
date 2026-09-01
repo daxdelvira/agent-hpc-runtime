@@ -436,60 +436,88 @@ class TransitionBasisMismatch(RuntimeError):
 class TransitionSignal:
     """The learned transition table, wrapped with its offset basis attached.
 
-    THE BASIS IS NOW DECLARED IN THE FILE, AND THIS CLASS REFUSES TO GUESS IT.
-    `learned_transitions.json` v2 carries `offset_basis`:
-    `{"tool_transitions": "tool_call_subsequence",
-      "model_transitions": "llm_call_subsequence"}`.
-    A file without that key is a PRE-FIX table whose offsets were counted over
-    one MIXED tool_call+llm_call sequence, so an offset was neither a tool step
-    nor an LLM step. Enabling either half of such a table raises rather than
-    silently converting an offset in one sequence with the step duration of
-    another. (The history is worth keeping: on the pre-fix file `plan_task` had
-    a single row, `plan_task -> plan_task` p=1.0 n=45 at offset 2, and
-    `code_task` — its real successor 78 times — was invisible. A3 fixed the
-    learner; the corrected row is `code_task` p=0.5455 n=78 at offset 1.)
+    TWO THINGS ARE DECLARED IN THE FILE, AND THIS CLASS REFUSES TO GUESS EITHER.
 
-    BOTH HALVES ARE STILL OFF BY DEFAULT, FOR REASONS THAT SURVIVED THE FIX.
-    The basis argument is gone. Three measurements replace it, and none of them
-    is about arithmetic — they are about what is in the corpus.
+    `offset_basis` says what an offset COUNTS
+    (`tool_call_subsequence` / `llm_call_subsequence`); `synthetic_filter` says
+    whether replay-harness traces were excluded before counting. A file missing
+    either key is a pre-fix or pre-filter table, and enabling a half of one
+    RAISES rather than converting numbers whose meaning nobody recorded. Both
+    checks exist because both defects were live in this file within two days,
+    both produced plausible-looking numbers, and neither announced itself.
 
-    1. The corpus is overwhelmingly synthetic. Of 6972 `llm_call` events in
-       `logs/workflow_traces/runtime_trace_*.jsonl`, 5897 (84.6%) come from
-       traces whose median inter-`llm_call` gap is under a second; of 5977
-       `tool_call` events, 5310 (88.8%) do. Two May run_ids supply most of it.
-       Nothing in the learner filters them, so every probability in the
-       AtomAgents half of this table is a statement about two synthetic runs.
+    THE TWO HALVES NOW GO DIFFERENT WAYS, and the reason is a measured
+    asymmetry rather than a preference.
 
-    2. The `plan_task` self-loop is 93% logging artifact. Its n=45 at offset 1
-       decomposes, over `logs/workflow_traces/*.jsonl`, into 42 adjacent pairs
-       under one second and 3 over it (10 of the 42 from mock traces). The
-       runtime emits `plan_task` twice per call; adjudicated against
-       AtomAgents' own `metrics.csv`, 21 of the 41 completed trials that call
-       it emit 2 events and execute 1, with both events preceding the single
-       execution. So the true offset-1 self-transition rate is nearer 3/143
-       than the 0.3147 the table reports.
+    -- model_transitions: ON. --------------------------------------------
+    Disabled here on 2026-08-31 on the finding that the offset-1 self-loop
+    barely beat its own base rate. That finding was drawn from an unfiltered
+    corpus and it inverted once the synthetic traces came out, because the
+    harness runs were driving the base rate toward 1.0 -- precisely the regime
+    in which conditioning on the current model CANNOT buy anything:
 
-    3. `model_transitions` does not beat its own base rate. Corrected, the
-       offset-1 self-loop is `Qwen2.5-VL-72B-Instruct -> itself` p=0.9893,
-       n=11311 (the p=0.9973 figure quoted before the fix was from the
-       mixed-basis file and is void). But the UNCONDITIONAL frequency of that
-       model among `llm_call` events is 0.9524 pooled and 0.7805 on real traces
-       only, against a self-loop of 0.9834 pooled / 0.9009 real-only. So
-       conditioning on the current model buys +0.031 pooled, +0.120 real-only,
-       over guessing the majority element of a two-element alphabet. It is also
-       a SELF-loop, so it says nothing about switching — and switching is the
-       only thing a residency decision needs from a model predictor. The plan
-       plus `tool_resources.json` already names each tool's model, for free.
+        corpus         72B +1 -> 72B     72B share of llm_call     advantage
+        unfiltered     0.9893 (n=11311)  0.9685                    +2.1 pts
+        filtered       0.8752 (n=  652)  0.7433                    +13.2 pts
 
-    None of this is a permanent verdict, and none of it is a reason to delete
-    the machinery. Filter the corpus and adjudicate the duplicates and both
-    halves may well earn their place; that is why `load()` takes the flags and
-    why `offset_basis` is checked rather than assumed. What must not happen is
-    the default flipping without someone redoing (1)-(3).
+    Re-derived independently rather than taken on report: reimplementing
+    `llm_turn_plausibility_v1` from the thresholds in the file header
+    (min_llm_turn_seconds 1.0, max_consecutive_fast_turns 7,
+    min_seconds_per_tool_call 3.0, scope >= 2 llm_call events) over
+    `logs/workflow_traces/*.jsonl` reproduces the header exactly -- scanned 490,
+    out_of_scope 340, kept 99, excluded 51 (burst 40 / rate 11), excluded
+    tool_events 5365, llm_events 10826 -- and gives self-loop 652/745 = 0.8752
+    against base rate 837/1126 = 0.7433. The minority model is the stronger
+    case: 32B +1 -> 32B is 0.7000 against a 0.2567 base rate, +44.3 points.
 
-    When enabled, each half converts in ITS OWN basis: tool offsets are plan
-    steps and use `tool_step_s`; model offsets are LLM-call steps and use
-    `llm_step_s` (`MEASURED_LLM_STEP_S`).
+    Two further checks, because three of the four reasons for the old default
+    had to be retested and it would have been easy to keep the conclusion:
+
+      * IT DOES CARRY SWITCHING, which the unfiltered table did not. The
+        off-diagonal is 72B -> 32B 0.1248 / 0.2057 / 0.2329 at offsets 1-3 and
+        32B -> 72B 0.3000 / 0.5961 / 0.9558. That matters more than the
+        diagonal: the serving model needs no prediction, while a PARKED model
+        with 12-23% mass inside three LLM steps gets a finite distance instead
+        of a None and therefore competes for budget. At exp3/Blackwell that
+        moves a parked 32B from L=1800 s to about 1220 s, a 1.5x in Eq. 1 -- in
+        the direction I3 exists to allow.
+      * THE PLAN DOES NOT ALREADY COVER IT. Predicting the next llm_call's
+        model on the filtered corpus (n=1025 events with a predecessor):
+        majority class 0.7180, model self-loop 0.8273, tool->model via
+        `tool_resources.json` 0.9352 BUT ONLY on the 69% of events whose
+        preceding tool has a model mapping, and silent on the other 31%. The
+        registry is better where it applies and absent where it does not, so
+        the two are complementary. "The plan already names each tool's model"
+        was true and was not the whole picture.
+
+    And the self-loop is not itself a logging artifact: adjudicated against
+    `metrics.csv`, `llm_call` is UNDER-recorded, never over-recorded -- 439
+    trace events against 621 `llm:inference` rows over 66 completed AtomAgents
+    runs, with zero runs where the trace has more. The double emission is a
+    `tool_call` phenomenon and does not reach this half.
+
+    -- tool_transitions: OFF, for one sharp reason that survived the filter. --
+    The top self-loop is 93% instrumentation artifact and it distorts the whole
+    row. `plan_task -> plan_task` is n=43 on the filtered corpus, of which 40
+    are sub-second pairs and 3 are real; the synthetic filter could not remove
+    them because the double emission happens in REAL traces too. So the table
+    reports `plan_task -> plan_task` at 0.3613 where the truth is nearer 3/119,
+    and `code_task` at 0.5882 where its true share of real successors is
+    70/79 = 0.886. The mass is not merely diluted, it is misallocated, and a
+    horizon that reads it holds the wrong resource rather than merely holding
+    the right one with less confidence.
+
+    This one is fixable and the fix is already in this module: run the corpus
+    through `adjudicate_needs` against each run's `metrics.csv` before
+    learning, and the row is repaired. Until someone does, the half stays off.
+    `code_task` has no execution record, so it cannot be adjudicated either --
+    the same gap that brackets `qwen_72b_text`'s reuse distance.
+
+    Each half converts in ITS OWN basis: tool offsets are plan steps and use
+    `tool_step_s`; model offsets are LLM-call steps and use `llm_step_s`
+    (`MEASURED_LLM_STEP_S`). Those differ by a factor of two on the same facet
+    -- 751.55 s against 374.46 s at atomagents_exp3/Blackwell -- so enabling
+    the model half without passing `llm_step_s` is refused rather than defaulted.
     """
 
     tool_transitions: Mapping[str, Mapping[int, Sequence[Mapping]]] = field(
@@ -498,19 +526,24 @@ class TransitionSignal:
         default_factory=dict)
     n_traces: int = 0
     offset_basis: Mapping[str, str] = field(default_factory=dict)
+    synthetic_filter: Mapping[str, object] = field(default_factory=dict)
     use_tool_transitions: bool = False
-    use_model_transitions: bool = False
+    use_model_transitions: bool = True
 
     @classmethod
     def load(
         cls,
         path: Optional[Path] = None,
         use_tool_transitions: bool = False,
-        use_model_transitions: bool = False,
+        use_model_transitions: bool = True,
     ) -> "TransitionSignal":
-        """Load the table. Enabling a half whose declared basis is missing or
-        unexpected raises: a pre-fix file's offsets are on neither basis, and
-        converting them with either step constant is an arithmetic error."""
+        """Load the table.
+
+        Enabling a half of a table that does not declare BOTH its offset basis
+        and an applied synthetic filter raises. A pre-fix file's offsets are on
+        neither basis; a pre-filter file's probabilities are dominated by
+        replay-harness traces. Either one yields a plausible number that is
+        wrong, which is why this is an exception and not a warning."""
         if path is None:
             path = (Path(__file__).resolve().parents[1]
                     / "predictor" / "data" / "learned_transitions.json")
@@ -524,6 +557,15 @@ class TransitionSignal:
                     for src, offs in (d or {}).items()}
 
         basis = raw.get("offset_basis") or {}
+        sfilter = raw.get("synthetic_filter") or {}
+        if (use_tool_transitions or use_model_transitions) and not sfilter.get("applied"):
+            raise TransitionBasisMismatch(
+                f"{p}: synthetic_filter is "
+                f"{'absent' if not sfilter else 'applied=False'}. An unfiltered "
+                "table counts replay-harness traces alongside real ones; on this "
+                "corpus that drove the model base rate from 0.7433 to 0.9685 and "
+                "turned a +13.2 point conditional advantage into +2.1. Regenerate "
+                "with the filter before enabling either half.")
         for enabled, key, expect in (
             (use_tool_transitions, "tool_transitions", EXPECTED_TOOL_BASIS),
             (use_model_transitions, "model_transitions", EXPECTED_MODEL_BASIS),
@@ -542,6 +584,7 @@ class TransitionSignal:
             model_transitions=_norm(raw.get("model_transitions")),
             n_traces=int(raw.get("n_traces", 0)),
             offset_basis=dict(basis),
+            synthetic_filter=dict(sfilter),
             use_tool_transitions=use_tool_transitions,
             use_model_transitions=use_model_transitions,
         )
@@ -656,12 +699,21 @@ class PlanTransitionHorizon:
 
         self._demand = demand
         self._tool_step_s = float(tool_step_s)
+        self._transitions = transitions or TransitionSignal.disabled()
+        if self._transitions.use_model_transitions and llm_step_s is None:
+            raise ValueError(
+                "model transitions are enabled but llm_step_s was not given. "
+                "There is deliberately no fallback to tool_step_s: an LLM step "
+                "and a tool step differ by a factor of two on the same facet "
+                "(374.46 s against 751.55 s at atomagents_exp3/Blackwell), so "
+                "the fallback would convert an llm_call_subsequence offset with "
+                "a tool-step constant and be wrong by that factor. Take it from "
+                "MEASURED_LLM_STEP_S[(workload, gpu)].")
         self._llm_step_s = float(
             llm_step_s if llm_step_s is not None else tool_step_s)
         if self._llm_step_s <= 0:
             raise ValueError("llm_step_s must be > 0")
         self._horizon_s = float(horizon_s)
-        self._transitions = transitions or TransitionSignal.disabled()
         self._plan_confidence = float(plan_confidence)
         self._plan_offset_decay = float(plan_offset_decay)
         self._max_plan_offset = int(max_plan_offset)
@@ -759,6 +811,19 @@ class PlanTransitionHorizon:
                     break
                 if resource_id not in self._demand.resources_for_tool(tool):
                     continue
+                # plan_offset_decay damps confidence with distance. It is a
+                # CONSTRUCTOR ARGUMENT here and never read from the transition
+                # table, deliberately: the table's `offset_decay` is derived
+                # TABLE-WIDE and is unstable at these sample sizes in both
+                # directions -- 0.8404 -> 1.0 when the corpus grew (1.0 meaning
+                # no damping at all, because harness self-loops sit at p=1.0 at
+                # every offset), then 1.0 -> 0.9870 over 46 pairs when the
+                # synthetic traces came out. B4 measured the consequence:
+                # run_ase +3 moved 0.8957 -> 0.8841 although its own row did not
+                # change. So any offset>=3 confidence quoted as a property of
+                # one workload is not one -- it is a property of every other
+                # workload in the corpus. Anything sweeping this must set it
+                # explicitly and say what it set.
                 p = self._plan_confidence * (self._plan_offset_decay ** (k - 1))
                 d = max(0.0, k * self._tool_step_s - elapsed)
                 out.append(Arrival(d, _clamp01(p), "plan",

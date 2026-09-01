@@ -16,8 +16,19 @@ WHY THIS EXISTS
     "computation_task_screw_dislocation" observed) passed the prefilter and then
     failed the `==` test, so a MATCH was logged as a divergence.
 
-Every AtomAgents eval trial ran with the broken detector.  The recorded
-aggregate over all AtomAgents campaign summaries is
+THE CORPUS NOW HAS TWO ERAS -- THIS BLOCK DESCRIBES ONLY THE FIRST.
+Updated 2026-09-01.  When this was written, every AtomAgents eval trial had run
+with the broken detector.  That is no longer true: the corpus is 88 AtomAgents
+traces, of which 59 are PRE-96f5f28 and 29 are POST.  The post-fix trials record
+24 divergences and 24 conservative_mode events, and those 24 have been verified
+genuine -- driving the shipped detector offline reproduces all 24 tuple-for-tuple
+(step, expected_tool, actual_tool, checkpoint_id) in 16 of 16 traces.
+
+Every number in this docstring is a PRE-FIX number and still checks out as one
+(219/91/0/128 over the 59 pre-fix traces).  Do not read them as describing the
+corpus.  The reconciliation block below reports the eras separately.
+
+The recorded aggregate over the PRE-FIX AtomAgents campaign summaries is
 
     prediction_count=219  hit_count=91  miss_count=0  unvalidated_count=128
     divergence_count=0    prefetch_cancelled=0        wasted_prefetch=0
@@ -51,8 +62,10 @@ Replayed: the SCORING of the prediction stream that was actually recorded.
 NOT replayed: the prediction stream the fixed system would have produced.  A
 miss puts the live adapter into conservative mode for `conservative_mode_steps`,
 which suppresses subsequent predictions.  Under the broken detector no AtomAgents
-run ever entered conservative mode (0 `conservative_mode` events in 59 AtomAgents
-traces).  So the fixed system, run live, would have made FEWER predictions than
+run ever entered conservative mode -- 0 `conservative_mode` events across the 59
+PRE-FIX traces.  (Corpus-wide the count is now 24, all of them in the 29 post-fix
+traces, which is the fix working rather than a contradiction.)  So for the
+pre-fix corpus the fixed system, run live, would have made FEWER predictions than
 the 219 scored here.  This is a counterfactual limit, not a bug: the question
 answered is "of the predictions that were made, how many were right?", which is
 the accuracy/precision number the paper reports.  It is NOT "what would the

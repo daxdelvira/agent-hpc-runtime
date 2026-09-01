@@ -49,3 +49,9 @@ htmlcov/
 
 # Job/campaign logs (data, not code)
 *.log
+
+# Data Atlas generated outputs (rebuild: scripts/atlas/scan.py then render.py)
+scripts/atlas/inventory.json
+scripts/atlas/figcaptions.json
+scripts/atlas/figsources.json
+scripts/atlas/data_atlas.html
