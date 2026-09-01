@@ -37,6 +37,35 @@ from typing import Any
 from runtime.prefetch.base import PrefetchExecutor, PrefetchStatus, PrefetchTask
 
 
+# How long the proactive-swap path waits for a handover that is ALREADY UNDER
+# WAY before it hands the GPUs to the residency actor.  Read off the
+# orchestrator's own constants rather than picked:
+#   workloads/AtomAgents/atomagents/runtime/model_orchestrator.py
+#     :311  stop_model(name, wait_s: float = 30.0)   SIGINT grace
+#     :335  process.wait(timeout=10)                 SIGKILL reap
+#     :352  drain_timeout = 240                      VRAM-drain poll ceiling
+# 30 + 10 + 240 = 280 s, rounded up to 300.  The 240 s term is not nominal: all
+# three failed Tandem trials printed a drain that hit exactly that ceiling —
+# "GPU VRAM drained in 242.4s" (…_tp2/tandem/t01__20260901-151756__f9b64ab/
+# stdout.log:394), 240.2s (…_aligned/tandem/t01__20260901-144241__f9b64ab/
+# stdout.log:436) and 240.3s (…/t02__20260901-152547__f9b64ab/stdout.log:433).
+# Beyond this the incumbent is not handing over, and forcing it is the actor's
+# decision to make, not this executor's.
+#
+# This bound is used ONLY on the residency-actor path.  The legacy path's 600 s
+# is left exactly where it is.
+HANDOVER_GRACE_S = 300.0
+
+
+class ProactiveSwapDeclined(RuntimeError):
+    """The swap was not attempted, and nothing was touched.
+
+    Raised instead of evicting an incumbent that is still COMING UP.  A
+    prefetch is worth less than the step the workflow is currently waiting on,
+    and this is the failure mode that reads as "we did nothing" in the trace.
+    """
+
+
 # ---------------------------------------------------------------------------
 # FakeModelOrchestrator — for local testing and demos
 # ---------------------------------------------------------------------------
@@ -173,9 +202,14 @@ class ModelPrefetchExecutor(PrefetchExecutor):
         evict_conflicting: bool = False,
         sleep_wake: bool = False,
         residency_actor=None,   # runtime.residency.model_actor.VllmModelActor
+        handover_grace_s: float = HANDOVER_GRACE_S,
     ) -> None:
         self._orchestrator = orchestrator
         self._probes = probes
+        # Only consulted on the residency-actor proactive-swap path; the legacy
+        # path keeps its own hard-coded 600 s. Constructor-visible so the tests
+        # can drive the timeout without sleeping for five minutes.
+        self._handover_grace_s = handover_grace_s
         # T4a.  When a model residency actor is wired in, bring-up goes through
         # it: it PARKS (L1 sleep) or stops whoever holds the GPUs, confirms the
         # VRAM actually came back, probes the engine for coherent text, and
@@ -275,6 +309,212 @@ class ModelPrefetchExecutor(PrefetchExecutor):
         self._pool.shutdown(wait=wait)
 
     # ------------------------------------------------------------------
+    # Proactive swap
+    # ------------------------------------------------------------------
+
+    def _proactive_swap_legacy(self, task: PrefetchTask) -> None:
+        """The pre-residency proactive swap. DO NOT CHANGE.
+
+        This is the code as it stood before 2026-09-01, moved verbatim out of
+        `_load_model` and nothing else.  `full_system`, `naive_prefetch` and
+        `baseline` run without a residency actor and must keep behaving exactly
+        as they did, including the 600 s bound, the `while/else`, the two print
+        strings and the bare `stop_model`.  The defect this fallback carries
+        predates Tandem and is NOT fixed here on purpose: fixing it silently
+        would change arms whose numbers are already in the paper.
+
+        The defect, for the record — it is the subject of
+        `_proactive_swap_via_actor` below:  `stop_model` SIGKILLs the launcher
+        after a 30 s grace, but a vLLM engine that is mid-load leaves its
+        EngineCore and Worker children running.  They finish loading and
+        allocate the KV cache AFTER "stopped" is printed, so the drain poll can
+        never reach its >0.95-free condition and falls out at its 240 s
+        ceiling — printing "GPU VRAM drained in 240.2s", which reads like
+        success and is not.  ~80 GiB stays held and every later boot on those
+        GPUs dies with vLLM's "Free memory on device cuda:N (14.28/94.97 GiB)".
+        """
+        # Wait for the current model to be stopped by the compute tool.
+        # Timeout after 10 min; fall back to stopping it ourselves.
+        deadline = time.perf_counter() + 600.0
+        while time.perf_counter() < deadline:
+            current = self._orchestrator.get_running_model()
+            if current is None:
+                break
+            time.sleep(5.0)
+        else:
+            current = self._orchestrator.get_running_model()
+            if current and current != task.resource.name:
+                print(
+                    f"[model_prefetch] Proactive swap timeout: stopping {current} "
+                    f"(fallback) to load {task.resource.name}.",
+                    flush=True,
+                )
+                self._orchestrator.stop_model(current)
+        print(
+            f"[model_prefetch] Proactive swap: GPUs free — loading {task.resource.name}.",
+            flush=True,
+        )
+
+    def _incumbent_is_serving(self, name: str) -> bool | None:
+        """Is `name`'s HTTP endpoint answering? None when we cannot tell.
+
+        Deliberately NOT `orchestrator.wait_until_ready`: that one blocks,
+        prints "[orchestrator] X is ready on :PORT." as a side effect, and
+        raises on a port mismatch.  This is the same GET it makes
+        (model_orchestrator.py:270-272) with none of that.
+        """
+        cfg = (getattr(self._orchestrator, "models", {}) or {}).get(name) or {}
+        port = cfg.get("port")
+        if not port:
+            return None                     # no port to ask (e.g. the fakes)
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(
+                    f"http://localhost:{port}/v1/models", timeout=5) as r:
+                return 200 <= r.status < 300
+        except urllib.error.URLError:
+            # Connection refused / timeout / HTTP error. The engine holds the
+            # GPUs but is not serving: it is still coming up (or wedged).
+            return False
+        except Exception:                             # noqa: BLE001
+            return None                     # instrument problem, not an answer
+
+    def _proactive_swap_via_actor(self, task: PrefetchTask) -> None:
+        """Proactive swap WITH a residency actor wired.
+
+        Three things differ from the legacy path, all of them the point:
+
+        1. It NEVER calls `stop_model` itself.  Every eviction goes through
+           `VllmModelActor.activate()` -> `_free_gpus_for()`, which prefers an
+           L1 park, falls back to `_stop_and_measure()` (which waits for the
+           whole process TREE to leave /proc and raises ReleaseNotHonoured if
+           any pid survives — the orphaned EngineCore/Worker that wedged these
+           trials), and then CONFIRMS with a VRAM read before anything is
+           launched.  That is the whole difference between an eviction that is
+           claimed and one that is evidenced.
+
+        2. The wait is bounded by HANDOVER_GRACE_S (300 s, derived above from
+           the orchestrator's own stop_model constants) rather than 600 s,
+           because expiry is no longer an action.  It is a handoff: the actor
+           decides whether the occupant can be moved.
+
+        3. Expiry against an incumbent that is still COMING UP declines the
+           swap instead of taking its GPUs.  This is the case all three failed
+           trials were in — qwen_32b was 12/18 shards into a cold boot the
+           ROUTER had asked for on the workflow's critical path, and no
+           voluntary handover was ever coming.  Evicting it throws away a
+           581-773 s weight load the current step is blocked on
+           ("Model loading took 15.83 GiB memory and 581.144760 seconds",
+           …_aligned/tandem/t01__20260901-144241__f9b64ab/stdout.log) to win a
+           prefetch.  A step is worth more than a prefetch, so we decline.
+        """
+        target = task.resource.name
+        deadline = time.perf_counter() + self._handover_grace_s
+        while time.perf_counter() < deadline:
+            current = self._orchestrator.get_running_model()
+            if current is None or current == target:
+                print(f"[model_prefetch] Proactive swap: GPUs free — "
+                      f"loading {target}.", flush=True)
+                return
+            time.sleep(5.0)
+
+        current = self._orchestrator.get_running_model()
+        if current is None or current == target:
+            print(f"[model_prefetch] Proactive swap: GPUs free — "
+                  f"loading {target}.", flush=True)
+            return
+
+        serving = self._incumbent_is_serving(current)
+        if serving is False:
+            raise ProactiveSwapDeclined(
+                f"declining the proactive swap to {target}: {current} still "
+                f"holds GPUs "
+                f"{sorted((getattr(self._orchestrator, 'models', {}) or {}).get(current, {}).get('gpus', []))} "
+                f"after {self._handover_grace_s:.0f}s and is NOT serving yet — "
+                f"it is mid bring-up for the workflow. Taking its GPUs would "
+                f"discard a cold boot the current step is blocked on. Nothing "
+                f"was touched; the incumbent is still coming up.")
+
+        print(f"[model_prefetch] Proactive swap: no handover after "
+              f"{self._handover_grace_s:.0f}s and {current} is serving — "
+              f"delegating eviction to the residency actor (confirmed "
+              f"park-or-stop), not stopping it blind.", flush=True)
+
+    def _activate_or_restore(self, task: PrefetchTask) -> dict[str, Any]:
+        """`actor.activate()`, but never leaving the GPUs without a server.
+
+        `restore_on_failure` exists on the actor and does NOT cover this path:
+        `_restore()` is called from `stage()` alone (model_actor.py:1270 and
+        :1296).  `activate()` has no try/except around its wake/boot, so a
+        target that fails to come up after the incumbent was parked leaves the
+        incumbent parked.  This puts the same restore on the serving path.
+        """
+        target = task.resource.name
+        try:
+            return self._residency_actor.activate(target)
+        except BaseException:
+            self._restore_service(target)
+            raise
+
+    def _restore_service(self, target: str) -> None:
+        """Undo what the failed activation cost. Never raises.
+
+        PARKED victims are woken back — the actor's own restore (2.076 s), just
+        on the path that was missing it.  STOPPED victims are reported and not
+        cold-booted: a boot from this background thread would run 581-773 s
+        alongside whatever `ModelRouter.ensure_ready` is already starting on
+        the same GPUs (model_router.py:163), which is the collision that caused
+        this defect.  The executor's obligation is narrower and sufficient —
+        leave the GPUs in a state where the router's own boot can succeed.  The
+        actor's stop is tree-confirmed and VRAM-read, so it does; the legacy
+        `stop_model` did not, which is why those three runs could never
+        recover.
+        """
+        actor = self._residency_actor
+        try:
+            key = actor.model_for(target)
+        except Exception:                             # noqa: BLE001
+            key = target
+        try:
+            ev = dict(getattr(actor, "last_eviction_detail", {}).get(key) or {})
+        except Exception:                             # noqa: BLE001
+            ev = {}
+
+        parked = list(ev.get("parked") or [])
+        stopped = list(ev.get("stopped") or [])
+        if not parked and not stopped:
+            print(f"[model_prefetch] Proactive swap to {target} failed before "
+                  f"any eviction — the incumbent is untouched and still "
+                  f"serving. Nothing to restore.", flush=True)
+            return
+
+        # `last_eviction_detail` PERSISTS across swaps, so a stale entry could
+        # name a victim that is serving again. Only wake what is parked NOW.
+        try:
+            currently_parked = set(actor.parked_models())
+        except Exception:                             # noqa: BLE001
+            currently_parked = set()
+        for victim in parked:
+            if victim not in currently_parked:
+                continue
+            try:
+                actor.wake(victim)
+                print(f"[model_prefetch] Restored {victim}: woken back after "
+                      f"{target} failed to come up.", flush=True)
+            except Exception as exc:                  # noqa: BLE001
+                print(f"[model_prefetch] WARNING: {victim} was parked for "
+                      f"{target} and would not wake back: {exc}", flush=True)
+
+        if stopped:
+            print(f"[model_prefetch] {target} failed after STOPPING {stopped}; "
+                  f"a stop cannot be undone cheaply and this thread will not "
+                  f"race the router by cold-booting it. The teardown was "
+                  f"confirmed (process tree gone + VRAM read), so the GPUs are "
+                  f"free and ensure_ready() can boot whatever is asked next.",
+                  flush=True)
+
+    # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
@@ -291,31 +531,18 @@ class ModelPrefetchExecutor(PrefetchExecutor):
           model right before LAMMPS starts.  This background thread waits until
           the GPUs are free, then loads the next model concurrently with LAMMPS.
           This avoids stopping qwen_72b too early (before a bad-arg retry fires).
+
+          There are TWO of these now, split on whether a residency actor is
+          wired.  See _proactive_swap_legacy (unchanged; the arms without
+          --residency) and _proactive_swap_via_actor (the fix).
         """
         probe_before = self._probes.snapshot() if self._probes else None
         try:
             if task.proactive_swap:
-                # Wait for the current model to be stopped by the compute tool.
-                # Timeout after 10 min; fall back to stopping it ourselves.
-                deadline = time.perf_counter() + 600.0
-                while time.perf_counter() < deadline:
-                    current = self._orchestrator.get_running_model()
-                    if current is None:
-                        break
-                    time.sleep(5.0)
+                if self._residency_actor is not None:
+                    self._proactive_swap_via_actor(task)
                 else:
-                    current = self._orchestrator.get_running_model()
-                    if current and current != task.resource.name:
-                        print(
-                            f"[model_prefetch] Proactive swap timeout: stopping {current} "
-                            f"(fallback) to load {task.resource.name}.",
-                            flush=True,
-                        )
-                        self._orchestrator.stop_model(current)
-                print(
-                    f"[model_prefetch] Proactive swap: GPUs free — loading {task.resource.name}.",
-                    flush=True,
-                )
+                    self._proactive_swap_legacy(task)
 
             if self._evict_conflicting:
                 target_gpus = set(
@@ -340,7 +567,11 @@ class ModelPrefetchExecutor(PrefetchExecutor):
                 # T4a: the GPU-occupancy path. Raises GpusNotFreed — naming the
                 # occupant and why it could not be moved — instead of the
                 # orchestrator's generic "Call stop_model first."
-                info = self._residency_actor.activate(task.resource.name)
+                # Wrapped: the actor's own `restore_on_failure` is wired into
+                # stage() only (model_actor.py:1270,1296 are its ONLY callers),
+                # so an activate() that evicts and then fails to boot leaves
+                # the victims down. _activate_or_restore closes that.
+                info = self._activate_or_restore(task)
                 elapsed = info["elapsed_s"]
                 mechanism = info["mechanism"]
                 evicted = [e["model"] for e in info.get("evicted", [])]
