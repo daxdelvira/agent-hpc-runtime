@@ -63,6 +63,13 @@ def _entry(port: int) -> dict:
         "extra_args": ["--dtype", "float16", "--enforce-eager",
                        "--enable-sleep-mode",
                        "--served-model-name", "Qwen/Qwen2.5-VL-32B-Instruct"],
+        # BOTH are required and neither can be turned on after launch.
+        # --enable-sleep-mode builds the engine with CuMemAllocator;
+        # VLLM_SERVER_DEV_MODE=1 is what EXPOSES /sleep, /wake_up and
+        # /is_sleeping. Run 12684990 set only the first, so park() got a 404 and
+        # the actor downgraded to stop -- forcing a 1256.63 s cold boot where a
+        # wake is ~2 s. The same omission was live in the production tandem arm.
+        "extra_env": {"VLLM_SERVER_DEV_MODE": "1"},
     }
 
 
@@ -185,10 +192,42 @@ def main() -> int:
           flush=True)
 
     contended = ctl.get("failed_as_expected") or c2.get("failed_as_expected")
+    # ---------------- ROUND TRIP: is the parked model cheap to get back? ---
+    # Taking the GPU is only half of it. The point of parking rather than
+    # stopping is that the return trip costs ~2 s instead of a ~1500 s boot.
+    # This arm measures that directly: activate A again, now that B holds the
+    # card and A is (hopefully) parked.
+    print("\n=== ROUND TRIP: activate(model_a) again ===", flush=True)
+    rt: dict = {}
+    t3 = time.perf_counter()
+    try:
+        res2 = actor.activate("model_a")
+        rt.update({"ok": True, "mechanism": res2.get("mechanism"),
+                   "activate_s": round(res2.get("elapsed_s", 0.0), 2),
+                   "evicted": res2.get("evicted"),
+                   "probe_ok": (res2.get("probe") or {}).get("ok"),
+                   "probe_text": (res2.get("probe") or {}).get("text")})
+    except Exception as exc:
+        rt.update({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:400]})
+    rt["wall_s"] = round(time.perf_counter() - t3, 2)
+    # THE number this arm exists for: wake vs cold boot on the return trip.
+    rt["was_a_wake"] = rt.get("mechanism") == "wake"
+    rt["speedup_vs_cold_boot"] = (
+        round(ctl["boot_a_s"] / rt["activate_s"], 1)
+        if rt.get("activate_s") else None)
+    rec["arms"]["round_trip"] = rt
+    save()
+    print(f"[roundtrip] {json.dumps(rt)[:300]}", flush=True)
+
     verdict = ("MECHANISM WORKS" if tan.get("ok") and contended
                else "INCONCLUSIVE — GPUs were not actually contended"
                if not contended else "MECHANISM FAILED")
     rec["verdict"] = verdict
+    rec["retention_verdict"] = (
+        "PARK+WAKE — retention benefit realised" if rt.get("was_a_wake")
+        else f"NO PARK — evicted by "
+             f"{(tan.get('evicted') or [{}])[0].get('action')}, "
+             f"return trip was {rt.get('mechanism')}")
     save()
     print(f"\n=== VERDICT: {verdict} ===", flush=True)
     print(f"wrote {out}", flush=True)

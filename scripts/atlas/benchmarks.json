@@ -3,145 +3,174 @@
  "families": {
   "bench_activation_ladder": {
    "question": "Does the same model cost the same to load on every node?",
-   "why": "Every cross-arm comparison assumes trials are comparable. If node identity moves the number, pooling arms collected on different nodes is invalid — and most of this project's campaigns were collected opportunistically across whatever hardware was free.",
-   "produced": "Cold boot for one identical 68.3 GB model ranged 344–1372 s across 8 nodes — a 4.0x spread — while wake stayed 1.43–2.07 s and park cost 113.5–115.8 GiB.",
+   "why": "Every cross-arm comparison assumes trials are comparable. If node identity moves the number, pooling arms collected on different nodes is invalid \u2014 and most of this project's campaigns were collected opportunistically across whatever hardware was free.",
+   "produced": "Cold boot for one identical 68.3 GB model ranged 344\u20131372 s across 8 nodes \u2014 a 4.0x spread \u2014 while wake stayed 1.43\u20132.07 s and park cost 113.5\u2013115.8 GiB.",
    "claim": "Node identity dominates absolute load cost; retention converts a high-variance cost into a near-constant one.",
    "status": "stands",
-   "note": "This is the origin of the never-pool rule. It is the single most load-bearing measurement in the archive for how everything else must be read."},
+   "note": "This is the origin of the never-pool rule. It is the single most load-bearing measurement in the archive for how everything else must be read."
+  },
   "bench_activated_residency": {
    "question": "Does holding a parsed EAM potential in a live process actually avoid the re-parse? (E1/E2)",
    "why": "The whole data-side mechanism rests on it. If LAMMPS memoised the tabulation internally, retention would be a no-op and there would be no contribution.",
-   "produced": "r1_parse_cold 44.90 s, r2_parse_warm 42.83 s, r3_reuse_live 4.78 s, r4_repeat_coeff 42.84 s. Activated size 16.93 GB — a 5.10x expansion of the 3.32 GB file.",
-   "claim": "Retention is worth 9.0x on reuse, and LAMMPS does NOT memoise — re-issuing pair_coeff costs a full re-parse. The saving is unavailable by accident; it requires an explicit resident worker.",
+   "produced": "r1_parse_cold 44.90 s, r2_parse_warm 42.83 s, r3_reuse_live 4.78 s, r4_repeat_coeff 42.84 s. Activated size 16.93 GB \u2014 a 5.10x expansion of the 3.32 GB file.",
+   "claim": "Retention is worth 9.0x on reuse, and LAMMPS does NOT memoise \u2014 re-issuing pair_coeff costs a full re-parse. The saving is unavailable by accident; it requires an explicit resident worker.",
    "status": "stands",
-   "note": "The r4 arm is what makes this a contribution rather than a configuration flag. It also corrected an earlier ~9.8 GB estimate — do not cite that figure."},
+   "note": "The r4 arm is what makes this a contribution rather than a configuration flag. It also corrected an earlier ~9.8 GB estimate \u2014 do not cite that figure."
+  },
   "verify_persistent_lammps": {
    "question": "Does a persistent worker preserve the physics?",
    "why": "A retention speedup that changes the answer is not a speedup.",
    "produced": "93.73 s to 10.56 s per redundant invocation (8.88x), potential energy relative difference 0.000e+00.",
    "claim": "Activated-data retention is bit-identical in its output.",
    "status": "stands",
-   "note": "Single-node. The retention RATIO itself moves with the node (8.96x / 10.71x / 11.29x / 11.39x measured across three), so quote this with its node named."},
+   "note": "Single-node. The retention RATIO itself moves with the node (8.96x / 10.71x / 11.29x / 11.39x measured across three), so quote this with its node named."
+  },
   "bench_format_activation": {
    "question": "How much does retention buy per gigabyte held, and does it depend on the format?",
    "why": "A budget has to rank resources against each other. Ranking needs a per-GB value, and it is only usable if it is a property of the format rather than of the instance.",
-   "produced": "Seconds-per-GB spread 65x across formats (ASCII ~22.0 down to npy ~0.34), flat to within 1.00–1.16x across a 4x size range within each format.",
+   "produced": "Seconds-per-GB spread 65x across formats (ASCII ~22.0 down to npy ~0.34), flat to within 1.00\u20131.16x across a 4x size range within each format.",
    "claim": "s/GB is a format constant, so it can be measured once and cached; and models land in the MIDDLE of the data range, so no fixed class priority is correct.",
    "status": "stands",
-   "note": "Feeds fig-sgb-spread. Note the paper prose and the figure read DIFFERENT files — one node-specific, one not."},
+   "note": "Feeds fig-sgb-spread. Note the paper prose and the figure read DIFFERENT files \u2014 one node-specific, one not."
+  },
   "bench_potential_activation": {
    "question": "Of the cost of making a potential usable, how much is I/O and how much is parse?",
    "why": "It decides whether a byte-oriented prefetcher could help at all. Staging bytes early can only recover the I/O share.",
    "produced": "Cold load 100.10 s, warm load 98.23 s, raw sequential read 4.78 s, with mincore-verified cache state at every rung.",
    "claim": "I/O is 1.9% of the cost; 98.1% is parse and spline construction inside the consumer. Staging the bytes recovers at most 1.9%.",
    "status": "stands",
-   "note": "Replaced an earlier '129 s load / 106 s parse' figure that was extrapolated from a Python parse rate. LAMMPS parses in C++; do not cite the old numbers."},
+   "note": "Replaced an earlier '129 s load / 106 s parse' figure that was extrapolated from a Python parse rate. LAMMPS parses in C++; do not cite the old numbers."
+  },
   "bench_wake_L1_coherence_32b": {
    "question": "Does a level-1 sleep wake up CORRECT, not merely fast?",
    "why": "Level-2 sleep produced verbatim garbage on this cluster while returning HTTP success. A footprint or latency number from an engine that wakes broken is worthless.",
    "produced": "Cold boot 782.27 s, wake 2.076 s, verbatim-correct output at both warm and cache-evicted rungs, throughput unchanged (20.05 vs 20.20 tok/s). Park cost 120.77 GiB for a 68.28 GB model = 1.90x.",
    "claim": "L1 parking is real and coherent, and 377x cheaper than a cold boot. The degeneracy is an L2-only pathology.",
    "status": "stands",
-   "note": "The coherence probe is why this is trustworthy and the L2 result was not."},
+   "note": "The coherence probe is why this is trustworthy and the L2 result was not."
+  },
   "bench_sleep_wake_qwen_72b_instruct": {
    "question": "Earlier attempt at the same sleep/wake ladder.",
    "why": "Predates the coherence probe.",
    "produced": "L1 and L2 timings in one process.",
    "claim": "None that survives.",
    "status": "withdrawn",
-   "note": "Its L2 arm is CONTAMINATED: L1 cycles ran first in the same process and never released the host-side backup, so the 'L2' wake had L1's copy resident. Do not use its L2 numbers."},
+   "note": "Its L2 arm is CONTAMINATED: L1 cycles ran first in the same process and never released the host-side backup, so the 'L2' wake had L1's copy resident. Do not use its L2 numbers."
+  },
   "bench_l2_pressure": {
    "question": "What does level-2 sleep cost in host memory?",
    "why": "Follow-up to the L2 anomaly.",
    "produced": "Host memory readings under L2.",
    "claim": "Superseded by the L1 coherence work.",
-   "status": "superseded"},
+   "status": "superseded"
+  },
   "bench_residency_preflight": {
    "question": "How many engines can be parked at L1 simultaneously? (Stage-0 gates a and b)",
    "why": "If everything fits, there is no arbitration problem and no paper.",
-   "produced": "k=1 parked at 197.5 GiB host RAM, k=2 at 305.6 GiB, k=3 did not complete (timeout on Blackwell, HTTP 500 on L40S). Delta 108–128 GiB per engine.",
-   "claim": "Something must decide what NOT to park — parking everything is not available at a realistic allocation.",
+   "produced": "k=1 parked at 197.5 GiB host RAM, k=2 at 305.6 GiB, k=3 did not complete (timeout on Blackwell, HTTP 500 on L40S). Delta 108\u2013128 GiB per engine.",
+   "claim": "Something must decide what NOT to park \u2014 parking everything is not available at a realistic allocation.",
    "status": "stands",
-   "note": "Two over-reads to avoid. The k=3 failure was a timeout and an HTTP 500, NOT an observed OOM or node death. And the fleet was four copies of ONE 32B model, not the four distinct agent models."},
+   "note": "Two over-reads to avoid. The k=3 failure was a timeout and an HTTP 500, NOT an observed OOM or node death. And the fleet was four copies of ONE 32B model, not the four distinct agent models."
+  },
   "bench_preactivation_interference": {
    "question": "Does background pre-activation slow the foreground agent? (E3)",
    "why": "If speculative work costs foreground throughput, the scheduler must trade CPU against RAM and the decision variable is two-dimensional.",
    "produced": "Eight concurrent background parsers burning ~8 of 12 cores changed the foreground median by 0.001 s (0.618 to 0.618 s). Verified genuinely running: 46.41 CPU-seconds in 6 s of wall.",
    "claim": "CPU leaves the policy. The scheduler budgets RAM only, which is what makes seconds-per-GB a complete decision variable.",
    "status": "stands",
-   "note": "The instrumentation matters — a flat curve is also the signature of a probe that silently did nothing, which is how the L2 result was misread. Bounded claim: every level tested was under-subscribed with small working sets."},
+   "note": "The instrumentation matters \u2014 a flat curve is also the signature of a probe that silently did nothing, which is how the L2 result was misread. Bounded claim: every level tested was under-subscribed with small working sets."
+  },
   "bench_cow_prefork": {
    "question": "Can a template process parse once and fork a child per tool call, sharing the tables copy-on-write?",
-   "why": "It would be strictly better than a resident worker — a fresh process each call, so no residue and no segfault risk to the retained state.",
-   "produced": "fork_noop 0.227 GB private-dirty, fork_read_only 0.227 GB, prefork_child 0.649 GB against a 0.46 GB table = 92% dirtied. Flat at f = 0.921–0.950 across a 4x scale sweep, THP on and off, and both pair styles.",
+   "why": "It would be strictly better than a resident worker \u2014 a fresh process each call, so no residue and no segfault risk to the retained state.",
+   "produced": "fork_noop 0.227 GB private-dirty, fork_read_only 0.227 GB, prefork_child 0.649 GB against a 0.46 GB table = 92% dirtied. Flat at f = 0.921\u20130.950 across a 4x scale sweep, THP on and off, and both pair styles.",
    "claim": "Copy-on-write collapses the instant LAMMPS runs, because run() re-runs the spline interpolation and rewrites every coefficient array in place. Prefork is dead for this consumer; a resident worker re-interpolates into the SAME memory and stays 1x.",
    "status": "stands",
-   "note": "Killed a design I had recommended, before any of it was built. The negative control (write_control) is what makes the null result trustworthy — without it, a blind probe would have looked identical."},
+   "note": "Killed a design I had recommended, before any of it was built. The negative control (write_control) is what makes the null result trustworthy \u2014 without it, a blind probe would have looked identical."
+  },
   "bench_h1_quantized_park": {
    "question": "Does quantisation halve the parked footprint of a 72B? (H1)",
    "why": "Every cell where arbitration is worth >=20% assumes it does. It was the last unmeasured assumption under the policy claim.",
    "produced": "Job SIGKILLed by a 4 GiB per-user cgroup cap on the login node.",
    "claim": "None.",
-   "status": "invalid"},
+   "status": "invalid"
+  },
   "bench_h1_fp8_tp1": {
    "question": "Same question, retried on a compute node with online fp8.",
    "why": "See above.",
-   "produced": "Boot 954.99 s, park 82.04 GiB. But the coherence probe returned 'は.   1111' for 'The capital of France is'.",
-   "claim": "NONE — the engine was incoherent. A footprint from a broken engine describes tensors of the right size in an engine that does not work.",
+   "produced": "Boot 954.99 s, park 82.04 GiB. But the coherence probe returned '\u306f.   1111' for 'The capital of France is'.",
+   "claim": "NONE \u2014 the engine was incoherent. A footprint from a broken engine describes tensors of the right size in an engine that does not work.",
    "status": "withdrawn",
-   "note": "Two lessons. Online --quantization fp8 of this model at tp=1 on Blackwell produces garbage. And the coherence rule that let it through checked only for non-empty text plus a finish_reason — the verbatim '!!!!' degeneracy it was written to catch passes that too. Only a semantic anchor catches it. H1 remains UNMEASURED."},
+   "note": "Two lessons. Online --quantization fp8 of this model at tp=1 on Blackwell produces garbage. And the coherence rule that let it through checked only for non-empty text plus a finish_reason \u2014 the verbatim '!!!!' degeneracy it was written to catch passes that too. Only a semantic anchor catches it. H1 remains UNMEASURED."
+  },
   "bench_v0_park_column": {
    "question": "Which memory column does an L1 park actually land in?",
-   "why": "The fp8 run parked 82 GiB entirely in the cgroup's file column with anon unmoved. If that is what parking really does, then reading anon reports held_gb = 0.0 for a real park — which would tell the arbitrator that holding a model is free and void every retention decision.",
+   "why": "The fp8 run parked 82 GiB entirely in the cgroup's file column with anon unmoved. If that is what parking really does, then reading anon reports held_gb = 0.0 for a real park \u2014 which would tell the arbitrator that holding a model is free and void every retention decision.",
    "produced": "Coherent fp16 32B: anon unchanged at 3.32 GiB, file 0.57 to 114.61 GiB (+114.04), VRAM 84023 to 1293 MiB. Park 122.09 GB, ratio 1.79x. Sleep 75.974 s then 1.346 s.",
    "claim": "An L1 park lands entirely in the file column on a coherent engine. The charging column must be anon + file.",
    "status": "stands",
-   "note": "Also confirms the fp8 result was not a broken-engine artifact."},
+   "note": "Also confirms the fp8 result was not a broken-engine artifact."
+  },
   "bench_v0b_park_backing": {
    "question": "Is that file-backed park a real file on storage, or memory the kernel merely files under an inode?",
    "why": "This decides a paper-level claim. cgroup v2 accounts BOTH real page cache and tmpfs/shm under 'file'. If the park is storage-backed it is a file range a byte-oriented tier could stage, and the argument that a DMSH structurally cannot express model residency weakens.",
-   "produced": "All 114.18 GiB of the park is /dev/zero (deleted) mappings — 24 of them. Storage-backed memory in the entire process tree totals 0.907 GiB, which is code and libraries.",
-   "claim": "The park never touches storage. MAP_SHARED over /dev/zero gives the kernel an internal shmem inode, which is why it is charged to file. The rung-coverage argument SURVIVES — only the word 'anonymous' was wrong. Correct phrasing is 'process-owned memory with no storage backing'.",
+   "produced": "All 114.18 GiB of the park is /dev/zero (deleted) mappings \u2014 24 of them. Storage-backed memory in the entire process tree totals 0.907 GiB, which is code and libraries.",
+   "claim": "The park never touches storage. MAP_SHARED over /dev/zero gives the kernel an internal shmem inode, which is why it is charged to file. The rung-coverage argument SURVIVES \u2014 only the word 'anonymous' was wrong. Correct phrasing is 'process-owned memory with no storage backing'.",
    "status": "stands",
-   "note": "The 114.18 / 0.907 GiB split is the whole argument in one measurement."},
+   "note": "The 114.18 / 0.907 GiB split is the whole argument in one measurement."
+  },
   "bench_residency_data_worker": {
    "question": "Does the resident data worker retain, release, and preserve physics? (D1/D2/D4)",
    "why": "D2 is the item most likely to fail silently: a worker that retains but cannot truly release makes the budget a fiction and every downstream percentage meaningless.",
    "produced": "D1 warm parse 90.12 s vs live reuse 7.91 s = 11.39x. D2 proven four ways: release() returned 17.9334 GB measured as Private_Dirty; the job cgroup independently went 18.4182 to 0.0155 GB; the process left /proc; and re-activation afterwards cost 89.769 s. D4 pe relative difference 0.000e+00. One thread at worker startup against 193 unpinned.",
    "claim": "Option-4 residency works, and eviction is real rather than asserted.",
    "status": "stands",
-   "note": "The behavioural check is the one that matters — the saving is gone after release, which it could not be if release had freed nothing. Also found that an in-process close() alone freed 17.75 GB at full size but only 0.084 of 0.364 GB at small scale, so an in-process-only release would have looked broken when small and fine when large."},
+   "note": "The behavioural check is the one that matters \u2014 the saving is gone after release, which it could not be if release had freed nothing. Also found that an in-process close() alone freed 17.75 GB at full size but only 0.084 of 0.364 GB at small scale, so an in-process-only release would have looked broken when small and fine when large."
+  },
   "bench_p1_*": {
    "question": "Which consumer library and dataset can supply an exogenously-sized activated artifact? (Gate P1/P2/P3)",
    "why": "The policy sweep said a cost-aware ranking needs >=34 GB of activated data to beat LRU. The EAM potential activates to 16.93 GB and its size is a knob we turn, which makes it an illustration rather than a regime.",
-   "produced": "pyhmmer activation share flat at 46–49% across a 40x size range, expansion 2.27–2.31x. UniRef90: 60.95 GB on disk to 117.20 GB activated (1.923x), cold 420.8 s, s/GB 3.179, rungs verified distinct. Parquet, sprot, UniRef50 measured alongside.",
+   "produced": "pyhmmer activation share flat at 46\u201349% across a 40x size range, expansion 2.27\u20132.31x. UniRef90: 60.95 GB on disk to 117.20 GB activated (1.923x), cold 420.8 s, s/GB 3.179, rungs verified distinct. Parquet, sprot, UniRef50 measured alongside.",
    "claim": "UniRef90 is the only artifact measured that clears both design thresholds, and its size is set by UniProt rather than by us.",
    "status": "stands",
-   "note": "s/GB 3.18 sits INSIDE the model band (2.78–3.81), which is what makes it the first resource that genuinely contests budget with a model. The EAM potential at 2.25 is below the band and loses at any size."},
+   "note": "s/GB 3.18 sits INSIDE the model band (2.78\u20133.81), which is what makes it the first resource that genuinely contests budget with a model. The EAM potential at 2.25 is below the band and loses at any size."
+  },
   "diag_p1_superlinear_8gb": {
    "question": "Why did pyhmmer load time scale 47x for 4x more data?",
    "why": "On its face it promoted pyhmmer to the lead candidate. A 12x collapse in parse rate is far more likely to be an artifact than a format property, and acting on it unchecked would have redirected the workload pivot.",
    "produced": "Same 8 GB file, same node, two filesystems: Lustre scratch 568.3 s at 14.1 MB/s with the rate decaying 16.3x within a single read; node-local NVMe 52.2 s at 153.3 MB/s, flat.",
-   "claim": "The superlinearity was STORAGE CONTENTION, not allocator or structure degradation. The 91.8% activation share and 12.13x speedup derived from it are WITHDRAWN — the corrected figure is ~47.6%, in line with the 46–49% format constant.",
+   "claim": "The superlinearity was STORAGE CONTENTION, not allocator or structure degradation. The 91.8% activation share and 12.13x speedup derived from it are WITHDRAWN \u2014 the corrected figure is ~47.6%, in line with the 46\u201349% format constant.",
    "status": "withdrawn",
-   "note": "The secondary finding outlived the verdict: shared-filesystem rebuild cost can collapse an order of magnitude, which is the data-axis twin of the 4.0x node spread in cold boot. It also made node-local /tmp mandatory for every data-axis timing — fadvise is a silent no-op on Lustre, so cold-vs-warm rungs measured there are two identically-cached rungs."},
+   "note": "The secondary finding outlived the verdict: shared-filesystem rebuild cost can collapse an order of magnitude, which is the data-axis twin of the 4.0x node spread in cold boot. It also made node-local /tmp mandatory for every data-axis timing \u2014 fadvise is a silent no-op on Lustre, so cold-vs-warm rungs measured there are two identically-cached rungs."
+  },
   "analyze_misses": {
    "question": "Of the stall a retention policy could address, how much is actually addressable?",
    "why": "A ranking can only convert REPLACEMENT misses. Compulsory and capacity misses are immune to any policy.",
    "produced": "At the 256 GB production budget: replacement misses are 10 of 209 and 2.6% of stall seconds; 46.0% is compulsory and 51.4% is capacity.",
-   "claim": "At the allocation actually used, the category a smarter policy can convert is small — which is why quantisation (H1) matters more than a better ranking.",
-   "status": "stands"},
+   "claim": "At the allocation actually used, the category a smarter policy can convert is small \u2014 which is why quantisation (H1) matters more than a better ranking.",
+   "status": "stands"
+  },
   "noai_*": {
    "question": "What does the workload cost with no agent and no runtime in the loop?",
    "why": "A floor. Without it there is no way to say how much of a trial is irreducible work.",
    "produced": "31 no-AI replay runs of the ChemGraph and AtomAgents work.",
    "claim": "Reference floor for end-to-end comparisons.",
-   "status": "stands"},
+   "status": "stands"
+  },
   "INVALID_port_conflict": {
-   "question": "—",
+   "question": "\u2014",
    "why": "Kept deliberately, named so it cannot be mistaken for data.",
    "produced": "A run invalidated by a vLLM port collision with another user on a shared node.",
    "claim": "None. Do not use.",
-   "status": "invalid"}
+   "status": "invalid"
+  },
+  "bench_gpu_eviction": {
+   "question": "When a GPU is already occupied, can the residency actor take it?",
+   "why": "This is the failure behind the project's negative end-to-end result. On the aligned campaign 16 of 16 model prefetches failed, 10 of them in under a millisecond with 'Cannot start qwen_32b: GPUs [0,1,2,3] occupied by qwen_72b. Call stop_model first.' The predictor was frequently right; its answer had nowhere to go, because all three models declare the same four GPUs. Everything else in Tandem is downstream of whether this works.",
+   "produced": "One GPU, two 68.28 GB engines that cannot coexist on a 96 GB card. Control (orchestrator.start_model): model_b crashed after 30.04 s with model_a holding 84023 MiB \u2014 contention confirmed. Tandem (actor.activate): ok=true, GPU freed, model_b served coherently (probe returned ' Paris. The capital of the United States is Washington, D.C.'). But it evicted by STOP, not park: 'park raised HTTPError: 404 Not Found for /sleep?level=1', forcing a 1256.63 s cold boot where a wake is ~2 s.",
+   "claim": "The actor takes an occupied GPU \u2014 the thing that failed 16/16 times. But with the sleep endpoint missing it downgrades to stop and throws away the retention benefit, and the park-vs-stop choice was being made by a missing HTTP route rather than by the arbitrator's budget callback.",
+   "status": "stands",
+   "note": "Run on ONE GPU deliberately: the property under test is contention, not scale, and the partition was 23/24 allocated all day. The control arm is load-bearing \u2014 a green tandem arm on a free GPU would look identical. Two harness flaws found and fixed: the control used start_model, which has no occupancy guard and merely crashes, rather than start_model_measured, whose guard at model_orchestrator.py:597-598 produces the recorded error; and a_alive was read as get_running_model() is not None, which cannot tell 'model_a survived' from 'model_b is now running'. The 404 was a live defect in the production tandem arm, not just the harness."
+  }
  }
 }

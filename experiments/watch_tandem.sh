@@ -14,7 +14,7 @@ declare -A SEEN_STATE   # jobid -> last state
 declare -A OFFSET       # logfile -> bytes already emitted
 KNOWN=""
 
-PAT='=== VERDICT:|MECHANISM (WORKS|FAILED)|INCONCLUSIVE|\[control\]|\[control2\]|\[tandem\]|TANDEM: VllmModelActor wired|preflight\] (all checks passed|FAILED)|START atomagents_exp3_aligned/tandem|END   atomagents_exp3_aligned/tandem|Cannot start .* occupied by|tandem arm exit=|Traceback|CUDA out of memory|Killed|OOM|slurmstepd: error|DUE TO (PREEMPTION|TIME LIMIT)'
+PAT='=== VERDICT:|MECHANISM (WORKS|FAILED)|INCONCLUSIVE|\[control\]|\[control2\]|\[tandem\]|\[roundtrip\]|TANDEM: VllmModelActor wired|preflight\] (all checks passed|FAILED)|START atomagents_exp3_aligned/tandem|END   atomagents_exp3_aligned/tandem|Cannot start .* occupied by|tandem arm exit=|Traceback|CUDA out of memory|Killed|OOM|slurmstepd: error|DUE TO (PREEMPTION|TIME LIMIT)'
 
 while true; do
   # --- job state transitions -------------------------------------------

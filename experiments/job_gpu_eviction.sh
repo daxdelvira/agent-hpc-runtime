@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=320G
-#SBATCH -t 01:45:00
+#SBATCH -t 02:30:00
 #SBATCH -o gpu_eviction_%j.log
 #SBATCH -e gpu_eviction_%j.log
 #
