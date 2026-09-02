@@ -821,7 +821,27 @@ def run_exp3(args: argparse.Namespace) -> None:
     # ZERO POST /wake_up, and a 1.57x SLOWDOWN against baseline because all
     # three engines still paid the sleep-mode boot penalty for a park that
     # never happened.
-    _res_actor = getattr(executor, "_residency_actor", None)
+    def _find_residency_actor(ex):
+        """The actor is NOT on the object _build_executor returns.
+
+        That function returns a CompositeExecutor, which routes by
+        resource_type and holds its children in `_executors`; the actor lives
+        on the `vllm_model` child (ModelPrefetchExecutor). Reading
+        `executor._residency_actor` therefore always yields None -- which is
+        exactly what trial t05 of job 12720100 reported, via the warning below,
+        26 minutes in. The warning caught it; a silent getattr would have
+        produced a third 1.56x trial with the mechanism off.
+        """
+        a = getattr(ex, "_residency_actor", None)
+        if a is not None:
+            return a
+        for child in (getattr(ex, "_executors", None) or {}).values():
+            a = getattr(child, "_residency_actor", None)
+            if a is not None:
+                return a
+        return None
+
+    _res_actor = _find_residency_actor(executor)
     if _res_actor is not None and router is not None:
         router.set_residency_actor(_res_actor)
     elif getattr(args, "residency", False):

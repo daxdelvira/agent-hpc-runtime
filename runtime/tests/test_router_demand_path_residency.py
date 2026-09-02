@@ -145,3 +145,55 @@ def test_without_an_actor_nothing_changes():
 
     assert orch.calls == [("stop", "qwen_32b"), ("start", "qwen_72b")]
     assert m.rows == [("model_swap_wait:qwen_72b", "blocking_swap")]
+
+
+# ---------------------------------------------------------------------------
+# The actor has to be FOUND before it can be attached
+# ---------------------------------------------------------------------------
+
+def test_the_actor_is_found_on_the_composite_not_on_its_surface():
+    """_build_executor returns a CompositeExecutor, and the actor is on its
+    `vllm_model` CHILD, not on the composite itself.
+
+    The first version of the wiring read `getattr(executor, "_residency_actor",
+    None)` straight off the returned object.  That is always None, so
+    --residency wired the actor and then quietly failed to give it to the
+    router -- reproducing exactly the t03/t04 defect the patch was written to
+    fix.  Caught 26 minutes into trial t05 of job 12720100 by the explicit
+    warning rather than by another 3.2 h trial and a log dig.
+
+    Pinned here because the failure is silent at the type level: both the
+    composite and its children are PrefetchExecutors, so nothing complains.
+    """
+    from runtime.prefetch.data_prefetch import CompositeExecutor
+
+    class _Bare:
+        pass
+
+    class _WithActor:
+        def __init__(self, actor):
+            self._residency_actor = actor
+
+    def find(ex):
+        a = getattr(ex, "_residency_actor", None)
+        if a is not None:
+            return a
+        for child in (getattr(ex, "_executors", None) or {}).values():
+            a = getattr(child, "_residency_actor", None)
+            if a is not None:
+                return a
+        return None
+
+    sentinel = object()
+    comp = CompositeExecutor(
+        executors={"vllm_model": _WithActor(sentinel), "data_file": _Bare()},
+        default=_Bare())
+
+    # The bug, pinned so it reads as intent rather than accident.
+    assert getattr(comp, "_residency_actor", None) is None
+    assert find(comp) is sentinel
+
+    # And a run with no actor must still resolve to None, or every non-residency
+    # arm would start attaching something.
+    assert find(CompositeExecutor(executors={"data_file": _Bare()},
+                                  default=_Bare())) is None
