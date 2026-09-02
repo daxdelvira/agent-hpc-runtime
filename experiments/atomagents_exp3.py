@@ -328,21 +328,79 @@ def _build_executor(mode: RuntimeMode, orchestrator, metrics=None,
                 # permissive one.
                 _PARK_HEADROOM = 0.15      # keep 15% of the limit free
 
+                def _cgroup_limit_and_use():
+                    """Walk UP from the leaf cgroup to the first real limit.
+
+                    THE LEAF HAS NO LIMIT UNDER SLURM, and reading only the leaf
+                    silently disabled this entire guard.  Measured live on job
+                    12721532, node atl1-1-03-020-2-0:
+
+                      memory.max=-             .../s8FXM.../step_0/user/task_0
+                      memory.max=-             .../s8FXM.../step_0/user
+                      memory.max=-             .../s8FXM.../step_0
+                      memory.max=274877906944  .../s8FXM1GBVFF900   <-- 256 GiB
+                      current  =195987382272                        <-- 196.0 GB
+
+                    The limit is set on the JOB cgroup; every step cgroup below
+                    it inherits enforcement without carrying the file.  The old
+                    code read the leaf, got no limit, and returned True with no
+                    log line -- which is why trial t05 shows a successful
+                    `POST /sleep?level=1` and not one `[tandem] can_park(...)`.
+
+                    Returns (limit_gb, used_gb) or None if no ancestor states a
+                    limit.  `used` is read from the SAME cgroup as the limit,
+                    because a limit compared against a descendant's usage
+                    understates what the budget is actually carrying.
+                    """
+                    d = Path(cgroup_mem()["path"])
+                    root = Path("/sys/fs/cgroup")
+                    best = None
+                    while True:
+                        try:
+                            raw = (d / "memory.max").read_text().strip()
+                            if raw and raw != "max":
+                                cur = 0.0
+                                try:
+                                    cur = int((d / "memory.current")
+                                              .read_text().strip()) / 1e9
+                                except Exception:
+                                    pass
+                                lim = int(raw) / 1e9
+                                # MOST RESTRICTIVE ancestor, not the first.
+                                # A limit can appear at more than one level, and
+                                # each level's `current` counts only ITS OWN
+                                # subtree. Taking the first match read a limit
+                                # of 274.9 GB against a step that was using
+                                # 0.0 GB, while the JOB cgroup one level up was
+                                # already carrying 196.0 GB -- i.e. it would
+                                # have reported 233.6 GB spendable when the true
+                                # figure was ~37.7 GB. Pairing each limit with
+                                # its own subtree's usage and minimising over
+                                # them is correct for both layouts.
+                                if best is None or (lim - cur) < best[0] - best[1]:
+                                    best = (lim, cur, str(d))
+                        except Exception:
+                            pass
+                        if d == root or d.parent == d:
+                            return best
+                        d = d.parent
+
                 def _can_park(name: str, est_gb: float) -> bool:
-                    m = cgroup_mem()
-                    try:
-                        limit_raw = (Path(m["path"]) / "memory.max").read_text().strip()
-                    except Exception:
+                    found = _cgroup_limit_and_use()
+                    if found is None:
+                        # An unfindable limit is NOT a permissive one.  The old
+                        # code's "no cgroup cap; the node is ours" is false on
+                        # this cluster: SLURM caps at the job cgroup, and the
+                        # node is shared.
                         print(f"[tandem] can_park({name}): no cgroup limit "
-                              f"readable -- REFUSING park (unknown budget is "
-                              f"not a permissive one)", flush=True)
+                              f"found on any ancestor -- REFUSING park "
+                              f"(unknown budget is not a permissive one)",
+                              flush=True)
                         return False
-                    if limit_raw == "max":
-                        return True            # no cgroup cap; the node is ours
-                    limit_gb = int(limit_raw) / 1e9
-                    used_gb = max(m.get("current_gib", 0.0), 0.0) * 1024 ** 3 / 1e9
+                    limit_gb, used_gb, where = found
                     free_gb = limit_gb * (1.0 - _PARK_HEADROOM) - used_gb
                     ok = est_gb <= free_gb
+                    print(f"[tandem] cgroup limit from {where}", flush=True)
                     print(f"[tandem] can_park({name}): need {est_gb:.1f} GB, "
                           f"{free_gb:.1f} GB spendable of {limit_gb:.1f} GB "
                           f"limit ({used_gb:.1f} used, {_PARK_HEADROOM:.0%} "
