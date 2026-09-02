@@ -56,7 +56,35 @@ case "$_GPU" in
 esac
 
 echo "[job] BOTH ARMS, roundrobin, on THIS node -- the pairing is the point."
+# --trials is a TOP-UP TARGET COUNTED OVER THE WHOLE CORPUS, not a number of
+# trials to run, and the driver's count POOLS HARDWARE.  Run 12720426 asked for
+# 3 and exited 0 in 12 seconds:
+#
+#     atomagents_exp3_aligned/baseline: 11/3 completed, 0 to run
+#     atomagents_exp3_aligned/tandem:    4/3 completed, 0 to run
+#
+# Those 11 baselines are 4 Blackwell plus 11 L40S; only the Blackwell ones are
+# comparable, so a target that the L40S trials already satisfy schedules no
+# work at all.  The target must therefore clear the EXISTING count, not the
+# number of trials wanted.
+#
+# 12 leaves baseline 1 short and tandem 8 short.  Under roundrobin that yields
+# baseline first, then tandem -- which is exactly the same-node pair this job
+# exists to produce -- and keeps going with tandem if the hold survives.
+# 13, not 12.  completed_trials() (run_eval_q1_q4.py:924) counts a trial as
+# completed when its meta.json says status == "completed", and that status means
+# only that the driver process exited 0 -- NOT that the workflow ran.  Baseline
+# t12 was cut short by the preemption of job 12721602 at 2273.9 s with ONE model
+# load (real baselines are 6006-8616 s with 5-8 loads), exited cleanly, and was
+# counted.  Job 12733935 therefore saw "baseline: 12/12 completed, 0 to run" and
+# collected no baseline at all -- defeating the entire purpose of a paired job.
+#
+# Every preemption that produces a clean exit inflates this count by one, so the
+# target has to be bumped again each time until the counter itself distinguishes
+# a completed WORKFLOW from a completed PROCESS.  That is the real fix and it is
+# not made here, because tightening completed_trials() would re-open trials
+# across every workload mid-campaign.
 python3 experiments/run_eval_q1_q4.py \
     --workload atomagents_exp3_aligned --configs baseline,tandem \
-    --trials 3 --order roundrobin
+    --trials 13 --order roundrobin
 echo "[job] paired arm exit=$? end=$(date -Is)"
