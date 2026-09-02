@@ -385,7 +385,39 @@ MODELS_L40S = {
 # to its own workload key (atomagents_exp3_aligned_tp2) for that reason, the
 # same way exp3_aligned was split from exp3.
 # ---------------------------------------------------------------------------
+# TWO DISJOINT GPU SLOTS, not merely half the tensor-parallel degree.
+#
+# The first version of this dict put EVERY model on gpus [0, 1], which is still
+# M=1 -- the same single-slot regime as tp=4, just leaving GPUs 2 and 3 idle.
+# It was written to create the "3 models, GPUs for 2" configuration and did not,
+# and §0.2m of the build plan asserted on that basis that "at tp=2 two engines
+# coexist and a park has somewhere to go". That was wrong until this change.
+#
+# Assigning the two 72Bs to disjoint pairs gives 2 slots for 3 models, which is
+# the regime search_ceiling_regime.py measured at +13.1% for the deployable
+# greedy+0.55 arm (against +28.7% hit rate at slots=1, so this is the CONSERVATIVE
+# half of that finding, not the flattering one).
+#
+# UNVERIFIED RISK, stated rather than discovered in a failed trial: at tp=2 a 72B
+# has roughly half the VRAM headroom it has at tp=4. Two Blackwell cards at
+# util 0.95 give ~186 GB against ~145 GB of fp16 weights, so the weights fit but
+# the KV cache budget is far tighter and max_model_len=16384 may not. Boot one
+# engine on this profile before committing a campaign to it; if it OOMs, lower
+# max_model_len rather than raising util, because util is what guarantees the
+# second slot stays allocatable.
+_TP2_SLOTS = {
+    "qwen_72b": [0, 1],
+    "qwen_72b_text": [2, 3],
+    # Contends with qwen_72b, which is the point: 3 models, 2 slots, so a
+    # residency decision genuinely exists. qwen_32b is also the ONLY model whose
+    # park (129.7 GB) fits a 256 GB budget's 217.6 GB of spendable host RAM, so
+    # it is the only eviction on this workload that retention can currently act
+    # on at the production allocation.
+    "qwen_32b": [0, 1],
+}
+
 MODELS_BLACKWELL_SWAP_TP2 = {
-    name: {**cfg, "gpus": [0, 1], "tensor_parallel_size": 2}
+    name: {**cfg, "gpus": _TP2_SLOTS.get(name, [0, 1]),
+           "tensor_parallel_size": 2}
     for name, cfg in MODELS_BLACKWELL_SWAP.items()
 }

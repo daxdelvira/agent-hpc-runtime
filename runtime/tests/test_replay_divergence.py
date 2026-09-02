@@ -543,10 +543,12 @@ class TestCorpusControl:
     def test_atomagents_now_records_divergences(self, replayed):
         """CHARACTERISATION, replacing the assertion that pinned the bug.
 
-        Audited 2026-09-01 over the corpus on disk: 24 `divergence_detected`
-        events across 16 AtomAgents trials, all in `atomagents_exp3_aligned`,
+        Audited 2026-09-01 over the corpus on disk: 26 `divergence_detected`
+        events across 17 AtomAgents trials, all in `atomagents_exp3_aligned`,
         all from trials whose recorded commit is a descendant of the 96f5f28
-        detector fix.  Reproduce with:
+        detector fix.  (Was 24/16 earlier the same day; the tandem trial
+        t03__20260901-162343__a62b593 added the other two, which is the corpus
+        growing as designed rather than a count moving.)  Reproduce with:
 
             python3 -c "import json,glob; \\
               print(sum(json.load(open(p))['divergence_count'] or 0 for p in \\

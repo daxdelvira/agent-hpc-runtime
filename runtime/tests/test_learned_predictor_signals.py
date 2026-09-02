@@ -200,9 +200,41 @@ class TestCanonicalGap:
         """
         Documents a DATA gap, not a predictor gap: the shipped registry maps no
         resource to extract_output_json, so the prediction has nothing to
-        prefetch.  If someone adds an entry to
-        runtime/predictor/data/tool_resources.json this test should be updated,
-        not deleted.
+        prefetch.
+
+        RESOLVED 2026-09-01 -- the gap is CORRECT and must stay open.  The
+        open question was whether extract_output_json deserved a registry
+        entry.  It does not, and the reason is not a matter of degree:
+
+        * The tool's whole body is `json.load(open(json_file))`
+          (ChemGraph/src/chemgraph/tools/ase_tools.py).  There is no
+          activation to pre-execute and no engine to pre-place -- it is R0->R1
+          on a small file, the one rung a byte prefetcher already covers.
+        * Its argument is `cg_logs/session_<uuid>/<name>_optimized.json`,
+          which run_ase WRITES.  Over the whole ChemGraph corpus, 107 of 107
+          extract_output_json calls follow a run_ase completion and NOT ONE
+          precedes it (median gap 5.04 s, min 4.92 s):
+
+              n=107, gap run_ase END -> extract_output_json CALL:
+              min 4.917 s / median 5.036 s / max 63.463 s, negative gaps 0
+
+          The predictor emits this candidate at `run_ase +1` -- that is,
+          BEFORE run_ase runs -- so at the moment of the prediction the target
+          file does not exist.  You cannot stage bytes that have not been
+          written.
+        * By the time it does exist, run_ase just wrote it, so it is
+          page-cache hot by construction.
+
+        So adding an entry would let the predictor emit a candidate whose best
+        possible payoff is zero, and whose prefetch would fail on a missing
+        path.  Keep the gap; keep this test.
+
+        Consequence for the paper, and it is not small: this is the CANONICAL
+        example the complementarity argument rests on ("the plan omits
+        extract_output_json, the transition table covers it").  The prediction
+        fact survives; the VALUE does not.  Combining the two signals may still
+        be right, but this instance cannot demonstrate it, and the draft must
+        not use it as the worked example.
         """
         shipped = ResourceRegistry.merged(ResourceRegistry.from_json(),
                                           ResourceRegistry.from_mock_predictor())

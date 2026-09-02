@@ -747,6 +747,7 @@ def run_exp3(args: argparse.Namespace) -> None:
     # singleton is None and ensure_ready() is a no-op, so no swaps occur even
     # when models share GPUs.
     # ------------------------------------------------------------------
+    router = None
     if orchestrator is not None and MODELS is not None:
         try:
             from atomagents.runtime.model_router import init_router
@@ -811,6 +812,24 @@ def run_exp3(args: argparse.Namespace) -> None:
         model_paths=_model_paths,
         residency=getattr(args, "residency", False),
     )
+    # Close the demand-path gap.  The residency actor is constructed inside
+    # _build_executor(), which runs AFTER init_router() above, so the router is
+    # given the actor here rather than at construction.
+    #
+    # Without this, the actor only ever sees PREFETCH decisions.  Tandem trial
+    # t03 proved what that costs: 3.2 h, six demand swaps, ZERO POST /sleep and
+    # ZERO POST /wake_up, and a 1.57x SLOWDOWN against baseline because all
+    # three engines still paid the sleep-mode boot penalty for a park that
+    # never happened.
+    _res_actor = getattr(executor, "_residency_actor", None)
+    if _res_actor is not None and router is not None:
+        router.set_residency_actor(_res_actor)
+    elif getattr(args, "residency", False):
+        print("[cluster] WARNING: --residency is set but no residency actor "
+              "reached the router; demand swaps will stop/boot as in baseline "
+              "while the engines still carry the sleep-mode boot cost. This is "
+              "the worst of both arms — investigate before trusting the trial.")
+
     scheduler = PrefetchScheduler(executor=executor, config=cfg, bus=bus)
     detector = DivergenceDetector(scheduler=scheduler, config=cfg, bus=bus)
 
