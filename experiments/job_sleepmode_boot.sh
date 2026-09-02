@@ -59,8 +59,18 @@ case "$_GPU" in
   *) echo "[job] FATAL: not a Blackwell node (got '${_GPU:-empty}')"; exit 2 ;;
 esac
 
-source "$(conda info --base)/etc/profile.d/conda.sh" 2>/dev/null || true
-conda activate atomagents 2>/dev/null || true
+# NO conda source / activate.  `conda activate` is a shell FUNCTION, and under
+# `set -u` an unbound variable inside it is fatal to the whole shell -- which
+# `|| true` cannot catch, because the shell is already gone.  That is what
+# killed jobs 12709114, 12714024 and 12718900: each died in 3-5 s immediately
+# after the GPU banner, exit 1, with no diagnostic, costing three 4-GPU holds
+# (one of them on atl1-1-03-020-6-0, the exact baseline node this comparison
+# needs).  Reproduced on the login node: the line after `conda activate` never
+# runs.
+#
+# job_tandem_only.sh has never had these two lines, which is precisely why it
+# has never failed this way.  The explicit interpreter below is all that was
+# ever needed.
 
 # Explicit interpreter: `conda activate` above is best-effort, and which
 # python3 wins after it decides whether the imports resolve.  Name the one that
