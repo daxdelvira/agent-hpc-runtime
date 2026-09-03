@@ -309,6 +309,66 @@ class LastUseHorizon:
 
 
 # ---------------------------------------------------------------------------
+# Beyond-L pricing variants
+# ---------------------------------------------------------------------------
+
+def install_beyond_l(mode: str) -> None:
+    """Substitute how Eq. 1 prices dt=None, inside the arbitrator only.
+
+    WHY PATCH RATHER THAN EDIT contract.py.  The shipped behaviour is a
+    documented design choice, not an oversight -- value()'s own docstring says
+    "A resource beyond the lookahead is NOT worthless (that would be the 'never
+    again' claim I3 forbids); it is merely the most discounted thing the
+    estimator is entitled to describe."  Changing it changes what the paper
+    claims the policy IS, so it gets measured here before it is decided
+    anywhere else.
+
+    THE DISTINCTION THIS TESTS.  I3 constrains the ESTIMATOR: it may not assert
+    "never again", only "not within L".  It does not require the VALUE FUNCTION
+    to price "at least L away" identically to "exactly L away".  Pricing
+    dt=None at k*L for k>1 keeps the value strictly positive -- no "never"
+    claim anywhere -- while admitting that an unseen resource is worse than one
+    known to return at the horizon edge.  `zero` breaks that and is included
+    only as the bound.
+
+    Patches the names the arbitrator resolved at import (it does
+    `from ...contract import value, value_density`), so the real admit() and
+    score() paths are exercised with substituted pricing and nothing else
+    changes.
+    """
+    from runtime.residency import arbitrator as _arb
+    from runtime.residency import contract as _c
+
+    if mode == "at-l":
+        _arb.value, _arb.value_density = _c.value, _c.value_density
+        return
+
+    if mode == "zero":
+        def _v(spec, dt_s, decay_s, lookahead_s=None):
+            if dt_s is None:
+                return 0.0
+            return _c.value(spec, dt_s, decay_s, lookahead_s)
+    else:
+        k = float(mode.rstrip("lL"))
+        if k <= 1.0:
+            raise ValueError(f"--beyond-l {mode}: k must exceed 1 "
+                             "(k=1 IS the shipped 'at-l' behaviour)")
+
+        def _v(spec, dt_s, decay_s, lookahead_s=None, _k=k):
+            if dt_s is None:
+                # "at least L away" -> priced as k*L. Still finite, still no
+                # claim that it never returns.
+                eff = (_k * lookahead_s) if lookahead_s else (_k * decay_s)
+                return _c.value(spec, eff, decay_s, None)
+            return _c.value(spec, dt_s, decay_s, lookahead_s)
+
+    def _vd(spec, dt_s, decay_s, lookahead_s=None):
+        return _v(spec, dt_s, decay_s, lookahead_s) / spec.held_gb
+
+    _arb.value, _arb.value_density = _v, _vd
+
+
+# ---------------------------------------------------------------------------
 # The arms
 # ---------------------------------------------------------------------------
 
@@ -414,6 +474,10 @@ def main() -> int:
     ap.add_argument("--decay-s", type=float, default=60.0, help="Eq. 1's D")
     ap.add_argument("--lookahead-s", type=float, default=1800.0, help="estimator L")
     ap.add_argument("--node", default=None, help="facet costs to one node")
+    ap.add_argument("--beyond-l", default="at-l",
+                    help="how to price dt=None (not seen within L). 'at-l' is "
+                         "the shipped behaviour; 'kL' for k>1 prices it as k*L; "
+                         "'zero' makes it worthless. Comma-separate to compare.")
     ap.add_argument("--calibrate-only", action="store_true")
     ap.add_argument("--json-out", default="results/replay_tandem_trace.json")
     args = ap.parse_args()
@@ -472,27 +536,36 @@ def main() -> int:
           f"(D={args.decay_s:.0f} s, L={args.lookahead_s:.0f} s) ===")
     if args.horizon == "oracle":
         print("    ORACLE horizon: these are CEILINGS, not deployable numbers.")
-    print(f"\n{'budget':>8s} {'arm':>8s} {'wall':>9s} {'vs never':>9s} "
+    print(f"\n{'budget':>8s} {'arm':>10s} {'wall':>9s} {'vs never':>9s} "
           f"{'vs lru':>8s} {'parks':>6s} {'wakes':>6s} {'decl':>5s}")
     records = []
     never_wall = statistics.mean([run_never(t, specs_for(t))["wall_s"] for t in trials])
+    modes = [m.strip() for m in args.beyond_l.split(",") if m.strip()]
     for b in budgets:
         lru = [run_lru(t, specs_for(t), b) for t in trials]
-        tan = [run_tandem(t, specs_for(t), b, args.horizon, args.decay_s,
-                          args.lookahead_s) for t in trials]
         lw = statistics.mean([r["wall_s"] for r in lru])
-        tw = statistics.mean([r["wall_s"] for r in tan])
-        for label, w, rs in (("lru", lw, lru), ("tandem", tw, tan)):
-            print(f"{b:8.0f} {label:>8s} {w:9.1f} {1 - w/never_wall:+8.1%} "
-                  f"{'' if label=='lru' else f'{1 - tw/lw:+7.1%}':>8s} "
-                  f"{statistics.mean([r['parks'] for r in rs]):6.1f} "
-                  f"{statistics.mean([r['wakes'] for r in rs]):6.1f} "
-                  f"{statistics.mean([r.get('declines',0) for r in rs]):5.1f}")
-        records.append({"budget_gb": b, "lru_wall_s": lw, "tandem_wall_s": tw,
-                        "never_wall_s": never_wall,
-                        "tandem_vs_lru": 1 - tw/lw,
-                        "tandem_wakes": statistics.mean([r["wakes"] for r in tan]),
-                        "tandem_parks": statistics.mean([r["parks"] for r in tan])})
+        print(f"{b:8.0f} {'lru':>10s} {lw:9.1f} {1 - lw/never_wall:+8.1%} "
+              f"{'':>8s} {statistics.mean([r['parks'] for r in lru]):6.1f} "
+              f"{statistics.mean([r['wakes'] for r in lru]):6.1f} {0.0:5.1f}")
+        for mode in modes:
+            install_beyond_l(mode)
+            tan = [run_tandem(t, specs_for(t), b, args.horizon, args.decay_s,
+                              args.lookahead_s) for t in trials]
+            tw = statistics.mean([r["wall_s"] for r in tan])
+            print(f"{'':8s} {'tandem:'+mode:>10s} {tw:9.1f} "
+                  f"{1 - tw/never_wall:+8.1%} {1 - tw/lw:+7.1%} "
+                  f"{statistics.mean([r['parks'] for r in tan]):6.1f} "
+                  f"{statistics.mean([r['wakes'] for r in tan]):6.1f} "
+                  f"{statistics.mean([r.get('declines',0) for r in tan]):5.1f}")
+            records.append({"budget_gb": b, "beyond_l": mode,
+                            "lru_wall_s": lw, "tandem_wall_s": tw,
+                            "never_wall_s": never_wall,
+                            "tandem_vs_lru": 1 - tw/lw,
+                            "tandem_wakes": statistics.mean([r["wakes"] for r in tan]),
+                            "tandem_parks": statistics.mean([r["parks"] for r in tan]),
+                            "tandem_declines": statistics.mean(
+                                [r.get("declines",0) for r in tan])})
+        install_beyond_l("at-l")
         print()
 
     print("REPORTING RULE: a tandem-vs-never figure is mostly plain retention,\n"
@@ -507,6 +580,7 @@ def main() -> int:
                     "slurm_mem_mb": t.budget_mb, "wall_s": t.wall_s,
                     "needs": [n.model for n in t.needs]} for t in trials],
         "cost_source": args.cost_source, "horizon": args.horizon,
+        "beyond_l_modes": [m.strip() for m in args.beyond_l.split(",") if m.strip()],
         "decay_s": args.decay_s, "lookahead_s": args.lookahead_s,
         "specs_by_node": {nd: {m: {"held_gb": sp.held_gb, "cold_s": sp.cold_s,
                                    "ready_s": sp.ready_s}
