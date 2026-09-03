@@ -86,5 +86,5 @@ echo "[job] BOTH ARMS, roundrobin, on THIS node -- the pairing is the point."
 # across every workload mid-campaign.
 python3 experiments/run_eval_q1_q4.py \
     --workload atomagents_exp3_aligned --configs baseline,tandem \
-    --trials 13 --order roundrobin
+    --trials 15 --order roundrobin
 echo "[job] paired arm exit=$? end=$(date -Is)"

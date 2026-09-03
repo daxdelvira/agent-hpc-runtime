@@ -1033,6 +1033,17 @@ def run_one_trial(
         "node": socket.gethostname(),
         "gpus": gpu_info(),
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+        # THE HOST-RAM ALLOCATION IS AN EXPERIMENTAL VARIABLE, NOT AN
+        # ENVIRONMENT DETAIL.  Tandem's whole mechanism is "what fits in the
+        # budget": at --mem=256G only qwen_32b (129.7 GB) is parkable and the
+        # two reused 72Bs (279.0 / 276.3 GB) are refused, so retention can buy
+        # nothing; at --mem=700G both fit and the same code should park and
+        # wake them.  Trials from those two allocations are therefore DIFFERENT
+        # CONFIGURATIONS and must never be pooled -- and until now the only
+        # record of which was which was slurm_job_id, recoverable solely via
+        # `sacct -j <id> --format=ReqMem` while that job stayed in the
+        # accounting DB.  Record it in the trial itself.
+        "slurm_mem_mb": os.environ.get("SLURM_MEM_PER_NODE"),
         "conda_python": wl["python"],
         "start_time": datetime.now().astimezone().isoformat(),
         "status": "running",
