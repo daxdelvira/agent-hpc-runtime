@@ -3,11 +3,19 @@
     contract.py    the frozen interface (rungs, ResourceSpec, Eq. 1, the
                    ResidencyActor / Ledger / Arbitrator protocols, I1-I5)
     ledger.py      T1: the ledger. Measured charges, confirmed releases.
-    arbitrator.py  T2: greedy single-victim retention arbitration, plus the
-                   ranking primitives the simulator shares.
+    arbitrator.py  T2: greedy CHAINED retention arbitration (up to
+                   DEFAULT_MAX_VICTIMS victims per admit), plus the ranking
+                   primitives the simulator shares.
+    horizon.py     T3: the horizon estimator.
+    model_actor.py T4a: models held at R2 (vLLM L1 park/wake, GPU eviction).
+    data_worker.py T4b: data held at R3 (resident, evictable worker).
 
-The horizon estimator (T3) and the residency actors (T4a model, T4b data
-worker) are separate work; everything here depends only on the protocols.
+Everything outside contract.py depends only on its protocols.
+
+This module exports T1, T2 and the contract. T3 and the actors are imported
+from their own modules -- they pull in vLLM and LAMMPS clients, and keeping
+them out of the package __init__ is what lets the policy be replayed and
+unit-tested with no GPU and no engine (see scripts/replay_tandem_trace.py).
 """
 
 from runtime.residency.contract import (
