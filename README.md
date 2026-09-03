@@ -29,20 +29,34 @@ prefix of that chain you have already paid:
 | `R2_PROCESS_BYTES` | bytes in a process address space (vLLM L1 sleep) | RAM → process | movement |
 | `R3_ACTIVATED` | activated structure in a live consumer | parse / decode / construct | **transformation** |
 
-Two measured facts make this a system rather than a taxonomy:
+Two measurements make this a system rather than a taxonomy, and they point in
+opposite directions:
 
-* A **72B model load** is 74–81% weight *movement*; engine init is ~4.7%.
-  So the win is to **never fall below R2** — park the weights in host RAM —
-  which skips the movement rather than overlapping it. ~1600 s → ~2 s.
-* An **EAM potential load** is 1.9% I/O and **98.1% parse**. Staging its bytes
-  early recovers at most 1.9%. The only win is to have already run the parse —
-  hold it at **R3 in a live worker**.
+**Models — the win is to skip the movement, not to schedule it earlier.**
+Warming the page cache before a boot is an unreliable lever: across 9 nodes the
+cold-minus-warm difference ranges from **−7.0% to +66.9%** and changes sign
+(`results/bench_activation_ladder_*.json`), because it removes only the
+disk→RAM leg and leaves RAM→GPU untouched. Parking the weights at R2 removes
+both legs, and does so consistently: **782.27 s cold boot → 2.076 s wake**, with
+verbatim-correct output and unchanged throughput
+(`results/bench_wake_L1_coherence_32b.json`).
+
+**Data — the win is to have already run the parse.** A 3.32 GB EAM potential
+splits three ways: **2.0% disk→RAM, 3.9% RAM→process, 93.0% parse and spline
+construction** (`bench_potential_activation.py`, re-measured with `getrusage`
+2026-08-09). Staging the bytes early therefore recovers at most ~2%. Holding
+the activated structure in a live worker takes a redundant invocation from
+**93.73 s → 10.56 s**, physics bit-identical (`verify_persistent_lammps_BIG.json`).
+
+> An older two-way "1.9% / 98.1%" split for the potential is superseded — it
+> folded the RAM→process row into activation. Cite 93.0%. See the note at the
+> top of `experiments/bench_activated_residency.py`.
 
 So the correct action differs *in kind* by resource class, and a byte-oriented
 tier (which only ever operates R0→R1) cannot express either one: R2 is process
-state, not a file range, and R3 is transformed state. **Rung coverage, not
-prediction accuracy, is the ceiling.** That claim is the reason this subsystem
-exists.
+state rather than a file range, and R3 is transformed state. **Rung coverage,
+not prediction accuracy, is what bounds the achievable win.** That is the
+argument this subsystem exists to test.
 
 Both classes draw on the **same host-RAM budget**, so something must arbitrate
 between them. That arbitration is the contribution.
@@ -84,9 +98,9 @@ and its five invariants each record a specific failure that motivated them:
 | **I4** | the arbitrator is **class-blind** | class-specific knowledge lives in actors, or the budget stops being one budget |
 | **I5** | v1 currency is **retain-only** | mixing retain and prefetch in one score misranked them by 280× |
 
-### The one thing that will confuse you
+### Two call paths — worth knowing before you debug anything
 
-The residency actor sits on **two different call paths**, and they are wired
+The residency actor is reachable from **two places**, and they are wired
 separately:
 
 ```
@@ -100,11 +114,15 @@ PREFETCH path predictor says a model is coming
 ```
 
 **Almost every model change this workload performs comes through the DEMAND
-path.** Wiring the actor only to the prefetch path produces a system that
-looks fully configured, logs `TANDEM: VllmModelActor wired`, and never parks
-anything — which is exactly what trials t03 and t04 did for 3.2 hours each.
-`test_router_demand_path_residency.py` pins this, including that the no-actor
-path stays byte-identical to the router that produced every earlier trial.
+path** — the agent asks for a model it does not currently have. If the actor is
+attached only to the prefetch path, the system looks fully configured and logs
+`TANDEM: VllmModelActor wired`, but never actually parks anything. That is a
+quiet failure mode rather than a loud one, so it is worth checking first when a
+trial shows no parks.
+
+`test_router_demand_path_residency.py` pins the wiring, including the case that
+matters most for comparability: with no actor attached, the router must behave
+byte-identically to the one that produced every earlier trial.
 
 ### The budget is read, not assumed
 
@@ -171,9 +189,10 @@ Blackwell nodes differ by **1.42× on identical weights**) and
 python3 scripts/parse_tandem_trial.py results/eval_q1_q4/runs/.../tandem/<trial>/
 ```
 
-It answers six questions in **dependency order — completeness first** — and
-refuses to compute a speedup without a same-family baseline. A trial with
-fewer than ~5 model swaps is truncated; its wall time is not a measurement.
+It answers six questions in dependency order, completeness first, and will not
+compute a speedup without a same-family baseline. A trial with fewer than ~5
+model swaps was cut short (usually by preemption) and its wall time should not
+be used.
 
 ### Tests
 
@@ -188,30 +207,39 @@ failure, it is not your change.
 
 ---
 
-## Status — what is measured and what is not
+## Where the evidence stands
 
-Being explicit, because the design is further along than the evidence.
+The design is further along than the measurements, which is normal at this
+stage but worth knowing before you quote anything from a trial.
 
-**Established:**
-- The mechanism runs end-to-end: the actor parks, refuses when the budget says
-  so, and prints its arithmetic. First live park 2026-09-02.
-- The `Cannot start … occupied by` failure that killed 10 of 13 admitted
-  prefetches is **gone** — 0 occurrences across completed trials.
-- Park cost is measured twice by independent paths, 0.01 GB apart.
+**Working and verified:**
+- The mechanism runs end-to-end. The actor parks, declines when the budget says
+  to, and prints its arithmetic either way. First live park 2026-09-02.
+- The `Cannot start … occupied by` failure that used to kill most admitted
+  prefetches no longer occurs — 0 across all completed trials.
+- Park cost agrees to 0.01 GB when measured by two independent paths.
+- 219 residency unit tests pass with no GPU.
 
-**Not established:**
-- **No speedup.** At `--mem=256G` the tandem arm measured **1.52× slower**
-  (n=3, 11161.9 s vs 7362.4 s baseline, n=4). 91.6% of that gap is per-load
-  cost, not policy.
-- **No wake has ever occurred in a trial.** At 256 GB only `qwen_32b`
-  (129.7 GB) fits the budget, and it is used once and never reused; the two
-  models reused 4× and 2× are each larger than the whole spendable budget.
-- Tandem and baseline trials have run on **different nodes**, so every ratio is
-  arm-and-node, not arm alone.
+**Still open — good places to contribute:**
+- **No end-to-end speedup yet.** At `--mem=256G` the tandem arm currently
+  measures slower than baseline (11161.9 s, n=3, against 7362.4 s, n=4). The
+  decomposition is informative: **91.6% of that gap is per-model-load cost, and
+  the two arms perform the same number of loads** — so it is not the policy
+  making extra work.
+- **No wake has been observed in a trial yet**, and the reason is arithmetic
+  rather than mechanical. At 256 GB the only model that fits the budget
+  (`qwen_32b`, 129.7 GB) is used once and never reused, while the two models
+  reused 4× and 2× are each larger than the whole spendable budget. The
+  reuse-distance distribution puts the threshold at **653 GB**, which is what
+  `job_tandem_700g.sh` exists to test.
+- **Tandem and baseline trials have mostly run on different nodes**, and the
+  two Blackwell nodes differ by 1.42× on identical work — so present ratios
+  carry a node term. `job_tandem_paired.sh` runs both arms in one allocation to
+  remove it.
 
-The reuse-distance distribution says the budget threshold is **653 GB** (the
-retained 72B plus the one used between its two uses), which is what
-`job_tandem_700g.sh` tests.
+`scripts/replay_tandem_trace.py` is the cheapest way to explore any of these:
+it drives the real policy over recorded traces with no GPU, and reproduces
+measured wall time to a median 2.5% with retention off.
 
 ---
 
@@ -328,7 +356,7 @@ print(ctx.delta.summary_line())
 
 ---
 
-## Conventions worth knowing before you measure anything
+## Conventions for measurement
 
 * **Never pool L40S with Blackwell.** Identical work differs by up to 4.0×
   across node types. `summary.json` has **no** `gpu_name` — GPU identity comes
@@ -338,10 +366,13 @@ print(ctx.delta.summary_line())
 * **Record the allocation.** `meta.json` carries `slurm_mem_mb`; trials at
   different `--mem` are different configurations and must not be pooled.
 * **A completed process is not a completed workflow.** `completed_trials()`
-  counts `status == "completed"`, which only means the driver exited 0. Gate on
-  swap count and whether the trial reached LAMMPS.
-* **Any retention percentage needs the oracle-vs-LRU gap at the same budget**,
-  or it is a claim about retention in general, not about this policy.
+  counts `status == "completed"`, which only means the driver exited 0 — a
+  trial cut short by SLURM preemption still counts. Gate on swap count and
+  whether the trial reached LAMMPS; `parse_tandem_trial.py` does this for you.
+* **Report a retention percentage alongside the LRU comparison at the same
+  budget.** Plain retention (a vLLM flag plus a loop) already gets a large
+  share of the win; the number that says something about *this* policy is the
+  gap over LRU.
 
 ---
 
