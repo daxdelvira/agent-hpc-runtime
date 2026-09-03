@@ -217,8 +217,7 @@ and is load-flaky. If it is the only failure, it is not your change.
 ## Current status
 
 The mechanism runs end-to-end: the actor parks, declines when the budget says
-to, and logs its reasoning either way. An end-to-end speedup has **not** been
-demonstrated yet, and the open questions are mostly about *configuration*
+to, and logs its reasoning either way. Currently trying to demonstrate an end-to-end speedup, and the open questions are mostly about *configuration*
 rather than mechanism — whether the budget admits the resources that are
 actually reused, and whether the estimator's reach covers the workload's reuse
 distances.
